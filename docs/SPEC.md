@@ -211,13 +211,50 @@ sharper imagery near the ground.
   a mountain are drawn anyway. There are no clouds or haze.
 - The sky is not drawn on the flat map.
 
+## Milestone 6a: other bodies, the Moon first (done)
+
+### Choosing a body
+- `--body earth` (the default) or `--body moon` selects the body for the whole run. Everything
+  follows it: geodesy and altitude, the zoom limits, the whole-body view, the horizon, the tile grid,
+  lighting and the sky. Earth's behaviour and requests are unchanged.
+- Bodies are entries of an immutable table (`src/body.rs`) holding the semi-axes, the tile grid, whether
+  there is air, which data exists, the rotation model, the Sun's direction, the sky objects and the
+  credit. Adding a body is mainly a new entry and a source.
+
+### The Moon
+- A sphere of the IAU mean radius, 1737.4 km, with latitude and longitude as on Earth (east positive,
+  longitude 0 towards the Earth). The HUD names the body.
+- Imagery is the LRO Wide Angle Camera global mosaic from NASA Moon Trek, down to about 83 m per pixel
+  at the equator (zoom 8). Its tiles are plate carrée (two tiles at zoom 0), so tile addressing and the
+  meshes follow the body's grid and no resampling happens. The poles are covered.
+- There is no air: no blue sky or glow, a sharp terminator and black shadows with only a trace of
+  light on the night side. Stars stay visible by day and night.
+- The Sun's direction comes from the clock through the IAU rotation model of the Moon (pole
+  and prime meridian with their periodic terms), so phase, libration and the day and night side follow
+  the time. Stars and planets are turned with the same frame. The Earth is a lit disc in the sky with
+  its phase and name; the Moon itself is not listed.
+- No roads, labels, buildings, national aerial imagery or terrain: R, L and B do nothing there.
+- The atlas works for the Moon with the same projections, using its radius and grid.
+- The tiles are cached apart from Earth's (`nasa-trek-moon-wac`), come from their own host with its own
+  pacing, and the credit is shown while the Moon is in view, also in saved images.
+
+### Limitations
+- The Moon is smooth. NASA Moon Trek's LOLA elevation layer is served as 8-bit grey tiles whose height
+  scaling the service does not document, about 80 m per step; it was not used rather than guess.
+- Zoom 8 is the finest level of the service, so very close views are magnified.
+- The imagery is lit by the program's Sun on top of its own illumination, so relief shows less at high
+  Sun. The Sun is taken from the Earth's centre, up to 0.15 degrees off for the Moon.
+- Libration is included, but the mosaic's frame is the mean Earth direction, not the principal axes.
+- The Earth in the Moon's sky is a plain disc without clouds or oceans.
+- No switching of body while running; restart with `--body`.
+
 ## Later milestones
 
 Order and scope are open, and depend on which features are wanted.
 
 | # | Feature | Notes |
 |---|---|---|
-| M6 | Other bodies | Moon, Mars, Mercury, Ceres, Vesta |
+| M6b | Other bodies | Mars, Mercury, Ceres, Vesta (the Moon is done) |
 | M7 | Search and saved places | Geocoding, plus KML, KMZ, GeoJSON, GPX and IGC import |
 | M8 | Map service library | User-added WMS, WMTS and XYZ, with an independently built directory |
 | M9 | Events | Computed eclipses, plus earthquakes, eruptions, tsunamis and fireballs |

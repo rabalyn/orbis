@@ -26,6 +26,10 @@ fn sun_light(n: vec3<f32>, g: vec3<f32>) -> vec3<f32> {
         return vec3<f32>(1.0);
     }
     let s = frame.sun.xyz;
+    if (frame.sky.z < 0.5) {
+        // No air: a sharp terminator, white light, and only a trace of light on the night side.
+        return vec3<f32>(0.012) + 0.95 * max(dot(n, s), 0.0) * smoothstep(0.0, 0.01, dot(g, s));
+    }
     let high = dot(g, s);
     let direct = max(dot(n, s), 0.0) * smoothstep(-0.02, 0.08, high);
     // Sky light fades out until the Sun is about 14 degrees below the horizon.
@@ -231,7 +235,8 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     // The ray's closest approach to the Earth's centre, in front of the camera.
     let along = max(0.0, -dot(o, dir));
     let height = max(length(o + dir * along) - 1.0, 0.0);
-    let glow = exp(-height / 0.012);
+    let air = frame.sky.z;
+    let glow = exp(-height / 0.012) * air;
     var colour = vec3<f32>(0.22, 0.45, 0.95) * glow;
     if (frame.sun.w > 0.5) {
         // The glow is lit where the Sun shines on the air at the ray's closest approach.
@@ -243,7 +248,7 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     }
     // Close to the ground the whole sky is air; the weight fades out over 15 km.
     let altitude = (length(o) - 1.0) * frame.sky.y;
-    let inside = exp(-max(altitude, 0.0) / 15000.0);
+    let inside = exp(-max(altitude, 0.0) / 15000.0) * air;
     if (inside > 0.002) {
         colour = mix(colour, sky_inside(dir, normalize(o)), inside);
     }

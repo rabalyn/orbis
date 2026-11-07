@@ -9,6 +9,7 @@ mod geo;
 mod labels;
 mod lan;
 mod loader;
+mod moon;
 mod nav;
 mod overlay;
 mod pacing;
@@ -75,7 +76,8 @@ orbis: a globe viewer
 Usage: orbis [options]
 
   --lat DEG  --lon DEG    view point (default 30, 10)
-  --body NAME             the body to view: earth or moon (default earth)
+  --body NAME             the body to view: earth or moon (default earth). The Moon is
+                          a smooth sphere with no roads, labels or buildings
   --distance METRES       distance from the view point (default the whole body)
   --heading DEG           heading, 0 is north up
   --tilt DEG              tilt, 0 is straight down
@@ -584,10 +586,12 @@ impl Scene {
         r.sky_rot = (body::current().rotation)(time);
         let (_, _, height) = ecef_to_geodetic(self.nav.cam.basis().pos);
         let sun_sin = self.sun_on.then(|| self.nav.cam.basis().pos.normalize().dot(r.sun));
-        r.sky_limit = sky::limiting_magnitude(height, sun_sin);
+        // Without air, nothing hides the stars, whatever the Sun is doing.
+        let air_height = if body::current().atmosphere { height } else { f64::INFINITY };
+        r.sky_limit = sky::limiting_magnitude(air_height, sun_sin);
         // Planets move slowly: a few seconds' error is far below a pixel.
         if (time - self.bodies_time).abs() > 10.0 {
-            self.bodies = planets::bodies(time);
+            self.bodies = (body::current().sky_bodies)(time);
             let points: Vec<_> = self.bodies.iter().map(|b| b.point()).collect();
             r.set_sky_bodies(&points);
             self.bodies_time = time;
@@ -904,6 +908,10 @@ impl Scene {
                     ),
                 )
             }
+        };
+        let position = match body::current() {
+            b if b.id == body::EARTH.id => position,
+            b => format!("{}  {position}", b.name),
         };
         let sky = if self.sun_on { self.clock.label() } else { format!("{}  flat light", self.clock.label()) };
         let mut text = format!(

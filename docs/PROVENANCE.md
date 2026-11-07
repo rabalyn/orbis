@@ -61,6 +61,21 @@ planets" (Table 1, 1800-2050, https://ssd.jpl.nasa.gov/planets/approx_pos.html),
 Astronomical Almanac's low-precision lunar formulae, and sidereal time and precession follow the Almanac
 and Meeus, "Astronomical Algorithms". These are published formulae and constants, not data files.
 
+### The Moon
+
+| Data | Source | Terms | Credit shown in the app |
+|---|---|---|---|
+| Imagery | LRO Wide Angle Camera global mosaic (`LRO_WAC_Mosaic_Global_303ppd_v02`), served by [NASA Moon Trek](https://trek.nasa.gov/moon/) as a WMTS layer. Its capabilities document, `https://trek.nasa.gov/tiles/Moon/EQ/LRO_WAC_Mosaic_Global_303ppd_v02/1.0.0/WMTSCapabilities.xml`, gives the layout: 256-pixel JPEG tiles, plate carrée matrix set with 2 by 1 tiles at level 0 and levels 0 to 8, tiles at `{z}/{row}/{col}.jpg` | NASA media usage guidelines (nasa.gov, "NASA Images and Media Usage Guidelines"): NASA content, including texture maps, is generally not subject to copyright in the United States; use for educational or informational purposes including computer graphical simulations and web pages is allowed, NASA should be acknowledged as the source, and no endorsement may be implied. Moon Trek's own terms page could not be found, and the service states no request limits, so requests are kept gentle (two at once, cached on disk). Recheck before publishing | `Moon: LROC WAC mosaic, NASA/GSFC/Arizona State University, via NASA Moon Trek https://trek.nasa.gov/moon/` |
+
+The Moon's rotation uses the IAU Working Group on Cartographic Coordinates and Rotational Elements
+report (Archinal et al., Celestial Mechanics and Dynamical Astronomy 109, 101-135, 2011, and the 2015
+report, 130, 22, 2018), whose Moon constants were checked against NASA NAIF's `pck00011.tpc`. Its mean
+radius, 1737.4 km, is from the same report. Earth's size in the lunar sky uses 6371 km. These are
+published constants, not data files.
+
+NASA Moon Trek also serves LOLA elevation (`LRO_LOLA_DEM_Global_128ppd_v04`) as 8-bit grey PNG
+tiles with no documented height scale, so it is not used.
+
 The credits must stay visible wherever the data is displayed, including saved images.
 Label text comes from the system's installed fonts; none are bundled.
 EOX's license page does not explicitly address its public WMTS endpoint, and Mapterhorn's

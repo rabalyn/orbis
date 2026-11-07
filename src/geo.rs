@@ -23,7 +23,6 @@ pub enum Grid {
     Mercator,
     /// Plate carrée as in OGC WMTS "EPSG:4326" sets: two square tiles at zoom 0, rows
     /// linear in latitude, top row at the north pole.
-    #[allow(dead_code)]
     Equirect,
 }
 

@@ -9,7 +9,6 @@ use std::sync::OnceLock;
 
 pub struct Body {
     pub id: &'static str,
-    #[allow(dead_code)]
     pub name: &'static str,
     /// Equatorial semi-axis in metres, the polar one, and the squared first eccentricity.
     pub a: f64,
@@ -29,6 +28,10 @@ pub struct Body {
     pub rotation: fn(f64) -> DMat3,
     /// Unit vector towards the Sun in the body-fixed frame at a Unix time.
     pub sun: fn(f64) -> DVec3,
+    /// The planets and moons that show in its sky, and how big and bright they are.
+    pub sky_bodies: fn(f64) -> Vec<crate::planets::Body>,
+    /// The colour of the plain surface shown where no tile has arrived, RGBA.
+    pub ground: Option<[u8; 4]>,
 }
 
 pub static EARTH: Body = Body {
@@ -44,9 +47,30 @@ pub static EARTH: Body = Body {
     credit: crate::CREDITS,
     rotation: crate::sky::earth_fixed,
     sun: |unix| crate::sky_time::Sun::at(unix).direction(),
+    sky_bodies: crate::planets::bodies,
+    ground: None,
 };
 
-static ALL: [&Body; 1] = [&EARTH];
+/// The Moon as a sphere of the IAU mean radius, 1737.4 km (Archinal et al. 2011). Its
+/// imagery is the LRO WAC mosaic from NASA Moon Trek; no elevation data is used.
+pub static MOON: Body = Body {
+    id: "moon",
+    name: "Moon",
+    a: 1_737_400.0,
+    b: 1_737_400.0,
+    e2: 0.0,
+    grid: Grid::Equirect,
+    atmosphere: false,
+    surface_data: false,
+    imagery: &sources::MOON_WAC,
+    credit: "Moon: LROC WAC mosaic, NASA/GSFC/Arizona State University, via NASA Moon Trek https://trek.nasa.gov/moon/",
+    rotation: crate::moon::fixed_frame,
+    sun: crate::moon::sun_fixed,
+    sky_bodies: crate::planets::bodies_from_moon,
+    ground: Some([58, 58, 58, 255]),
+};
+
+static ALL: [&Body; 2] = [&EARTH, &MOON];
 
 static CURRENT: OnceLock<&'static Body> = OnceLock::new();
 

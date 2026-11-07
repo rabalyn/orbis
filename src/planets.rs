@@ -189,6 +189,26 @@ pub fn bodies(unix: f64) -> Vec<Body> {
     all
 }
 
+/// The planets and the Earth as seen from the Moon. The planets move by the same amount
+/// from here (parallax is well under a pixel); the Earth stands opposite the Moon's
+/// geocentric direction, and its angular size follows from the Moon's distance.
+pub fn bodies_from_moon(unix: f64) -> Vec<Body> {
+    const MOON_RADIUS: f64 = 1_737_400.0;
+    const EARTH_RADIUS: f64 = 6_371_000.0;
+    let t = julian_centuries(unix);
+    let mut all = planets(t);
+    let moon = moon(t);
+    let distance = MOON_RADIUS / moon.radius.sin();
+    all.push(Body {
+        name: "Earth",
+        dir: -moon.dir,
+        mag: -17.0,
+        radius: (EARTH_RADIUS / distance).asin(),
+        colour: [0.62, 0.78, 1.0],
+    });
+    all
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +294,17 @@ mod tests {
         assert!((dec - 13.768).abs() < 0.4, "{dec}");
         let radius = m.radius.to_degrees();
         assert!((radius - 0.2725 * 0.9928).abs() < 0.01, "{radius}");
+    }
+
+    #[test]
+    fn the_earth_in_the_lunar_sky_is_about_two_degrees_wide() {
+        let t = at("2026-03-01T00:00:00Z");
+        let all = bodies_from_moon(t);
+        assert!(all.iter().all(|b| b.name != "Moon"));
+        let earth = all.iter().find(|b| b.name == "Earth").unwrap();
+        assert!(earth.dir.dot(find(&bodies(t), "Moon")) < -0.999_999);
+        let size = earth.radius.to_degrees();
+        assert!((0.9..1.05).contains(&size), "{size}");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! The public data services, and which of them can provide a given tile.
 
-use crate::geo::TileKey;
+use crate::geo::{Grid, TileKey};
 
 /// Half the width of the Web Mercator square, in metres.
 const MERCATOR_EDGE: f64 = 20_037_508.342_789_244;
@@ -38,6 +38,8 @@ pub struct TileSource {
     pub concurrency: usize,
     /// The width of its images. A 512-pixel image holds the detail of four 256-pixel ones.
     pub pixels: u32,
+    /// How its tiles are laid out over the body.
+    pub grid: Grid,
 }
 
 const JPEG: &str = "image/jpeg";
@@ -63,6 +65,7 @@ const fn detail(
         credit,
         concurrency,
         pixels: 256,
+        grid: Grid::Mercator,
     }
 }
 
@@ -78,6 +81,25 @@ pub static EOX: TileSource = TileSource {
     credit: "",
     concurrency: 4,
     pixels: 256,
+    grid: Grid::Mercator,
+};
+
+/// NASA Moon Trek's WMTS layer of the LRO Wide Angle Camera global mosaic (100 m per pixel),
+/// read from its capabilities document: 256-pixel JPEG tiles, an equirectangular matrix set
+/// with 2 by 1 tiles at level 0 and levels 0 to 8, laid out as {z}/{row}/{column}.
+pub static MOON_WAC: TileSource = TileSource {
+    id: "moon-wac",
+    kind: Kind::Imagery,
+    url: "https://trek.nasa.gov/tiles/Moon/EQ/LRO_WAC_Mosaic_Global_303ppd_v02/1.0.0/default/default028mm/{z}/{y}/{x}.jpg",
+    cache: "nasa-trek-moon-wac/{z}/{y}/{x}.jpg",
+    content_type: JPEG,
+    min_z: 0,
+    max_z: 8,
+    bounds: &[],
+    credit: "",
+    concurrency: 2,
+    pixels: 256,
+    grid: Grid::Equirect,
 };
 
 pub static TERRAIN: TileSource = TileSource {
@@ -92,6 +114,7 @@ pub static TERRAIN: TileSource = TileSource {
     credit: "",
     concurrency: 4,
     pixels: 512,
+    grid: Grid::Mercator,
 };
 
 pub static MAP: TileSource = TileSource {
@@ -106,6 +129,7 @@ pub static MAP: TileSource = TileSource {
     credit: "",
     concurrency: 4,
     pixels: 256,
+    grid: Grid::Mercator,
 };
 
 /// Host used to look up the map service's current URL.
@@ -282,6 +306,7 @@ pub static DETAIL: [TileSource; 11] = [
         // One project's server, so it gets the gentle limit of the on-demand services.
         concurrency: 2,
         pixels: 512,
+        grid: Grid::Mercator,
     },
 ];
 
@@ -347,7 +372,7 @@ fn mercator_bbox(k: TileKey) -> String {
 
 /// All sources a cache server can serve.
 pub fn all() -> impl Iterator<Item = &'static TileSource> {
-    [&EOX, &TERRAIN, &MAP].into_iter().chain(DETAIL.iter())
+    [&EOX, &TERRAIN, &MAP, &MOON_WAC].into_iter().chain(DETAIL.iter())
 }
 
 pub fn by_id(id: &str) -> Option<&'static TileSource> {
@@ -601,5 +626,22 @@ mod tests {
             assert!(s.blank_means_missing());
         }
         assert!(!EOX.blank_means_missing());
+    }
+
+    #[test]
+    fn moon_tiles_are_addressed_by_row_then_column_and_cached_apart() {
+        let k = TileKey::new(8, 100, 200);
+        assert_eq!(
+            TileSource::url_from(MOON_WAC.url, k),
+            "https://trek.nasa.gov/tiles/Moon/EQ/LRO_WAC_Mosaic_Global_303ppd_v02/1.0.0/default/default028mm/8/200/100.jpg"
+        );
+        assert_eq!(MOON_WAC.cache_name(k), "nasa-trek-moon-wac/8/200/100.jpg");
+        assert_ne!(MOON_WAC.cache_name(k), EOX.cache_name(k));
+        assert_eq!(MOON_WAC.grid, Grid::Equirect);
+        assert_eq!(by_id("moon-wac").map(|s| s.max_z), Some(8));
+        // A tile deeper than the service has is taken from its level 8 ancestor.
+        assert_eq!(MOON_WAC.source_key(TileKey::new(10, 4, 4)), TileKey::new(8, 1, 1));
+        // Its host is not Earth's, so server pacing is kept apart too.
+        assert_ne!(crate::fetcher::host_of(MOON_WAC.url), crate::fetcher::host_of(EOX.url));
     }
 }

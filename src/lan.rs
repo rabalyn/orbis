@@ -73,7 +73,7 @@ fn route(path: &str) -> Route {
     let (Some(z), Some(x), Some(y)) = (number(z), number(x), number(y)) else {
         return Route::NotFound;
     };
-    if z < source.min_z as u32 || z > source.max_z as u32 || x >= 1 << z || y >= 1 << z {
+    if z < source.min_z as u32 || z > source.max_z as u32 || x as u64 >= source.grid.columns(z as u8) || y as u64 >= source.grid.rows(z as u8) {
         return Route::NotFound;
     }
     Route::Tile(source, TileKey::new(z as u8, x, y))

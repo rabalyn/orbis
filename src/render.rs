@@ -242,7 +242,11 @@ fn underlay_mesh() -> (Vec<Vertex>, Vec<u32>) {
 
 fn underlay_mips() -> Vec<(u32, u32, Vec<u8>)> {
     // Top half ice, bottom half ocean, picked by the mesh's v coordinate.
-    let (ice, ocean) = ([254u8, 254, 254, 255], [17u8, 31, 72, 255]);    let mut data = Vec::new();
+    let (ice, ocean) = match crate::body::current().ground {
+        Some(plain) => (plain, plain),
+        None => ([254u8, 254, 254, 255], [17u8, 31, 72, 255]),
+    };
+    let mut data = Vec::new();
     for _ in 0..2 {
         data.extend(ice);
     }

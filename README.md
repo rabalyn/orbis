@@ -35,6 +35,8 @@ hide roads, labels and buildings. Dense city views used about 2 GB of graphics m
 
 The globe is lit by the Sun at the current time (shown in UTC). Space pauses the clock, - and = change its speed, comma and period step it, T returns to now, and S switches to flat, always-lit imagery. `--time 2026-06-21T12:00:00Z` starts at another time. Tilt past the horizon to look up at the sky, with stars, planets and the Moon; O hides them (`--no-stars`).
 
+`--body moon` shows the Moon instead of the Earth, lit by the Sun at the clock's time, with its own imagery and an Earth in its sky.
+
 `--help` lists all options. If your desktop reserves Alt-drag for moving windows, use
 right-drag to turn and tilt.
 

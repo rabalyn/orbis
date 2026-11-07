@@ -628,6 +628,7 @@ pub mod tests {
                 credit: "",
                 concurrency: 4,
                 pixels: 256,
+                grid: crate::geo::Grid::Mercator,
             }))
         }
     }

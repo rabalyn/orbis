@@ -89,6 +89,13 @@ The server is meant for a trusted home or office network.
   result of a malicious peer is wrong map content.
 - Data licences still apply to whatever is served, including credits for what is displayed.
 
+## Other bodies
+
+The Moon's imagery comes from one NASA Moon Trek layer (`moon-wac`, zoom 0 to 8, plate carrée tiles),
+cached under `nasa-trek-moon-wac/` and requested two at a time from `trek.nasa.gov`, which has its own
+pacing and overload pause. Earth's sources are never asked for while viewing the Moon, and the other way
+round.
+
 ## Imagery by level of detail
 
 Candidates for a tile are tried best first, within each source's approximate coverage box.

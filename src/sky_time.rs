@@ -35,14 +35,8 @@ impl Sun {
     /// of arc from 1950 to 2050. The subsolar longitude is the right ascension minus the
     /// Greenwich mean sidereal time (Almanac, "Sidereal time" low-precision formula).
     pub fn at(unix: f64) -> Self {
+        let (right_ascension, declination) = equatorial_of_date(unix);
         let n = unix / 86_400.0 + 2_440_587.5 - 2_451_545.0;
-        let mean_longitude = (280.460 + 0.985_647_4 * n).rem_euclid(360.0);
-        let anomaly = (357.528 + 0.985_600_3 * n).rem_euclid(360.0).to_radians();
-        let ecliptic_longitude =
-            (mean_longitude + 1.915 * anomaly.sin() + 0.020 * (2.0 * anomaly).sin()).to_radians();
-        let obliquity = (23.439 - 0.000_000_4 * n).to_radians();
-        let right_ascension = (obliquity.cos() * ecliptic_longitude.sin()).atan2(ecliptic_longitude.cos());
-        let declination = (obliquity.sin() * ecliptic_longitude.sin()).asin();
         let gmst = (18.697_374_558 + 24.065_709_824_419_08 * n).rem_euclid(24.0) * 15.0;
         let longitude = wrap_pi(right_ascension - gmst.to_radians());
         Self { declination, longitude }
@@ -53,6 +47,20 @@ impl Sun {
         let (sd, cd) = self.declination.sin_cos();
         DVec3::new(cd * self.longitude.cos(), cd * self.longitude.sin(), sd)
     }
+}
+
+/// Right ascension and declination of the Sun on the equator and equinox of date, from the
+/// low-precision formulae of the Astronomical Almanac (see `Sun::at`).
+pub fn equatorial_of_date(unix: f64) -> (f64, f64) {
+    let n = unix / 86_400.0 + 2_440_587.5 - 2_451_545.0;
+    let mean_longitude = (280.460 + 0.985_647_4 * n).rem_euclid(360.0);
+    let anomaly = (357.528 + 0.985_600_3 * n).rem_euclid(360.0).to_radians();
+    let ecliptic_longitude =
+        (mean_longitude + 1.915 * anomaly.sin() + 0.020 * (2.0 * anomaly).sin()).to_radians();
+    let obliquity = (23.439 - 0.000_000_4 * n).to_radians();
+    let right_ascension = (obliquity.cos() * ecliptic_longitude.sin()).atan2(ecliptic_longitude.cos());
+    let declination = (obliquity.sin() * ecliptic_longitude.sin()).asin();
+    (right_ascension, declination)
 }
 
 fn wrap_pi(a: f64) -> f64 {
