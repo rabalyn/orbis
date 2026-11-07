@@ -289,11 +289,21 @@ mod tests {
 
     #[test]
     fn the_committed_development_file_holds_the_defaults() {
+        // A window run from this checkout saves its choices over the working copy, so ask git for
+        // the committed file. Outside a git checkout the file on disk is the shipped one.
+        let committed = std::process::Command::new("git")
+            .args(["show", "HEAD:config/settings.json"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .unwrap_or_else(|| include_str!("../config/settings.json").to_string());
         let mut w = Vec::new();
-        let s = Settings::parse(include_str!("../config/settings.json"), &mut w);
+        let s = Settings::parse(&committed, &mut w);
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(s, Settings::default());
-        assert_eq!(include_str!("../config/settings.json"), Settings::default().to_text());
+        assert_eq!(committed, Settings::default().to_text());
     }
 
     #[test]
