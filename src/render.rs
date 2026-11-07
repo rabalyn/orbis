@@ -6,6 +6,7 @@ use crate::buildings::{BuildingMesh, BuildingVertex};
 use crate::camera::{Camera, FOV_Y};
 use crate::geo::{geodetic_to_ecef, radius, TileKey};
 use crate::labels::{AtlasRect, Mask, Shelves, TextKey, TextWorker, ATLAS_SIZE};
+use crate::shadows;
 use crate::sky::SkyPoint;
 use crate::loader::{mesh_indices, TileData, Vertex, GRID, TILE_MAX_Z};
 use crate::text;
@@ -50,6 +51,29 @@ struct FrameUniform {
     moon: [f32; 4],
 }
 
+/// The shadow maps as the shader reads them; see `Shadow` in globe.wgsl.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ShadowUniform {
+    mats: [[[f32; 4]; 4]; shadows::CASCADES],
+    ends: [f32; 4],
+    texel: [f32; 4],
+    range: [f32; 4],
+}
+
+/// The depth maps, made when shadows are first wanted: one layer for each cascade.
+struct ShadowMap {
+    _texture: wgpu::Texture,
+    layers: Vec<wgpu::TextureView>,
+    array: wgpu::TextureView,
+}
+
+/// What casts a shadow this frame.
+enum Caster {
+    Tile(TileKey),
+    Building(TileKey),
+}
+
 /// Room for the bright planets and the Moon after the stars.
 const SKY_BODIES: usize = 8;
 
@@ -71,6 +95,8 @@ struct GpuTile {
     credit: &'static str,
     heights: Vec<f32>,
     center: DVec3,
+    /// How far the mesh reaches from `center`.
+    radius: f64,
     last_used: u64,
 }
 
@@ -89,6 +115,7 @@ struct GpuBuildings {
     indices: wgpu::Buffer,
     index_count: u32,
     center: DVec3,
+    radius: f64,
     last_used: u64,
 }
 
@@ -173,6 +200,18 @@ pub struct Renderer {
     star_pipeline: wgpu::RenderPipeline,
     frame_buffer: wgpu::Buffer,
     frame_bind: wgpu::BindGroup,
+    frame_layout: wgpu::BindGroupLayout,
+    /// Cast shadows: whether they are wanted, what to draw them from, and the maps.
+    pub shadows_on: bool,
+    cast: Option<(shadows::Plan, Vec<TileKey>)>,
+    shadow_uniform: wgpu::Buffer,
+    shadow_sampler: wgpu::Sampler,
+    shadow_dummy: wgpu::TextureView,
+    shadow_map: Option<ShadowMap>,
+    shadow_tile_pipeline: wgpu::RenderPipeline,
+    shadow_building_pipeline: wgpu::RenderPipeline,
+    cascade_buffers: Vec<wgpu::Buffer>,
+    cascade_binds: Vec<wgpu::BindGroup>,
     tile_layout: wgpu::BindGroupLayout,
     panel_layout: wgpu::BindGroupLayout,
     tile_sampler: wgpu::Sampler,
@@ -309,6 +348,32 @@ impl Renderer {
                     has_dynamic_offset: false,
                     min_binding_size: None,
                 },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                 count: None,
             }],
         });
@@ -568,6 +633,102 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        let shadow_shader = device.create_shader_module(wgpu::include_wgsl!("shadow.wgsl"));
+        let cascade_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("cascade"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let cascade_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("cascade"),
+            bind_group_layouts: &[Some(&cascade_layout)],
+            immediate_size: 0,
+        });
+        let shadow_depth = Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Less),
+            stencil: Default::default(),
+            bias: Default::default(),
+        });
+        let shadow_pipeline = |label, entry, buffers: &[Option<wgpu::VertexBufferLayout>]| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&cascade_pl),
+                vertex: wgpu::VertexState {
+                    module: &shadow_shader,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    buffers,
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: shadow_depth.clone(),
+                multisample: wgpu::MultisampleState::default(),
+                fragment: None,
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let shadow_tile_pipeline = shadow_pipeline(
+            "shadow tile",
+            "vs_tile",
+            &[
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: size_of::<Vertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &vertex_attrs,
+                }),
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: size_of::<[f32; 3]>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &instance_attrs,
+                }),
+            ],
+        );
+        let shadow_building_pipeline = shadow_pipeline(
+            "shadow building",
+            "vs_building",
+            &[
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: size_of::<BuildingVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &building_attrs,
+                }),
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: size_of::<[f32; 3]>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &building_instance_attrs,
+                }),
+            ],
+        );
+        let cascade_buffers: Vec<wgpu::Buffer> = (0..shadows::CASCADES)
+            .map(|_| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("cascade"),
+                    size: 64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
+            })
+            .collect();
+        let cascade_binds: Vec<wgpu::BindGroup> = cascade_buffers
+            .iter()
+            .map(|b| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("cascade"),
+                    layout: &cascade_layout,
+                    entries: &[wgpu::BindGroupEntry { binding: 0, resource: b.as_entire_binding() }],
+                })
+            })
+            .collect();
         let label_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("label"),
             layout: Some(&label_pl),
@@ -627,11 +788,39 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let frame_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("frame"),
-            layout: &frame_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: frame_buffer.as_entire_binding() }],
+        let shadow_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("shadow"),
+            size: size_of::<ShadowUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
+        let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("shadow"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            compare: Some(wgpu::CompareFunction::LessEqual),
+            ..Default::default()
+        });
+        // Stands in for the maps until shadows are first drawn.
+        let shadow_dummy = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("no shadow maps"),
+                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: DEPTH_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            });
+        let frame_bind =
+            make_frame_bind(&device, &frame_layout, &frame_buffer, &shadow_uniform, &shadow_dummy, &shadow_sampler);
         let tile_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("tile"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -760,6 +949,17 @@ impl Renderer {
             star_pipeline,
             frame_buffer,
             frame_bind,
+            frame_layout,
+            shadows_on: true,
+            cast: None,
+            shadow_uniform,
+            shadow_sampler,
+            shadow_dummy,
+            shadow_map: None,
+            shadow_tile_pipeline,
+            shadow_building_pipeline,
+            cascade_buffers,
+            cascade_binds,
             tile_layout,
             panel_layout,
             tile_sampler,
@@ -849,6 +1049,11 @@ impl Renderer {
             (Some(a), Some(b)) => (a.uv[0] as f64, a.uv[1] as f64, (b.uv[0] - a.uv[0]) as f64),
             _ => (0.0, 0.0, 1.0),
         };
+        let tile_radius = data
+            .vertices
+            .iter()
+            .map(|v| f64::from(v.pos[0]).hypot(f64::from(v.pos[1])).hypot(f64::from(v.pos[2])))
+            .fold(0.0, f64::max);
         self.tiles.insert(
             data.key,
             GpuTile {
@@ -859,6 +1064,7 @@ impl Renderer {
                 credit: data.credit,
                 heights: data.heights.clone(),
                 center: data.center,
+                radius: tile_radius,
                 last_used: self.frame_no,
             },
         );
@@ -908,6 +1114,11 @@ impl Renderer {
             contents: bytemuck::cast_slice(&mesh.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
+        let reach = mesh
+            .vertices
+            .iter()
+            .map(|v| f64::from(v.pos[0]).hypot(f64::from(v.pos[1])).hypot(f64::from(v.pos[2])))
+            .fold(0.0, f64::max);
         self.buildings.insert(
             k,
             GpuBuildings {
@@ -915,9 +1126,61 @@ impl Renderer {
                 indices,
                 index_count: mesh.indices.len() as u32,
                 center: mesh.center,
+                radius: reach,
                 last_used: self.frame_no,
             },
         );
+    }
+
+    /// Sets the shadow maps for the next frames: their plan, and the loaded tiles beyond the drawn ones
+    /// that cast into them. `None` draws no shadows.
+    pub fn set_cast(&mut self, cast: Option<(shadows::Plan, Vec<TileKey>)>) {
+        self.cast = cast;
+    }
+
+    /// Makes the depth maps the first time shadows are drawn, and frees them once shadows are off.
+    fn sync_shadow_map(&mut self, wanted: bool) {
+        if wanted == self.shadow_map.is_some() {
+            return;
+        }
+        let maps = wanted.then(|| {
+            let size = shadows::MAP_SIZE;
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("shadow maps"),
+                size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: shadows::CASCADES as u32 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: DEPTH_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let layers = (0..shadows::CASCADES as u32)
+                .map(|i| {
+                    texture.create_view(&wgpu::TextureViewDescriptor {
+                        dimension: Some(wgpu::TextureViewDimension::D2),
+                        base_array_layer: i,
+                        array_layer_count: Some(1),
+                        ..Default::default()
+                    })
+                })
+                .collect();
+            let array = texture.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            });
+            ShadowMap { _texture: texture, layers, array }
+        });
+        let view = maps.as_ref().map_or(&self.shadow_dummy, |m| &m.array);
+        self.frame_bind = make_frame_bind(
+            &self.device,
+            &self.frame_layout,
+            &self.frame_buffer,
+            &self.shadow_uniform,
+            view,
+            &self.shadow_sampler,
+        );
+        self.shadow_map = maps;
     }
 
     /// Chooses the building tiles to draw. Ones not loaded yet are simply left out.
@@ -1338,6 +1601,35 @@ impl Renderer {
                 origins.push((b.center - basis.pos).as_vec3().to_array());
             }
         }
+        // Shadow casters: the drawn tiles and buildings, and loaded ones beyond them that reach into the maps.
+        let cast = if self.atlas.is_none() && self.shadows_on { self.cast.take() } else { None };
+        let mut casters: Vec<(Caster, u32, DVec3, f64)> = Vec::new();
+        if let Some((plan, extra)) = &cast {
+            let rel = |c: DVec3| c - basis.pos;
+            for (i, k) in draw.iter().enumerate() {
+                let t = &self.tiles[k];
+                casters.push((Caster::Tile(*k), i as u32 + 1, rel(t.center), t.radius));
+            }
+            for k in extra.iter().filter(|k| !in_use.contains(k)) {
+                let Some(t) = self.tiles.get(k) else { continue };
+                if plan.touches(rel(t.center), t.radius) {
+                    casters.push((Caster::Tile(*k), origins.len() as u32, rel(t.center), t.radius));
+                    origins.push(rel(t.center).as_vec3().to_array());
+                }
+            }
+            for (i, k) in shown.iter().enumerate() {
+                let b = &self.buildings[k];
+                casters.push((Caster::Building(*k), first_building + i as u32, rel(b.center), b.radius));
+            }
+            // Buildings that are loaded but not shown still cast.
+            let shown_set: HashSet<TileKey> = shown.iter().copied().collect();
+            for (k, b) in &self.buildings {
+                if !shown_set.contains(k) && plan.touches(rel(b.center), b.radius) {
+                    casters.push((Caster::Building(*k), origins.len() as u32, rel(b.center), b.radius));
+                    origins.push(rel(b.center).as_vec3().to_array());
+                }
+            }
+        }
         if origins.len() > self.instance_capacity {
             self.instance_capacity = origins.len().next_power_of_two();
             self.instances = create_instance_buffer(&self.device, self.instance_capacity);
@@ -1359,7 +1651,62 @@ impl Renderer {
             None => (target, None, wgpu::StoreOp::Store),
         };
 
+        self.sync_shadow_map(self.shadows_on && self.atlas.is_none() && self.shadow_map.is_some() || cast.is_some());
+        let mut shadow_data = ShadowUniform::zeroed();
+        if let Some((plan, _)) = &cast {
+            for (i, c) in plan.cascades.iter().enumerate() {
+                shadow_data.mats[i] = c.matrix.to_cols_array_2d();
+                shadow_data.texel[i] = c.texel as f32;
+                shadow_data.range[i] = c.depth_range as f32;
+                self.queue.write_buffer(&self.cascade_buffers[i], 0, bytemuck::bytes_of(&shadow_data.mats[i]));
+            }
+            shadow_data.ends = [plan.ends[0] as f32, plan.ends[1] as f32, plan.ends[2] as f32, shadows::BLEND as f32];
+            shadow_data.texel[3] = plan.strength as f32;
+            shadow_data.range[3] = shadows::MAP_SIZE as f32;
+        }
+        self.queue.write_buffer(&self.shadow_uniform, 0, bytemuck::bytes_of(&shadow_data));
+
         let mut encoder = self.device.create_command_encoder(&Default::default());
+        if let (Some((plan, _)), Some(maps)) = (&cast, &self.shadow_map) {
+            let grid_indices = (GRID * GRID * 6) as u32;
+            for (i, layer) in maps.layers.iter().enumerate() {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("shadow map"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: layer,
+                        depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_bind_group(0, &self.cascade_binds[i], &[]);
+                pass.set_vertex_buffer(1, self.instances.slice(..));
+                pass.set_pipeline(&self.shadow_tile_pipeline);
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                for (caster, instance, centre, reach) in &casters {
+                    if let Caster::Tile(k) = caster {
+                        if plan.cascade_touches(i, *centre, *reach) {
+                            pass.set_vertex_buffer(0, self.tiles[k].vertices.slice(..));
+                            pass.draw_indexed(0..grid_indices, 0, *instance..*instance + 1);
+                        }
+                    }
+                }
+                pass.set_pipeline(&self.shadow_building_pipeline);
+                for (caster, instance, centre, reach) in &casters {
+                    if let Caster::Building(k) = caster {
+                        if plan.cascade_touches(i, *centre, *reach) {
+                            let b = &self.buildings[k];
+                            pass.set_vertex_buffer(0, b.vertices.slice(..));
+                            pass.set_index_buffer(b.indices.slice(..), wgpu::IndexFormat::Uint32);
+                            pass.draw_indexed(0..b.index_count, 0, *instance..*instance + 1);
+                        }
+                    }
+                }
+            }
+        }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("globe"),
@@ -1457,8 +1804,29 @@ impl Renderer {
         }
         before_submit(&mut encoder);
         self.queue.submit([encoder.finish()]);
+        self.cast = cast;
         self.evict(&in_use);
     }
+}
+
+fn make_frame_bind(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    frame: &wgpu::Buffer,
+    shadow: &wgpu::Buffer,
+    maps: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("frame"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: frame.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: shadow.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(maps) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(sampler) },
+        ],
+    })
 }
 
 fn create_label_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {

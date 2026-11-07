@@ -144,6 +144,8 @@ settings! {
     /// Names of peaks, water and streets.
     other_names: bool = true, "other_names";
     buildings: bool = true, "buildings_3d";
+    /// Terrain and buildings cast shadows when the Sun lights the scene.
+    cast_shadows: bool = true, "cast_shadows";
     sunlight: bool = true, "sunlight";
     stars: bool = true, "stars_and_planets";
     event_markers: bool = true, "event_markers";

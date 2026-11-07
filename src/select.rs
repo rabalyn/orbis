@@ -4,6 +4,7 @@ use crate::camera::{Basis, FOV_Y};
 use crate::body;
 use crate::geo::{geodetic_to_ecef, radius, Grid, TileKey};
 use glam::DVec3;
+use std::collections::HashSet;
 use std::f64::consts::TAU;
 
 /// Highest mountains plus a margin, so tilted views do not lose peaks at the edges.
@@ -25,6 +26,12 @@ pub struct Selection {
     pub draw: Vec<TileKey>,
     /// Tiles that are not loaded yet, most urgent first.
     pub wanted: Vec<TileKey>,
+}
+
+/// Tiles already drawn, and their ancestors.
+struct Taken {
+    drawn: HashSet<TileKey>,
+    above: HashSet<TileKey>,
 }
 
 struct Samples {
@@ -109,6 +116,76 @@ impl View {
         wanted.sort_by(|a: &(u8, f64, TileKey), b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
         out.wanted = wanted.into_iter().map(|w| w.2).collect();
         out
+    }
+
+    /// The loaded tiles in a region that are not among `drawn`, chosen like `select` chooses them but
+    /// without asking for any: where finer tiles are missing a coarser loaded one stands in, and where
+    /// nothing is loaded there is a hole. Tiles overlapping a drawn one are never returned. `region` takes a
+    /// tile's bounding sphere (centre, radius). Used for ground outside the view that casts shadows into it.
+    pub fn select_in(
+        &self,
+        region: &dyn Fn(DVec3, f64) -> bool,
+        loaded: &impl Fn(TileKey) -> bool,
+        drawn: &[TileKey],
+    ) -> Vec<TileKey> {
+        let mut above = HashSet::new();
+        for k in drawn {
+            above.extend((0..k.z).map(|z| k.ancestor(z)));
+        }
+        let taken = Taken { drawn: drawn.iter().copied().collect(), above };
+        let mut out = Vec::new();
+        for root in crate::geo::root_tiles() {
+            self.visit_in(root, region, loaded, &taken, &mut out);
+        }
+        out
+    }
+
+    fn visit_in(
+        &self,
+        k: TileKey,
+        region: &dyn Fn(DVec3, f64) -> bool,
+        loaded: &impl Fn(TileKey) -> bool,
+        taken: &Taken,
+        out: &mut Vec<TileKey>,
+    ) -> bool {
+        if taken.drawn.contains(&k) {
+            return true;
+        }
+        let s = samples(k);
+        let centre = s.points[12];
+        let a = radius();
+        let width = TAU * a / body::current().grid.columns(k.z) as f64;
+        let reach = s.points.iter().map(|p| (*p - centre).length()).fold(0.0, f64::max);
+        let pad = TERRAIN_MARGIN + width * width / (8.0 * a) + width * 0.05;
+        if !region(centre, reach + pad) {
+            return true;
+        }
+        // Above a drawn tile: only its other children are left to look at.
+        if taken.above.contains(&k) {
+            for c in k.children() {
+                self.visit_in(c, region, loaded, taken, out);
+            }
+            return true;
+        }
+        let (_, pixels) = self.measure(k, &s);
+        let mut partial = Vec::new();
+        if k.z < (self.max_z)(k) && (k.z < 2 || pixels > REFINE_ABOVE) {
+            let mut covered = true;
+            for c in k.children() {
+                covered &= self.visit_in(c, region, loaded, taken, &mut partial);
+            }
+            if covered {
+                out.extend(partial);
+                return true;
+            }
+        }
+        if loaded(k) {
+            out.push(k);
+            true
+        } else {
+            out.extend(partial);
+            false
+        }
     }
 
     /// Returns whether the area of `k` is fully covered by tiles added to `draw`. A tile
@@ -202,6 +279,28 @@ mod tests {
             let n = settle(&view(d, t)).draw.len();
             assert!(n < 400, "{n} tiles at d={d} tilt={t}");
         }
+    }
+
+    #[test]
+    fn region_selection_adds_loaded_tiles_beside_the_drawn_ones() {
+        let v = view(20_000.0, 0.8);
+        let drawn = settle(&v).draw;
+        let everywhere = |_: DVec3, _: f64| true;
+        // Nothing but the drawn tiles loaded: nothing to add.
+        let have: HashSet<TileKey> = drawn.iter().copied().collect();
+        assert!(v.select_in(&everywhere, &|k| have.contains(&k), &drawn).is_empty());
+        // With the world at zoom 3 loaded as well, only tiles clear of the drawn ones come back,
+        // not overlapping each other.
+        let mut more = have.clone();
+        more.extend((0..8u32).flat_map(|x| (0..8u32).map(move |y| TileKey::new(3, x, y))));
+        let extra = v.select_in(&everywhere, &|k| more.contains(&k), &drawn);
+        assert!(!extra.is_empty() && extra.len() < 64);
+        for (i, a) in extra.iter().enumerate() {
+            assert!(more.contains(a));
+            assert!(drawn.iter().all(|d| !overlaps(*a, *d)), "{a:?}");
+            assert!(extra[i + 1..].iter().all(|b| !overlaps(*a, *b)));
+        }
+        assert!(v.select_in(&|_, _| false, &|k| more.contains(&k), &drawn).is_empty());
     }
 
     #[test]

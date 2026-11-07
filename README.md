@@ -33,7 +33,7 @@ F switches the frame rate limit between 120 and 90 fps, up to what the display c
 Names appear in your locale's language; `--lang de` picks another one. R, L and B show or
 hide roads, labels and buildings. Dense city views used about 2 GB of graphics memory at 1280x800; larger windows load more.
 
-The globe is lit by the Sun at the current time (shown in UTC). Space pauses the clock, - and = change its speed, comma and period step it, T returns to now, and S switches to flat, always-lit imagery. `--time 2026-06-21T12:00:00Z` starts at another time. Tilt past the horizon to look up at the sky, with stars, planets and the Moon; O hides them (`--no-stars`).
+The globe is lit by the Sun at the current time (shown in UTC). Space pauses the clock, - and = change its speed, comma and period step it, T returns to now, and S switches to flat, always-lit imagery. `--time 2026-06-21T12:00:00Z` starts at another time. Terrain and buildings cast shadows from the Sun's position (view options, V; `--no-shadows` starts without them). Tilt past the horizon to look up at the sky, with stars, planets and the Moon; O hides them (`--no-stars`).
 
 Ctrl-F opens a search box: type a place name or coordinates such as `46.5, 11.8`, press Enter, choose with Up and Down, and Enter again to fly there. Names are looked up on OpenStreetMap's Nominatim, only when you press Enter.
 

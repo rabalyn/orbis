@@ -10,7 +10,7 @@
 //! edges stay put while the camera moves. Nothing here touches the GPU or a window.
 
 use crate::camera::{Basis, FOV_Y};
-use crate::geo::{radius, ray_ellipsoid};
+use crate::geo::ray_ellipsoid;
 use glam::{DMat4, DVec3, DVec4, Mat4};
 
 pub const CASCADES: usize = 3;
@@ -29,8 +29,8 @@ const BELOW: f64 = 500.0;
 /// Each cascade is blended into the next over the last tenth of its depth; the next one therefore
 /// starts this much earlier than the previous one ends.
 pub const BLEND: f64 = 0.1;
-/// Practical split scheme: 0 splits evenly, 1 by equal ratios.
-const SPLIT_LAMBDA: f64 = 0.8;
+/// The most one cascade's far depth may exceed the previous one's.
+const MAX_RATIO: f64 = 6.0;
 
 /// What the camera sees.
 #[derive(Clone, Copy, Debug)]
@@ -113,7 +113,7 @@ fn quantise(x: f64) -> f64 {
 /// The planned shadow maps for a view, or `None` when there is nothing to draw: no Sun, the
 /// whole visible ground in the dark, the ground too far away, or only sky in view.
 pub fn plan(input: &Input, sun: DVec3) -> Option<Plan> {
-    if !(sun.length() > 0.5) || !sun.is_finite() {
+    if !sun.is_finite() || sun.length() < 0.5 {
         return None;
     }
     let sun = sun.normalize();
@@ -131,7 +131,9 @@ pub fn plan(input: &Input, sun: DVec3) -> Option<Plan> {
     let reach_cap = crate::body::scaled(MAX_REACH);
 
     // Where the rays meet the ground, and how far the ground goes along each.
-    let ground_r = radius() + input.ground_h;
+    // The ground under the camera at the view point's height, and the tangent distance to its horizon.
+    let (_, _, cam_h) = crate::geo::ecef_to_geodetic(b.pos);
+    let ground_r = b.pos.length() - (cam_h - input.ground_h);
     let horizon = (b.pos.length_squared() - ground_r * ground_r).max(0.0).sqrt();
     let mut nearest = f64::INFINITY;
     let mut farthest: f64 = 0.0;
@@ -154,19 +156,18 @@ pub fn plan(input: &Input, sun: DVec3) -> Option<Plan> {
     if strength <= 0.0 {
         return None;
     }
-    let zn = (0.6 * nearest).max(input.near).max(0.5);
+    // Terrain above the view point's height may be nearer than the ground found for it.
+    let zn = (0.75 * nearest).max(input.near).max(0.5);
     let zf = (farthest * 1.1).min(range);
     if zf <= zn * 1.01 {
         return None;
     }
 
     let axes = light_axes(sun);
-    let n = CASCADES as f64;
-    let mut ends = [0.0; CASCADES];
-    for (i, e) in ends.iter_mut().enumerate() {
-        let f = (i + 1) as f64 / n;
-        *e = SPLIT_LAMBDA * zn * (zf / zn).powf(f) + (1.0 - SPLIT_LAMBDA) * (zn + (zf - zn) * f);
-    }
+    // Equal ratios between the cascades keep the texels about as big as pixels at the far end of each.
+    // Where that would stretch a cascade too far, the shadows stop sooner and fade out there.
+    let ratio = (zf / zn).powf(1.0 / CASCADES as f64).clamp(1.2, MAX_RATIO);
+    let ends = std::array::from_fn(|i| zn * ratio.powi(i as i32 + 1));
     let cascades = std::array::from_fn(|i| {
         let start = if i == 0 { zn } else { ends[i - 1] * (1.0 - BLEND) };
         fit(input, &rays, &axes, sun, start, ends[i], reach_cap)
@@ -479,6 +480,5 @@ mod tests {
         assert!(!p.touches(ground - sun * 5.0e6, 500.0));
         // Beyond the reach towards the Sun.
         assert!(!p.touches(ground + sun * 2.0e6, 500.0));
-        let _ = geodetic_to_ecef;
     }
 }

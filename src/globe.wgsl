@@ -72,20 +72,104 @@ fn eclipse_light(g: vec3<f32>) -> f32 {
     return 1.0 - sun_covered(s, r, m);
 }
 
+// Cast shadows: cascaded sun-direction depth maps, drawn by shadow.wgsl. `mats` take positions
+// relative to the camera to x and y in -1..1 and depth in 0..1 growing away from the Sun.
+struct Shadow {
+    mats: array<mat4x4<f32>, 3>,
+    // The view depth where each cascade ends; w is the part of that depth over which it blends into the next.
+    ends: vec4<f32>,
+    // The size of a texel in metres; w is the strength (0 for no shadows).
+    texel: vec4<f32>,
+    // The depth of each map in metres; w is the map's width in texels.
+    range: vec4<f32>,
+}
+
+@group(0) @binding(1) var<uniform> shadow: Shadow;
+@group(0) @binding(2) var shadow_map: texture_depth_2d_array;
+@group(0) @binding(3) var shadow_sampler: sampler_comparison;
+
+// How much of the Sun reaches `rel` (relative to the camera, facing `n`) through one cascade.
+fn cascade_light(c: u32, rel: vec3<f32>, n: vec3<f32>, ndl: f32) -> f32 {
+    let texel = shadow.texel[c];
+    let sin_t = sqrt(max(1.0 - ndl * ndl, 0.0));
+    let tan_t = min(sin_t / max(ndl, 0.05), 6.0);
+    // Moving the point out along its normal by the texel's size, more when the light is low, keeps
+    // a surface from shading itself; the small depth bias covers the rest.
+    let p = rel + n * (texel * (0.5 + 1.5 * sin_t));
+    let ls = shadow.mats[c] * vec4<f32>(p, 1.0);
+    let uv = vec2<f32>(ls.x * 0.5 + 0.5, 0.5 - ls.y * 0.5);
+    let reference = ls.z - texel * (0.7 + 0.5 * tan_t) / shadow.range[c];
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || reference < 0.0 || reference > 1.0) {
+        return 1.0;
+    }
+    let step = 1.0 / shadow.range.w;
+    var sum = 0.0;
+    for (var j = -1; j <= 1; j++) {
+        for (var i = -1; i <= 1; i++) {
+            let at = uv + vec2<f32>(f32(i), f32(j)) * step;
+            sum += textureSampleCompareLevel(shadow_map, shadow_sampler, at, i32(c), reference);
+        }
+    }
+    return sum / 9.0;
+}
+
+// The share of direct sunlight left at `rel` after the shadows cast by terrain and buildings.
+fn shadow_light(rel: vec3<f32>, n: vec3<f32>) -> f32 {
+    let ndl = dot(n, frame.sun.xyz);
+    if (shadow.texel.w <= 0.0 || ndl <= 0.0) {
+        return 1.0;
+    }
+    let d = dot(rel, frame.look.xyz);
+    if (d >= shadow.ends.z) {
+        return 1.0;
+    }
+    var c = 0u;
+    if (d > shadow.ends.x) {
+        c = 1u;
+    }
+    if (d > shadow.ends.y) {
+        c = 2u;
+    }
+    var light = cascade_light(c, rel, n, ndl);
+    if (c < 2u) {
+        // Blend into the next cascade over the last part of this one.
+        let end = shadow.ends[c];
+        let start = end * (1.0 - shadow.ends.w);
+        if (d > start) {
+            light = mix(light, cascade_light(c + 1u, rel, n, ndl), smoothstep(start, end, d));
+        }
+    } else {
+        // Past the last cascade the shadows fade out.
+        light = mix(1.0, light, 1.0 - smoothstep(0.85 * shadow.ends.z, shadow.ends.z, d));
+    }
+    return mix(1.0, light, shadow.texel.w);
+}
+
 // Sunlight. `n` is the surface normal, `g` the normal of the smooth Earth below it. Day
 // and night follow `g`, with a soft twilight; slopes follow `n`.
-fn sun_light(n: vec3<f32>, g: vec3<f32>) -> vec3<f32> {
+fn sun_light(n: vec3<f32>, g: vec3<f32>, rel: vec3<f32>) -> vec3<f32> {
     if (frame.sun.w < 0.5) {
         return vec3<f32>(1.0);
     }
     let s = frame.sun.xyz;
     if (frame.sky.z < 0.5) {
         // No air: a sharp terminator, white light, and only a trace of light on the night side.
-        return vec3<f32>(0.012) + 0.95 * max(dot(n, s), 0.0) * smoothstep(0.0, 0.01, dot(g, s));
+        let day = smoothstep(0.0, 0.01, dot(g, s));
+        var lit = 1.0;
+        if (day > 0.0) {
+            lit = shadow_light(rel, n);
+        }
+        return vec3<f32>(0.012) + 0.95 * max(dot(n, s), 0.0) * day * lit;
     }
     let high = dot(g, s);
     let shade = eclipse_light(g);
-    let direct = max(dot(n, s), 0.0) * smoothstep(-0.02, 0.08, high);
+    let day = smoothstep(-0.02, 0.08, high);
+    // Shadows take away direct sunlight only; the sky light stays.
+    var lit = 1.0;
+    if (day > 0.0) {
+        lit = shadow_light(rel, n);
+    }
+    let direct = max(dot(n, s), 0.0) * day * lit;
     // Sky light fades out until the Sun is about 14 degrees below the horizon.
     let sky = smoothstep(-0.25, 0.1, high);
     let ambient = mix(vec3<f32>(0.045, 0.06, 0.11), vec3<f32>(0.22, 0.24, 0.28), sky);
@@ -108,6 +192,8 @@ struct TileOut {
     @location(1) st: vec2<f32>,
     @location(2) normal: vec3<f32>,
     @location(3) ground: vec3<f32>,
+    // Position relative to the camera.
+    @location(4) rel: vec3<f32>,
 }
 
 @vertex
@@ -125,6 +211,7 @@ fn vs_tile(
     out.st = st;
     out.normal = normal;
     out.ground = normalize(rel + frame.cam.xyz * frame.sky.y);
+    out.rel = rel;
     return out;
 }
 
@@ -142,6 +229,7 @@ fn vs_atlas(
     out.st = st;
     out.normal = normal;
     out.ground = normal;
+    out.rel = vec3<f32>(0.0);
     return out;
 }
 
@@ -160,7 +248,7 @@ fn fs_tile(in: TileOut) -> @location(0) vec4<f32> {
     if (line.a > 0.002) {
         colour = mix(base, srgb_to_linear(clamp(line.rgb / line.a, vec3<f32>(0.0), vec3<f32>(1.0))), line.a);
     }
-    colour = colour * sun_light(normalize(in.normal), normalize(in.ground));
+    colour = colour * sun_light(normalize(in.normal), normalize(in.ground), in.rel);
     return vec4<f32>(colour, 1.0);
 }
 
@@ -194,7 +282,7 @@ fn fs_building(in: BuildingOut) -> @location(0) vec4<f32> {
         n = -n;
     }
     let g = normalize(in.rel + frame.cam.xyz * frame.sky.y);
-    return vec4<f32>(in.colour * sun_light(n, g), 1.0);
+    return vec4<f32>(in.colour * sun_light(n, g, in.rel), 1.0);
 }
 
 // Text labels

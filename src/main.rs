@@ -138,6 +138,7 @@ Usage: orbis [options]
   --no-buildings          start with 3D buildings hidden (key B)
   --time ISO8601          set the clock, such as 2026-06-21T12:00:00Z (default now, UTC)
   --time-speed N          clock seconds per real second (default 1)
+  --no-shadows            start without shadows cast by terrain and buildings (view options, V)
   --no-sun                start with flat, always-lit imagery (key S)
   --no-stars              start with stars, planets and the Moon hidden (key O)
   --no-spacemouse         do not look for a SpaceMouse (spacenavd or USB)
@@ -420,6 +421,10 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
                 a.spacemouse = false;
                 continue;
             }
+            "--no-shadows" => {
+                a.settings.cast_shadows = false;
+                continue;
+            }
             "--no-sun" => {
                 a.settings.sunlight = false;
                 continue;
@@ -650,6 +655,8 @@ struct Scene {
     retries: HashMap<TileKey, (Instant, u32)>,
     missing: HashSet<TileKey>,
     draw: Vec<TileKey>,
+    /// The shadow plan last used with the tiles that cast into it, and what they were chosen for.
+    shadow_cast: Option<(shadows::Plan, u64, usize, Vec<TileKey>)>,
     /// Tiles and overlays the view needs that are not loaded yet.
     waiting: usize,
     /// How many of those have failed before.
@@ -958,6 +965,7 @@ impl Scene {
             retries: HashMap::new(),
             missing: Default::default(),
             draw: Vec::new(),
+            shadow_cast: None,
             waiting: 0,
             retrying: 0,
             overlay_empty: HashSet::new(),
@@ -1854,12 +1862,50 @@ impl Scene {
             }
         }
         r.set_visible_buildings(visible);
+        self.update_shadows(r, aspect_height, atlas);
         self.loader.set_wanted(&wanted, &overlays, &building_jobs);
         // Once everything has arrived, the terrain under the start view is known for good.
         if self.waiting == 0 && self.loader.is_idle() {
             self.nav.finish_start();
         }
         changed
+    }
+
+    /// Plans the shadow maps for this view and finds the loaded tiles that cast into them, drawn or not.
+    fn update_shadows(&mut self, r: &mut Renderer, (aspect, height): (f64, f64), atlas: bool) {
+        r.shadows_on = self.view.cast_shadows;
+        let cam = self.nav.cam;
+        let input = shadows::Input {
+            basis: cam.basis(),
+            aspect,
+            ground_h: cam.target_h,
+            near: cam.near_plane(self.nav.altitude),
+        };
+        let plan = (self.view.cast_shadows && self.view.sunlight && !atlas)
+            .then(|| shadows::plan(&input, r.sun))
+            .flatten();
+        let Some(plan) = plan else {
+            r.set_cast(None);
+            self.shadow_cast = None;
+            return;
+        };
+        let mut hasher = DefaultHasher::new();
+        self.draw.hash(&mut hasher);
+        let (fingerprint, loaded) = (hasher.finish(), r.tile_count());
+        let extra = match self.shadow_cast.take() {
+            Some((p, f, n, extra)) if p == plan && f == fingerprint && n == loaded => extra,
+            _ => {
+                let view = View { basis: input.basis, aspect, height_px: height, max_z: sources::max_tile_z };
+                let pos = input.basis.pos;
+                view.select_in(
+                    &|c, radius| plan.touches(c - pos, radius),
+                    &|k| k.z <= self.draw_max_z && r.has_tile(k),
+                    &self.draw,
+                )
+            }
+        };
+        r.set_cast(Some((plan.clone(), extra.clone())));
+        self.shadow_cast = Some((plan, fingerprint, loaded, extra));
     }
 
     /// Chooses the labels for this frame and hands them to the renderer.
@@ -3380,6 +3426,8 @@ mod tests {
         assert_eq!((a.time, a.time_speed, a.settings.sunlight), (Some(1_782_043_200.0), 60.0, false));
         assert!(parse(&["--time", "noon"]).is_err());
         assert!(parse(&[]).unwrap().unwrap().settings.sunlight);
+        assert!(parse(&[]).unwrap().unwrap().settings.cast_shadows);
+        assert!(!parse(&["--no-shadows"]).unwrap().unwrap().settings.cast_shadows);
         assert!(parse(&[]).unwrap().unwrap().settings.stars);
         assert!(!parse(&["--no-stars"]).unwrap().unwrap().settings.stars);
         let marked = parse(&["--mark-underlay", "--no-stars"]).unwrap().unwrap();

@@ -3,6 +3,7 @@
   "body": "earth",
   "boundaries": true,
   "buildings_3d": true,
+  "cast_shadows": true,
   "cities": true,
   "event_markers": true,
   "frame_rate_limit": 120,

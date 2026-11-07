@@ -177,7 +177,7 @@ sharper imagery near the ground.
   over a soft terminator with twilight, reaching full night when the Sun is about 14° below the horizon.
   Low sunlight is warm.
 - Terrain is shaded by its slope, so slopes facing away from a low Sun fall into shadow. Buildings
-  are shaded by the direction each face points. Cast shadows are not computed.
+  are shaded by the direction each face points. Terrain and buildings also cast shadows (Milestone 15).
 - The night side stays dimly readable. There are no city lights.
 - The atmosphere glow is bright on the day side, warm at dusk and faint at night.
 - With S (or `--no-sun`) everything is shown flat and fully lit, so imagery can be read at night.
@@ -187,7 +187,7 @@ sharper imagery near the ground.
 ### Limitations
 - Imagery already contains the light of the day it was taken, so lit slopes are lit twice.
 - The clock ignores leap seconds and the difference between UT and terrestrial time (under 70 s).
-- No shadows cast by terrain or buildings, no clouds.
+- No clouds. Shadows are limited as described under Milestone 15.
 
 ## Milestone 5b: the sky (done)
 
@@ -523,7 +523,7 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
 - Options are kept in `settings.json`: in the folder given with `--config-dir`, else in `./config/` if the working directory has that folder (the development configuration; `config/settings.json` is committed and holds the defaults), else in `orbis/` in the user's config folder. Saved places and services stay in the user's folder and never go in `./config/`.
 - Order of precedence: defaults, then saved settings, then the command line. A flag applies to that run only and is not written back. Only what the user changes in the session, by dialog or key, is written, one field at a time, and only when something changed, through a temporary file and a rename. A value in the file that is missing, of the wrong kind or unknown to this version is the default for that field, with a warning on standard error; other keys are kept when the file is written; a file that is not JSON is moved to `settings.json.bad`.
 - A `--screenshot` ignores saved settings and saves none, so that pictures are reproducible, unless `--config-dir` is given.
-- Saved: streets, trails, trains, boundaries, cities and towns, other names, 3D buildings, sunlight, stars and planets, event markers, globe or flat map, projection, frame rate limit, the body for the next start, the library service used as the base imagery, and a language code for names (empty follows the system; set in the file only). Not saved: the camera, the clock, which windows are open.
+- Saved: streets, trails, trains, boundaries, cities and towns, other names, 3D buildings, sunlight, cast shadows, stars and planets, event markers, globe or flat map, projection, frame rate limit, the body for the next start, the library service used as the base imagery, and a language code for names (empty follows the system; set in the file only). Not saved: the camera, the clock, which windows are open.
 - Every key that changes one of these goes through the same path, and the dialog shows the live state, whichever way it changed.
 
 ### Map layers
@@ -532,7 +532,7 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
 - Switching a kind of name only filters the labels placed. Switching a kind of line draws the overlays of the tiles in view again from the decoded tiles held in memory, or from the disk cache; nothing is asked of a server for it.
 
 ### View options window
-- The second icon at the bottom right, next to the question mark, and the key V open it; Escape or its close button closes it. It has checkboxes for the six map layers, 3D buildings, sunlight, stars and planets and event markers, a choice of globe or flat map, a choice of projection (usable on the flat map only), a choice of body, a choice of Earth imagery (the usual imagery, or a service of the user's library, on Earth only) and the frame rate limit. Clicking acts at once and is saved.
+- The second icon at the bottom right, next to the question mark, and the key V open it; Escape or its close button closes it. It has checkboxes for the six map layers, 3D buildings, sunlight, cast shadows, stars and planets and event markers, a choice of globe or flat map, a choice of projection (usable on the flat map only), a choice of body, a choice of Earth imagery (the usual imagery, or a service of the user's library, on Earth only) and the frame rate limit. Clicking acts at once and is saved.
 - The window sits at the bottom left and the help window at the bottom right, so both fit side by side at usual sizes; where they would overlap, opening one closes the other.
 - For saved images: `--show-options`, with `--simulate-click`, which now clicks after loading. With `--config-dir DIR` a click writes `DIR/settings.json`, and another run with the same DIR shows the same state.
 - The interface layer has two more kinds of widget: a checkbox and a choice (one option of a group, drawn as a radio button), each of which can be disabled.
@@ -592,13 +592,50 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
 - No marker is drawn at the selected place.
 - The user agent has no contact address, which Wikimedia's policy asks for (see PROVENANCE.md).
 
+## Milestone 15: cast shadows (done)
+
+### Behaviour
+- Terrain and 3D buildings cast shadows. A shadow is found from the height of what casts it and the
+  direction of the Sun, so it points away from the Sun, is long when the Sun is low (a point of height
+  `h` shades the ground `h / tan(elevation)` away) and moves as the clock runs.
+- Only direct sunlight is lost in a shadow. The sky light stays, so a shadow is dim on Earth and almost black
+  on bodies without air. Slope shading, the twilight and the Moon's eclipse shadow work as before and are not
+  darkened twice: a slope turned away from the Sun is already unlit, and a shadow cannot darken it further.
+- Mountains outside the view cast into it: the tiles of terrain that are already loaded towards the
+  Sun are used, up to 300 km along the Sun's rays (so down to a Sun about 2 degrees high for the highest peaks),
+  and buildings that are loaded but off screen cast as well. Nothing is requested for shadows alone.
+- Shadows reach up to 600 km from the camera, in three bands of detail (fine near the camera, coarse far
+  away) that blend into each other without a visible edge. At the far end they fade out over the last
+  15%, and when the nearest ground is over 300 km away they fade out as a whole; from 600 km there is no
+  shadow computation at all. The whole-Earth view is drawn exactly as before.
+- No shadows are computed when the Sun is below the horizon everywhere in view, in the flat, always-lit
+  mode (S, `--no-sun`), on the flat map, when the camera looks only at the sky, or when
+  they are switched off. The setting is "Cast shadows" in the view options window (key V), saved with the
+  other options, and `--no-shadows` starts without them. There is no key.
+- Shadows are only redrawn when a frame is drawn anyway, so an idle window uses no more CPU than before.
+- Their edges are soft by about a texel and do not shimmer while the camera moves, because each band's grid
+  is fixed in the world.
+
+### Limitations
+- Imagery already contains the shadows of the day it was taken, so a shadow can fall on ground already dark,
+  or leave a sunlit patch dark in the picture.
+- Detail is limited by the tiles and building tiles in memory. A mountain behind the camera casts only as
+  finely as the tiles that happen to be loaded there; if none are, it casts nothing. Buildings cast only when their
+  tiles have been loaded for a view of them.
+- Shadows are as fine as a texel of their band: about 1.2 m for a view of Manhattan from 1.5 km, and
+  about a thousandth of the distance farther away. A camera a few metres above the ground gets shadows only out to
+  a few hundred metres.
+- Shadows from things beyond 300 km towards the Sun are lost, as are those from the sphere under the tiles
+  (before any tile has loaded). Trees and other things not in the terrain or the building meshes cast nothing.
+- The shadow maps take 50 MB of graphics memory (three 2048 by 2048 maps of 32-bit depth), made when shadows are
+  first drawn and freed when they are turned off.
+
 ## Later milestones
 
 Order and scope are open, and depend on which features are wanted.
 
 | # | Feature | Notes |
 |---|---|---|
-| M15 | Cast shadows | Terrain and buildings cast shadows calculated from their height and the Sun's position |
 | M16 | Time slider | A slider for travelling in time, moving the Sun, Moon and planets continuously, and with them shadows, day and night, and solar and lunar eclipses. Depends on M11, and on M15 for shadows. Dates beyond the range of the planet formulae (about 1800 to 2050) are limited or marked as less accurate |
 
 Out of scope: Apple Vision Pro streaming, Quick Look and Share extensions, Sparkle updates.
