@@ -25,9 +25,25 @@ struct Frame {
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 
+// The fraction of the area of a disc of radius `s` that a disc of radius `r` covers, their centres
+// `d` apart. Light follows the covered area, not the covered width.
+fn sun_covered(s: f32, r: f32, d: f32) -> f32 {
+    if (s <= 0.0 || d >= s + r) {
+        return 0.0;
+    }
+    if (d <= abs(r - s)) {
+        return select(r * r / (s * s), 1.0, r >= s);
+    }
+    let ca = clamp((d * d + s * s - r * r) / (2.0 * d * s), -1.0, 1.0);
+    let cb = clamp((d * d + r * r - s * s) / (2.0 * d * r), -1.0, 1.0);
+    let k = (s + r - d) * (d + s - r) * (d - s + r) * (d + s + r);
+    let area = s * s * acos(ca) + r * r * acos(cb) - 0.5 * sqrt(max(k, 0.0));
+    return clamp(area / (3.14159265 * s * s), 0.0, 1.0);
+}
+
 // How much of the sunlight the Moon's shadow lets through at the Earth-fixed direction `g`.
-// The radii follow the cones at the ground point's height along the axis, and the fraction of
-// the Sun's diameter that is covered is that of Espenak's local magnitude, (L1 - m) / (L1 + L2).
+// The radii follow the cones at the ground point's height along the axis (Espenak's Besselian
+// L1 and L2), and the light left is the fraction of the Sun's disc that stays uncovered.
 fn eclipse_light(g: vec3<f32>) -> f32 {
     if (frame.eclipse_axis.w < 0.5) {
         return 1.0;
@@ -46,10 +62,11 @@ fn eclipse_light(g: vec3<f32>) -> f32 {
     let l1 = max((frame.eclipse_cones.y - zeta) * frame.eclipse_cones.w, 1e-4);
     // Negative where the umbra reaches the ground, positive in the antumbra.
     let l2 = (frame.eclipse_cones.x - zeta) * frame.eclipse_cones.z;
-    let covered = clamp((l1 - m) / max(l1 + l2, 1e-4), 0.0, 1.0);
-    // The covered area of the Sun's disc grows faster than the covered width, roughly as its
-    // 1.6th power. A trace of light stays in totality: the corona and the lit sky beyond.
-    return mix(1.0, 0.035, pow(covered, 1.6));
+    // With the Sun's radius s and the Moon's r as seen from here (in the cones' units), the
+    // penumbra radius is s + r and the umbra's signed radius s - r, and m is their separation.
+    let s = 0.5 * (l1 + l2);
+    let r = 0.5 * (l1 - l2);
+    return 1.0 - sun_covered(s, r, m);
 }
 
 // Sunlight. `n` is the surface normal, `g` the normal of the smooth Earth below it. Day
@@ -71,8 +88,8 @@ fn sun_light(n: vec3<f32>, g: vec3<f32>) -> vec3<f32> {
     let ambient = mix(vec3<f32>(0.045, 0.06, 0.11), vec3<f32>(0.22, 0.24, 0.28), sky);
     // Low sunlight is warm.
     let warm = mix(vec3<f32>(1.0, 0.62, 0.38), vec3<f32>(1.0), smoothstep(0.0, 0.35, high));
-    // In the shadow the sky light dims too, but the lit sky around keeps some.
-    return ambient * mix(0.3, 1.0, shade) + 0.8 * warm * direct * shade;
+    // The sky light is sunlight scattered, so it dims with the Sun; a trace stays in totality.
+    return ambient * mix(0.03, 1.0, shade) + 0.8 * warm * direct * shade;
 }
 
 // Tiles
