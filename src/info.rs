@@ -88,7 +88,7 @@ pub fn window_panel(model: Shared) -> Panel {
 
 /// Closes the box for its close button; anything else clicked in it comes back as an action.
 pub fn handle(ui: &mut Ui, event: UiEvent) -> (bool, Option<Action>) {
-    let UiEvent::Clicked { panel, widget } = event;
+    let UiEvent::Clicked { panel, widget } = event else { return (false, None) };
     match (panel, widget) {
         (WINDOW, CLOSE_BUTTON) => ui.set_visible(WINDOW, false),
         (WINDOW, OPEN_BUTTON) => return (true, Some(Action::OpenBrowser)),

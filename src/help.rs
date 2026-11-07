@@ -57,6 +57,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("- and =", "Slow down or speed up the clock"),
             (", and .", "Step the clock back or forward an hour (a day with Shift)"),
             ("T", "Back to the real time at normal speed"),
+            ("C", "Time window: sliders for the year, the day and the time of day; eclipse buttons"),
         ],
     ),
     (

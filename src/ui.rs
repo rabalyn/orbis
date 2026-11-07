@@ -46,6 +46,8 @@ pub enum Tone {
     Heading,
     Key,
     Dim,
+    /// Something is wrong or approximate and should be seen.
+    Warn,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -57,6 +59,11 @@ pub enum Kind {
     Checkbox { label: String, checked: bool, enabled: bool },
     /// One option of a group of which one is chosen. The whole row clicks.
     Choice { label: String, chosen: bool, enabled: bool },
+    /// A bar with a thumb, `pos` from 0 to 1 along it. The thumb is `thumb_w` wide, so the
+    /// thumb's left edge moves over `rect.w - thumb_w`. Dragged by the pointer; a wheel notch steps it.
+    Slider { pos: f64, thumb_w: f64 },
+    /// A clock face that clicks like a button, for the icon that opens the time dialog.
+    ClockFace,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -84,13 +91,37 @@ impl Widget {
         Self { id, rect, kind: Kind::Choice { label: label.to_string(), chosen, enabled } }
     }
 
+    pub fn slider(id: WidgetId, rect: Rect, pos: f64, thumb_w: f64) -> Self {
+        Self { id, rect, kind: Kind::Slider { pos, thumb_w } }
+    }
+
+    pub fn clock_face(id: WidgetId, rect: Rect) -> Self {
+        Self { id, rect, kind: Kind::ClockFace }
+    }
+
     fn clickable(&self) -> bool {
         match self.kind {
             Kind::Label { .. } => false,
-            Kind::Button { .. } => true,
+            Kind::Button { .. } | Kind::Slider { .. } | Kind::ClockFace => true,
             Kind::Checkbox { enabled, .. } | Kind::Choice { enabled, .. } => enabled,
         }
     }
+}
+
+/// The thumb of a slider in `rect`, for a position from 0 to 1.
+pub fn slider_thumb(rect: Rect, thumb_w: f64, pos: f64) -> Rect {
+    let travel = (rect.w - thumb_w).max(0.0);
+    Rect::new(rect.x + pos.clamp(0.0, 1.0) * travel, rect.y, thumb_w.min(rect.w), rect.h)
+}
+
+/// The position a slider takes when the pointer is at `x` (in the slider's coordinates) holding
+/// the thumb `grab` from its left edge.
+pub fn slider_pos(rect: Rect, thumb_w: f64, x: f64, grab: f64) -> f64 {
+    let travel = rect.w - thumb_w;
+    if travel <= 0.0 {
+        return 0.0;
+    }
+    ((x - grab - rect.x) / travel).clamp(0.0, 1.0)
 }
 
 /// The scrolling part of a panel.
@@ -210,9 +241,25 @@ impl Panel {
     }
 }
 
+/// How a slider drag begins and ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Drag {
+    /// The pointer went down on the thumb: the value stays where it is.
+    Grab,
+    /// The pointer went down on the bar beside the thumb: the thumb jumps there and follows.
+    Jump,
+    Move,
+    /// The button was let go.
+    End,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum UiEvent {
     Clicked { panel: PanelId, widget: WidgetId },
+    /// A slider was dragged to `pos` (0 to 1).
+    Slid { panel: PanelId, widget: WidgetId, pos: f64, drag: Drag },
+    /// The wheel over a slider: `steps` notches, positive for up.
+    Stepped { panel: PanelId, widget: WidgetId, steps: i32 },
 }
 
 /// What the interface made of an input.
@@ -238,6 +285,8 @@ enum Held {
     Widget { panel: usize, id: WidgetId },
     /// `grab` is the pointer's distance below the thumb's top.
     Thumb { panel: usize, grab: f64 },
+    /// `grab` is the pointer's distance right of the slider thumb's left edge.
+    Slider { panel: usize, id: WidgetId, grab: f64 },
     Surface,
 }
 
@@ -371,7 +420,7 @@ impl Ui {
             self.hover = None;
         }
         for h in &mut self.held {
-            if matches!(*h, Some(Held::Widget { panel, .. } | Held::Thumb { panel, .. }) if panel == i) {
+            if matches!(*h, Some(Held::Widget { panel, .. } | Held::Thumb { panel, .. } | Held::Slider { panel, .. }) if panel == i) {
                 *h = Some(Held::Surface);
             }
         }
@@ -384,8 +433,25 @@ impl Ui {
     pub(crate) fn pressed(&self, panel: usize) -> Option<WidgetId> {
         match self.held[0] {
             Some(Held::Widget { panel: p, id }) if p == panel && self.hover == Some((p, id)) => Some(id),
+            Some(Held::Slider { panel: p, id, .. }) if p == panel => Some(id),
             _ => None,
         }
+    }
+
+    /// The slider being dragged, if any.
+    pub fn slider_held(&self) -> Option<(PanelId, WidgetId)> {
+        match self.held[0] {
+            Some(Held::Slider { panel, id, .. }) => Some((self.panels[panel].id, id)),
+            _ => None,
+        }
+    }
+
+    /// The slider with this id in the panel's fixed widgets: its rectangle, thumb width and position.
+    fn slider_of(&self, panel: usize, id: WidgetId) -> Option<(Rect, f64, f64)> {
+        self.panels[panel].fixed.iter().find_map(|w| match w.kind {
+            Kind::Slider { pos, thumb_w } if w.id == id => Some((w.rect, thumb_w, pos)),
+            _ => None,
+        })
     }
 
     pub(crate) fn thumb_held(&self, panel: usize) -> bool {
@@ -444,6 +510,15 @@ impl Ui {
             let redraw = self.drag_thumb(panel, top);
             return Response { consumed: true, redraw, event: None };
         }
+        if let Some(Held::Slider { panel, id, grab }) = self.held[0] {
+            let event = self.slider_of(panel, id).map(|(rect, thumb_w, _)| UiEvent::Slid {
+                panel: self.panels[panel].id,
+                widget: id,
+                pos: slider_pos(rect, thumb_w, self.panels[panel].local(p).x, grab),
+                drag: Drag::Move,
+            });
+            return Response { consumed: true, redraw: event.is_some(), event };
+        }
         let now = match self.hit(p) {
             Some((i, Target::Widget(id))) => Some((i, id)),
             _ => None,
@@ -462,9 +537,25 @@ impl Ui {
         let Some((i, target)) = self.hit(p) else { return Response::default() };
         let left = b == Button::Left;
         let mut held = Held::Surface;
+        let mut event = None;
         if left {
             match target {
-                Target::Widget(id) => held = Held::Widget { panel: i, id },
+                Target::Widget(id) => {
+                    held = Held::Widget { panel: i, id };
+                    if let Some((rect, thumb_w, pos)) = self.slider_of(i, id) {
+                        let x = self.panels[i].local(p).x;
+                        let thumb = slider_thumb(rect, thumb_w, pos);
+                        let on_thumb = x >= thumb.x && x < thumb.x + thumb.w;
+                        let grab = if on_thumb { x - thumb.x } else { thumb_w / 2.0 };
+                        held = Held::Slider { panel: i, id, grab };
+                        event = Some(UiEvent::Slid {
+                            panel: self.panels[i].id,
+                            widget: id,
+                            pos: if on_thumb { pos } else { slider_pos(rect, thumb_w, x, grab) },
+                            drag: if on_thumb { Drag::Grab } else { Drag::Jump },
+                        });
+                    }
+                }
                 Target::Thumb | Target::Track => {
                     if target == Target::Track {
                         // A click on the track centres the thumb there, and carries on as a drag.
@@ -480,7 +571,7 @@ impl Ui {
         }
         self.held[slot(b)] = Some(held);
         self.panels[i].version += 1;
-        Response { consumed: true, redraw: true, event: None }
+        Response { consumed: true, redraw: true, event }
     }
 
     pub fn release(&mut self, b: Button, p: DVec2) -> Response {
@@ -493,13 +584,27 @@ impl Ui {
             }
         } else if let Held::Thumb { panel, .. } = held {
             self.panels[panel].version += 1;
+        } else if let Held::Slider { panel, id, grab } = held {
+            self.panels[panel].version += 1;
+            if let Some((rect, thumb_w, _)) = self.slider_of(panel, id) {
+                let pos = slider_pos(rect, thumb_w, self.panels[panel].local(p).x, grab);
+                event = Some(UiEvent::Slid { panel: self.panels[panel].id, widget: id, pos, drag: Drag::End });
+            }
         }
         Response { consumed: true, redraw: true, event }
     }
 
     /// The wheel over a panel scrolls its body, if it has one that needs it. Positive is up.
     pub fn wheel(&mut self, lines: f64, p: DVec2) -> Response {
-        let Some((i, _)) = self.hit(p) else { return Response::default() };
+        let Some((i, target)) = self.hit(p) else { return Response::default() };
+        if let Target::Widget(id) = target {
+            if self.slider_of(i, id).is_some() && lines != 0.0 {
+                // A small scroll still moves one notch.
+                let steps = if lines.abs() < 1.0 { lines.signum() as i32 } else { lines.round() as i32 };
+                let event = UiEvent::Stepped { panel: self.panels[i].id, widget: id, steps };
+                return Response { consumed: true, redraw: false, event: Some(event) };
+            }
+        }
         let mut redraw = false;
         if let Some(body) = &mut self.panels[i].body {
             let before = body.offset;
@@ -764,5 +869,111 @@ mod tests {
         let r = ui.release(Button::Left, ON_BTN);
         assert!(r.consumed);
         assert_eq!(r.event, None);
+    }
+
+    const SLIDER: WidgetId = 9;
+
+    /// A 200 px bar with a 10 px thumb at the bottom left of a 300x100 screen.
+    fn slider_layout(p: &mut Panel, m: &Metrics) {
+        let (x, y) = (10.0 * m.scale, 10.0 * m.scale);
+        p.rect = Rect::new(x, y, 220.0 * m.scale, 30.0 * m.scale);
+        let pos = p.fixed.first().and_then(|w| match w.kind {
+            Kind::Slider { pos, .. } => Some(pos),
+            _ => None,
+        });
+        p.fixed = vec![Widget::slider(SLIDER, Rect::new(10.0 * m.scale, 5.0 * m.scale, 200.0 * m.scale, 12.0 * m.scale), pos.unwrap_or(0.25), 10.0 * m.scale)];
+    }
+
+    fn slider_ui(scale: f64) -> Ui {
+        let mut ui = Ui::new();
+        ui.resize(DVec2::new(300.0 * scale, 100.0 * scale), scale);
+        ui.add(Panel::new("sl", true, slider_layout));
+        ui.set_visible("sl", true);
+        ui
+    }
+
+    /// Where the thumb of the slider is on the screen, as its left edge and middle height.
+    fn thumb_at(ui: &Ui, scale: f64) -> DVec2 {
+        let p = &ui.panels()[0];
+        let Kind::Slider { pos, thumb_w } = p.fixed[0].kind else { panic!() };
+        let t = slider_thumb(p.fixed[0].rect, thumb_w, pos);
+        DVec2::new(p.rect.x + t.x, p.rect.y + t.y + 6.0 * scale)
+    }
+
+    fn slid(r: &Response) -> (f64, Drag) {
+        match r.event {
+            Some(UiEvent::Slid { pos, drag, .. }) => (pos, drag),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn grabbing_the_thumb_does_not_move_it_and_the_drag_keeps_the_grab_offset() {
+        for scale in [1.0, 2.0] {
+            let mut ui = slider_ui(scale);
+            let thumb = thumb_at(&ui, scale);
+            // 190 px of travel at scale 1: the thumb is at a quarter of it. Grab 3 design pixels in.
+            let grab = thumb + DVec2::new(3.0 * scale, 0.0);
+            let r = ui.press(Button::Left, grab);
+            assert!(r.consumed);
+            let (pos, drag) = slid(&r);
+            assert_eq!(drag, Drag::Grab);
+            assert!((pos - 0.25).abs() < 1e-9, "no jump on grab at scale {scale}: {pos}");
+            assert_eq!(ui.slider_held(), Some(("sl", SLIDER)));
+            // Moving by a tenth of the travel moves the position by a tenth, wherever the grab was.
+            let r = ui.pointer_moved(grab + DVec2::new(19.0 * scale, 40.0 * scale));
+            let (pos, drag) = slid(&r);
+            assert_eq!(drag, Drag::Move);
+            assert!(r.consumed && r.redraw);
+            assert!((pos - 0.35).abs() < 1e-9, "{pos}");
+            // Past either end it stops at the end.
+            assert_eq!(slid(&ui.pointer_moved(DVec2::new(5000.0, 0.0))).0, 1.0);
+            assert_eq!(slid(&ui.pointer_moved(DVec2::new(-5000.0, 0.0))).0, 0.0);
+            let r = ui.release(Button::Left, DVec2::new(-5000.0, 0.0));
+            assert_eq!(slid(&r), (0.0, Drag::End));
+            assert_eq!(ui.slider_held(), None);
+            assert!(!ui.pointer_moved(grab).consumed, "the pointer is the map's again");
+        }
+    }
+
+    #[test]
+    fn a_press_on_the_bar_jumps_the_thumb_under_the_pointer_and_drags_on() {
+        for scale in [1.0, 2.0] {
+            let mut ui = slider_ui(scale);
+            let p = ui.panels()[0].rect;
+            // Bar runs from panel x + 10 to + 210 design pixels; the thumb centre is the pointer.
+            let target = DVec2::new(p.x + (10.0 + 5.0 + 0.5 * 190.0) * scale, p.y + 11.0 * scale);
+            let (pos, drag) = slid(&ui.press(Button::Left, target));
+            assert_eq!(drag, Drag::Jump);
+            assert!((pos - 0.5).abs() < 1e-9, "{pos}");
+            let (pos, _) = slid(&ui.pointer_moved(target + DVec2::new(19.0 * scale, 0.0)));
+            assert!((pos - 0.6).abs() < 1e-9, "{pos}");
+        }
+    }
+
+    #[test]
+    fn the_wheel_over_a_slider_steps_and_elsewhere_in_the_panel_does_nothing() {
+        let mut ui = slider_ui(1.0);
+        let on = thumb_at(&ui, 1.0);
+        let r = ui.wheel(2.0, on);
+        assert!(r.consumed);
+        assert!(matches!(r.event, Some(UiEvent::Stepped { widget: SLIDER, steps: 2, .. })));
+        let r = ui.wheel(-0.2, on);
+        assert!(matches!(r.event, Some(UiEvent::Stepped { steps: -1, .. })), "a small scroll is one notch");
+        let off = DVec2::new(ui.panels()[0].rect.x + 3.0, ui.panels()[0].rect.y + 28.0);
+        let r = ui.wheel(1.0, off);
+        assert!(r.consumed && r.event.is_none());
+    }
+
+    #[test]
+    fn closing_a_panel_during_a_slider_drag_lets_go_of_it() {
+        let mut ui = slider_ui(1.0);
+        let on = thumb_at(&ui, 1.0) + DVec2::new(2.0, 0.0);
+        ui.press(Button::Left, on);
+        assert!(ui.slider_held().is_some());
+        ui.set_visible("sl", false);
+        assert_eq!(ui.slider_held(), None);
+        let r = ui.release(Button::Left, on);
+        assert!(r.consumed && r.event.is_none());
     }
 }

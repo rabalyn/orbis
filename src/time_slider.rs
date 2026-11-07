@@ -226,7 +226,7 @@ impl EclipseWatch {
                     SolarKind::Hybrid => "Hybrid",
                     SolarKind::Partial => "Partial",
                 };
-                Some(format!("{kind} solar eclipse, greatest {} UTC", clock(s.time)))
+                Some(format!("{kind} solar eclipse, greatest {}", clock(s.time)))
             }
             Eclipse::Lunar(l) => {
                 let (umbral, penumbral) = eclipse::lunar_magnitudes(time);

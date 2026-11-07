@@ -116,7 +116,7 @@ pub fn window_panel(model: Shared) -> Panel {
 /// Opens or closes the dialog for a click on the icon or its close button. Anything else that
 /// the dialog was clicked for is returned as an action.
 pub fn handle(ui: &mut Ui, model: &Shared, event: UiEvent) -> (bool, Option<Action>) {
-    let UiEvent::Clicked { panel, widget } = event;
+    let UiEvent::Clicked { panel, widget } = event else { return (false, None) };
     match (panel, widget) {
         (ICON, OPEN_BUTTON) => ui.toggle(WINDOW),
         (WINDOW, CLOSE_BUTTON) => ui.set_visible(WINDOW, false),
@@ -153,11 +153,17 @@ fn action_for(id: WidgetId, m: &Model) -> Option<Action> {
 
 const COLS: usize = 40;
 
+/// Width of the dialog, which other dialogs beside it need to know.
+pub fn window_width(m: &Metrics) -> f64 {
+    let (glyph, pad, margin, bar_w) = (8.0 * m.scale, 6.0 * m.scale, 8.0 * m.scale, 6.0 * m.scale);
+    (m.screen.x - 2.0 * margin).min(COLS as f64 * glyph + 2.0 * pad + bar_w).max(14.0 * glyph)
+}
+
 fn layout(p: &mut Panel, m: &Metrics, model: &Model) {
     let s = m.scale;
     let (glyph, step, pad) = (8.0 * s, 10.0 * s, 6.0 * s);
     let (row, margin, bar_w, header) = (12.0 * s, 8.0 * s, 6.0 * s, 18.0 * s);
-    let w = (m.screen.x - 2.0 * margin).min(COLS as f64 * glyph + 2.0 * pad + bar_w).max(14.0 * glyph);
+    let w = window_width(m);
     let cols = (((w - 2.0 * pad - bar_w) / glyph) as usize).max(10);
     let inner = w - 2.0 * pad - bar_w;
     let st = &model.settings;

@@ -1,7 +1,7 @@
 //! Paints a panel of the interface into an RGBA image, with the built-in bitmap font.
 
 use crate::text::glyph;
-use crate::ui::{Kind, Panel, Rect, Tone, Ui, Widget, WidgetId};
+use crate::ui::{slider_thumb, Kind, Panel, Rect, Tone, Ui, Widget, WidgetId};
 
 type Color = [u8; 4];
 
@@ -20,6 +20,7 @@ fn tone(t: Tone) -> Color {
         Tone::Heading => [255, 215, 120, 255],
         Tone::Key => [150, 210, 255, 255],
         Tone::Dim => [180, 180, 180, 255],
+        Tone::Warn => [255, 150, 90, 255],
     }
 }
 
@@ -142,6 +143,25 @@ fn widget(cv: &mut Canvas, w: &Widget, origin: (f64, f64), scale: usize, hover: 
                     cv.disc(Rect::new(b.x + q, b.y + q, b.w - 2.0 * q, b.h - 2.0 * q), true, c);
                 }
             });
+        }
+        Kind::Slider { pos, thumb_w } => {
+            let t = scale.max(1) as f64;
+            cv.fill(Rect::new(r.x, r.y + (r.h - 2.0 * t) / 2.0, r.w, 2.0 * t), [255, 255, 255, 70]);
+            let c = if pressed { THUMB_HELD } else if hover { [255, 255, 255, 160] } else { THUMB };
+            cv.fill(slider_thumb(r, *thumb_w, *pos), c);
+        }
+        Kind::ClockFace => {
+            let bg = if pressed { BUTTON_PRESSED } else if hover { BUTTON_HOVER } else { BUTTON };
+            cv.fill(r, bg);
+            let t = scale.max(1) as f64;
+            let white = tone(Tone::Normal);
+            let face = Rect::new(r.x + 4.0 * t, r.y + 4.0 * t, r.w - 8.0 * t, r.h - 8.0 * t);
+            cv.disc(face, false, white);
+            let (cx, cy, rad) = (face.x + face.w / 2.0, face.y + face.h / 2.0, face.w / 2.0);
+            // Minute hand up, hour hand towards four o'clock, and a dot in the middle.
+            cv.fill(Rect::new(cx - t / 2.0, cy - rad * 0.7, t, rad * 0.7), white);
+            cv.fill(Rect::new(cx, cy, rad * 0.45, t), white);
+            cv.fill(Rect::new(cx - t, cy - t, 2.0 * t, 2.0 * t), white);
         }
         Kind::Label { text, tone: t } => cv.text(r.x, r.y, text, scale, tone(*t)),
         Kind::Button { label, text_mult } => {

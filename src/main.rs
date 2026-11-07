@@ -48,6 +48,7 @@ mod service_lib;
 mod services;
 mod sources;
 mod text;
+mod time_dialog;
 mod time_slider;
 mod ui;
 mod ui_draw;
@@ -188,9 +189,13 @@ Usage: orbis [options]
   --services-panel        with --screenshot, also show the list of map services
   --show-help             with --screenshot, also show the help window (key H)
   --show-options          with --screenshot, also show the view options dialog (key V)
+  --show-time             with --screenshot, also show the time dialog (key C)
   --help-scroll N         with --screenshot, scroll the help window down by N wheel notches (implies --show-help)
   --simulate-click X,Y    with --screenshot, click there (pixels from the top left) before the image is taken,
                           through the same code as a real click; repeatable, in order
+  --simulate-drag X1,Y1,X2,Y2  with --screenshot, press at the first point, move to the second in steps and let go,
+                          through the same code as the mouse (to drag a slider of the time dialog); repeatable,
+                          done after the clicks
   --simulate-double-click X,Y  likewise a double click: flies there smoothly, and the image is taken at the
                           end of the flight (a label under the point is flown to, else the ground)
   --flight-stop-at T      with --simulate-double-click, take the image T seconds into the flight instead
@@ -265,6 +270,8 @@ struct Args {
     services: service_ui::Cli,
     show_help: bool,
     show_options: bool,
+    show_time: bool,
+    simulate_drags: Vec<(DVec2, DVec2)>,
     help_scroll: f64,
     simulate_clicks: Vec<DVec2>,
     simulate_doubles: Vec<DVec2>,
@@ -347,6 +354,8 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
         services: Default::default(),
         show_help: false,
         show_options: false,
+        show_time: false,
+        simulate_drags: Vec::new(),
         help_scroll: 0.0,
         simulate_clicks: Vec::new(),
         simulate_doubles: Vec::new(),
@@ -468,6 +477,10 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
             }
             "--show-options" => {
                 a.show_options = true;
+                continue;
+            }
+            "--show-time" => {
+                a.show_time = true;
                 continue;
             }
             "--services-panel" => {
@@ -611,6 +624,11 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
                 let n = |v: &str| v.trim().parse::<f64>().context("--simulate-click expects X,Y");
                 a.simulate_clicks.push(DVec2::new(n(x)?, n(y)?));
             }
+            "--simulate-drag" => {
+                let n: Vec<f64> = value.split(',').map(|v| v.trim().parse::<f64>()).collect::<Result<_, _>>().context("--simulate-drag expects X1,Y1,X2,Y2")?;
+                let [x1, y1, x2, y2] = n[..] else { bail!("--simulate-drag expects X1,Y1,X2,Y2") };
+                a.simulate_drags.push((DVec2::new(x1, y1), DVec2::new(x2, y2)));
+            }
             "--save-place" => a.save_place = Some(value.clone()),
             "--geocoder-url" => {
                 if !value.starts_with("http://") && !value.starts_with("https://") {
@@ -694,6 +712,8 @@ struct Scene {
     lines_version: u64,
     /// What the view options dialog shows; filled from the live state before each frame.
     options: options::Shared,
+    time_model: time_dialog::Shared,
+    eclipse_watch: time_slider::EclipseWatch,
     /// The planets and the Moon as of `bodies_time`.
     bodies: Vec<planets::Body>,
     bodies_time: f64,
@@ -996,6 +1016,8 @@ impl Scene {
             lines_drawn: LineKinds::of(&args.settings),
             lines_version: 0,
             options: Default::default(),
+            time_model: Default::default(),
+            eclipse_watch: Default::default(),
             bodies: Vec::new(),
             bodies_time: f64::NEG_INFINITY,
             bodies_pos: DVec3::ZERO,
@@ -1012,6 +1034,8 @@ impl Scene {
         scene.ui.add(options::icon_panel());
         scene.ui.add(options::window_panel(scene.options.clone()));
         scene.ui.add(info::window_panel(scene.info.clone()));
+        scene.ui.add(time_dialog::icon_panel());
+        scene.ui.add(time_dialog::window_panel(scene.time_model.clone()));
         scene
     }
 
@@ -1095,7 +1119,78 @@ impl Scene {
 
     fn separate_dialogs(&mut self, opened: ui::PanelId) {
         self.sync_options();
-        self.ui.close_overlapping(opened, &[help::WINDOW, options::WINDOW, info::WINDOW]);
+        self.sync_time_dialog();
+        self.ui.close_overlapping(opened, &[help::WINDOW, options::WINDOW, info::WINDOW, time_dialog::WINDOW]);
+    }
+
+    /// Keeps the time dialog true to the clock, whatever moved it. A drag that ended without the
+    /// release reaching the slider (the dialog was closed) lets the clock go.
+    fn sync_time_dialog(&mut self) {
+        if self.clock.is_held() && self.ui.slider_held().is_none() {
+            self.clock.release();
+        }
+        if !self.ui.is_visible(time_dialog::WINDOW) {
+            return;
+        }
+        self.clock.advance(self.clock_epoch.elapsed().as_secs_f64());
+        let time = self.clock.time();
+        let earth = body::current().id == body::EARTH.id;
+        let model = time_dialog::Model {
+            time: (time / 60.0).floor() * 60.0,
+            reading: self.clock.reading(),
+            running: self.clock.is_running(),
+            earth,
+            eclipse: if earth { self.eclipse_watch.status(time) } else { None },
+        };
+        if *self.time_model.borrow() != model {
+            *self.time_model.borrow_mut() = model;
+            self.ui.refresh(time_dialog::WINDOW);
+        }
+    }
+
+    /// Carries out what the time dialog asked of the clock. True if the picture changes.
+    fn time_action(&mut self, action: time_dialog::Action) -> bool {
+        use time_dialog::Action;
+        self.clock.advance(self.clock_epoch.elapsed().as_secs_f64());
+        let before = self.clock.time();
+        let at = |s: &mut Self, t: f64| s.clock.set_time(t);
+        match action {
+            Action::Begin(track, pos) => {
+                self.clock.hold();
+                if let Some(p) = pos {
+                    at(self, time_slider::set_position(track, before, p));
+                }
+            }
+            Action::Set(track, pos) => at(self, time_slider::set_position(track, before, pos)),
+            Action::End => self.clock.release(),
+            Action::Step(track, n) => at(self, time_slider::step(track, before, n as i64)),
+            Action::Now => {
+                self.clock.release();
+                self.sky_key(ClockKey::Now);
+            }
+            Action::PauseRun => self.sky_key(ClockKey::PauseResume),
+            Action::PreviousEclipse | Action::NextEclipse => {
+                let found = match action {
+                    Action::NextEclipse => time_slider::next_eclipse(before),
+                    _ => time_slider::previous_eclipse(before),
+                };
+                if let Some(t) = found.filter(|_| body::current().id == body::EARTH.id) {
+                    self.clock.stop_at(t);
+                }
+            }
+        }
+        self.sync_time_dialog();
+        // A move of the pointer along a slider that leaves the time as it was needs no new picture.
+        !matches!(action, Action::Set(..)) || self.clock.time() != before
+    }
+
+    /// An event from the interface that the time dialog may be the owner of.
+    fn time_event(&mut self, event: ui::UiEvent) -> bool {
+        let (handled, action) = time_dialog::handle(&mut self.ui, event);
+        if handled && matches!(event, ui::UiEvent::Clicked { .. }) {
+            self.separate_dialogs(time_dialog::WINDOW);
+        }
+        action.is_some_and(|a| self.time_action(a))
     }
 
     /// Notes what the user changed since the last call, and saves it. A value that only the
@@ -1119,6 +1214,9 @@ impl Scene {
     fn mouse_moved(&mut self, pos: DVec2) -> bool {
         self.pointer = pos;
         let r = self.ui.pointer_moved(pos);
+        if let Some(e) = r.event {
+            return self.time_event(e);
+        }
         if r.consumed {
             return r.redraw;
         }
@@ -1133,6 +1231,9 @@ impl Scene {
 
     fn mouse_pressed(&mut self, b: Button, mods: Mods) -> bool {
         let r = self.ui.press(b, self.pointer);
+        if let Some(e) = r.event {
+            self.time_event(e);
+        }
         if r.consumed {
             return true;
         }
@@ -1163,6 +1264,7 @@ impl Scene {
             if help::handle(&mut self.ui, event) {
                 self.separate_dialogs(help::WINDOW);
             }
+            self.time_event(event);
             let (_, action) = options::handle(&mut self.ui, &self.options, event);
             self.separate_dialogs(options::WINDOW);
             if let Some(a) = action {
@@ -1193,6 +1295,9 @@ impl Scene {
 
     fn mouse_wheel(&mut self, lines: f64, mods: Mods) -> bool {
         let r = self.ui.wheel(lines, self.pointer);
+        if let Some(e) = r.event {
+            return self.time_event(e);
+        }
         if r.consumed {
             return r.redraw;
         }
@@ -1348,6 +1453,18 @@ impl Scene {
             self.mouse_pressed(Button::Left, Mods::default());
             self.mouse_released(Button::Left, Mods::default());
         }
+    }
+
+    /// A left drag between two points, as the window would deliver it: the pointer goes down at the
+    /// first, moves in steps and is let go at the second.
+    fn simulate_drag(&mut self, from: DVec2, to: DVec2) {
+        const STEPS: usize = 8;
+        self.mouse_moved(from);
+        self.mouse_pressed(Button::Left, Mods::default());
+        for i in 1..=STEPS {
+            self.mouse_moved(from + (to - from) * (i as f64 / STEPS as f64));
+        }
+        self.mouse_released(Button::Left, Mods::default());
     }
 
     /// A left click at a point, as the window would deliver it.
@@ -2128,6 +2245,7 @@ impl Scene {
     fn set_panels(&mut self, r: &mut Renderer, width: u32, height: u32, scale: usize) {
         self.ui.resize(DVec2::new(width as f64, height as f64), scale as f64);
         self.sync_options();
+        self.sync_time_dialog();
         let columns = ((width as usize).saturating_sub(40) / (8 * scale)).max(20);
         // The icons sit at the bottom right, so the credits wrap in the space left of them.
         let icons = self.ui.icons_width() as usize;
@@ -2513,6 +2631,9 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     if args.show_options {
         scene.ui.set_visible(options::WINDOW, true);
     }
+    if args.show_time {
+        scene.ui.set_visible(time_dialog::WINDOW, true);
+    }
     if args.show_help {
         scene.ui.set_visible(help::WINDOW, true);
         if let Some(r) = scene.ui.panels().iter().find(|p| p.id == help::WINDOW).map(|p| p.rect) {
@@ -2526,6 +2647,7 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     // credits, which dialogs sit above, depend on the tiles that arrived.
     let mut clicks = args.simulate_clicks.iter();
     let mut doubles = args.simulate_doubles.iter();
+    let mut drags = args.simulate_drags.iter();
     // Seconds of flight played so far, while a flight is to be stopped in its middle.
     let mut flight_clock: Option<f64> = None;
 
@@ -2554,13 +2676,17 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
         } else if quiet_since.elapsed() > Duration::from_millis(300) {
             let pending: Vec<DVec2> = clicks.by_ref().copied().collect();
             let double: Vec<DVec2> = doubles.by_ref().copied().collect();
-            if pending.is_empty() && double.is_empty() {
+            let dragged: Vec<(DVec2, DVec2)> = drags.by_ref().copied().collect();
+            if pending.is_empty() && double.is_empty() && dragged.is_empty() {
                 break;
             }
             // Clicks land on the labels the picture will show, not on an earlier choice.
             scene.settle_labels(&mut r, (width, height), step);
             for pos in pending {
                 scene.simulate_click(pos);
+            }
+            for (from, to) in dragged {
+                scene.simulate_drag(from, to);
             }
             for pos in double {
                 scene.simulate_double_click(pos);
@@ -3075,6 +3201,11 @@ impl ApplicationHandler<UserEvent> for App {
                         _ if question => gfx.scene.toggle_dialog(help::WINDOW),
                         KeyCode::KeyH | KeyCode::F1 if !self.mods.ctrl => gfx.scene.toggle_dialog(help::WINDOW),
                         KeyCode::KeyV if !self.mods.ctrl => gfx.scene.toggle_dialog(options::WINDOW),
+                        KeyCode::KeyC if !self.mods.ctrl => gfx.scene.toggle_dialog(time_dialog::WINDOW),
+                        KeyCode::Escape if gfx.scene.ui.is_visible(time_dialog::WINDOW) => {
+                            gfx.scene.ui.set_visible(time_dialog::WINDOW, false);
+                            gfx.scene.clock.release();
+                        }
                         KeyCode::Escape if gfx.scene.ui.is_visible(info::WINDOW) => {
                             gfx.scene.ui.set_visible(info::WINDOW, false);
                             gfx.scene.info_id += 1;

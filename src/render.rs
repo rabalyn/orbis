@@ -146,7 +146,7 @@ struct Panel {
 
 /// Panels 0 to 3 are text panels in corners; the interface's panels follow.
 pub const UI_PANEL_BASE: usize = 4;
-const UI_PANELS: usize = 6;
+const UI_PANELS: usize = 8;
 
 #[derive(Clone, Copy)]
 pub enum Corner {

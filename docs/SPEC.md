@@ -44,6 +44,7 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | - and = | Slow down or speed up the clock (1, 10, 60, 600 times, then hourly up to monthly per second) |
 | , and . | Step the clock back or forward by one hour, or one day with Shift |
 | T | Set the clock back to the real time, running at normal speed |
+| C | Show or hide the time window (see Milestone 16) |
 | S | Switch between sunlight and flat, always-lit imagery |
 | O | Show or hide stars, planets and the Moon (globe only) |
 | F | Switch the frame rate limit between 120 and 90 fps |
@@ -630,12 +631,57 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
 - The shadow maps take 50 MB of graphics memory (three 2048 by 2048 maps of 32-bit depth), made when shadows are
   first drawn and freed when they are turned off.
 
+## Milestone 16: time slider (done, drag untried in a window)
+
+### Behaviour
+- Key C, or the clock icon next to the options and help icons at the bottom right, shows or hides the Time
+  window. It sits above the credits, beside the view options window.
+- A single bar cannot be centuries wide and minute exact, so the window has three sliders: the year (1800 to
+  2050), the day of that year (1 January to 31 December, shown as a date) and the time of day (00:00 to 23:59
+  UTC, in whole minutes). Each moves only its own part of the date. Changing the year keeps month, day and
+  time, and 29 February becomes 28 February in a year without one. A heading shows the full date and time in UTC,
+  with the seconds when the clock is paused or not at normal speed.
+- Dragging a thumb sets the clock directly, so the Sun, Moon, planets, stars, cast shadows, day and night and the
+  eclipse shadow follow during the drag. Grabbing the thumb does not move it; a press on the bar beside it
+  moves the thumb there and goes on as a drag. The mouse wheel over a slider steps it by one year, one day
+  or ten minutes.
+- While a thumb is held the clock does not advance. On release it goes on as it was, running or paused, at the
+  same rate. A picture is drawn for each step of the drag and none while nothing moves.
+- The window also has Now (as T), Pause or Run (as Space), and on the Earth Previous eclipse and Next eclipse,
+  which set the clock to the greatest moment of the closest eclipse before or after the clock (from the
+  computed eclipses of Milestone 9a) and pause it. The window does not fly the view; use E for that. A line
+  under the buttons names the eclipse while one is going on (from the first contact of the Moon's shadow with the
+  Earth, or of the Moon with the Earth's shadow, to the last), such as "Total solar eclipse, greatest 18:17",
+  and says so when there is none. On other bodies there are no eclipse buttons or line.
+- The sliders stop at 1800 and 2050. The clock can still reach other dates with `--time`, the clock keys or
+  the step keys; then the year thumb sits at its nearer end, and the window warns "Outside 1800-2050: planet
+  positions are approximate". The clock line at the top right says "approximate: outside 1800-2050" for such
+  dates, also with the window closed and in saved images. Before 1950 the window carries a milder note that
+  the Sun is less exact, because the Sun's formula is stated for 1950 to 2050 only. No other accuracy is claimed
+  or measured here.
+- `--show-time` opens the window in a saved image. `--simulate-drag X1,Y1,X2,Y2` presses at the first point,
+  moves in steps and lets go at the second, through the same code as the mouse, after any `--simulate-click`.
+
+### Limitations
+- Only the sky and the light move. Imagery, terrain, buildings, roads and names stay as they are today: a map
+  tile shows the Earth as it was on the day it was taken, whatever date the clock has, and the buildings
+  and roads are today's.
+- The planet positions come from JPL's approximate elements for 1800 to 2050, the Sun from a low-precision formula
+  (0.01 degree for 1950 to 2050), the Moon from the long series of Milestone 9a. Outside 1800 to 2050 they get
+  worse in a way that is not measured here, and the Earth's turn (the difference between UT and the uniform time
+  that the formulae use) comes from published polynomials that are a prediction for the future. The Sun's position
+  for 1850 was only checked against the equation of time at a single date.
+- The time of day has no seconds and no 24:00 (the end of the bar is 23:59); the clock keys can still set any
+  moment. The wheel stops at the ends of the year, the day and the day's minutes, and does not carry over.
+- Eclipse times use the Earth's rotation as modelled, so they are less certain the farther they are from the
+  present; there is no figure for this.
+- The window's lines are fixed text; at very small screens it can be cut off at the top.
+- Dragging in a real window could not be tried in this environment; the same hit logic was run with
+  `--simulate-drag` and in unit tests.
+
 ## Later milestones
 
-Order and scope are open, and depend on which features are wanted.
-
-| # | Feature | Notes |
-|---|---|---|
-| M16 | Time slider | A slider for travelling in time, moving the Sun, Moon and planets continuously, and with them shadows, day and night, and solar and lunar eclipses. Depends on M11, and on M15 for shadows. Dates beyond the range of the planet formulae (about 1800 to 2050) are limited or marked as less accurate |
+Order and scope are open, and depend on which features are wanted. There are none open at the moment; every
+milestone listed above is done.
 
 Out of scope: Apple Vision Pro streaming, Quick Look and Share extensions, Sparkle updates.
