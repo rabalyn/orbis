@@ -111,6 +111,11 @@ everything else, magnified beyond its resolution.
 | VersaTiles | Rest of Germany, about 15 more European countries | 15 | 18 | Open licences per country | VersaTiles sources https://versatiles.org/sources/ |
 | EOxCloudless (base) | World | 0 | 14 | CC BY-NC-SA 4.0 | See PROVENANCE.md |
 
+Waiting for a slow service holds up only its own tiles. A worker never queues for a server
+at its limit, or for a tile someone else is fetching: the job goes back in the queue and
+the worker takes one that can go on, so terrain, map data and other imagery keep arriving.
+The limit on requests per server is unchanged, and coarser imagery stays on screen meanwhile.
+
 Terrain and map data stay on one server each, since both already vary in detail by zoom.
 Credits on screen follow the sources in view.
 
@@ -126,8 +131,8 @@ Credits on screen follow the sources in view.
   worth contacting before Orbis is published.
 - A service answering with one plain image by mistake hides its finer imagery of that area
   until the note expires after 30 days.
-- A slow service holds up the tiles waiting for it, and with enough of them the other data
-  too, as all workers can end up in its queue.
+- A cache server on the LAN is asked directly, so a client's worker waits while that server
+  gets a tile from a slow public service. Only public servers have the no-waiting rule.
 - LGLN takes about a second per image, so a cold close view there takes much longer than
   elsewhere. Asking for 512-pixel images makes one request serve four tiles.
 - LGLN asks for the year of retrieval in its credit. The year is fixed in the source list and

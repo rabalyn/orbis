@@ -149,7 +149,7 @@ fn handle(mut stream: TcpStream, peer: IpAddr, fetcher: &Fetcher, mode: Mode) {
                     let headers = format!("Retry-After: {wait}\r\n");
                     respond(&mut stream, "503 Service Unavailable", &headers, b"", head_only);
                 }
-                Some(Err(FetchError::Transient)) => {
+                Some(Err(FetchError::Transient | FetchError::Busy(_))) => {
                     respond(&mut stream, "503 Service Unavailable", "Retry-After: 5\r\n", b"", head_only);
                 }
                 None => respond(&mut stream, "504 Gateway Timeout", "", b"", head_only),

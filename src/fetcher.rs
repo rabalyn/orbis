@@ -25,6 +25,17 @@ pub enum FetchError {
     Paused(SystemTime),
     /// Something else went wrong that may pass.
     Transient,
+    /// Nothing went wrong, but getting this tile now would mean waiting.
+    Busy(Wait),
+}
+
+/// What a tile is waiting for.
+#[derive(Debug, PartialEq, Clone)]
+pub enum Wait {
+    /// A public server already has as many requests from us as it should get at once.
+    Server(String),
+    /// Someone else is already getting this tile.
+    Tile(String),
 }
 
 /// Limits how many threads do something at once.
@@ -45,6 +56,20 @@ impl Gate {
         }
         *free -= 1;
         GatePass(self)
+    }
+
+    /// Enters only if that needs no waiting.
+    pub fn try_enter(&self) -> Option<GatePass<'_>> {
+        let mut free = self.free.lock().unwrap();
+        if *free == 0 {
+            return None;
+        }
+        *free -= 1;
+        Some(GatePass(self))
+    }
+
+    fn is_full(&self) -> bool {
+        *self.free.lock().unwrap() == 0
     }
 }
 
@@ -260,8 +285,32 @@ impl Fetcher {
         (source.min_z.saturating_sub(1)..k.z).any(|z| self.cache.is_known_missing(&source.cache_name(k.ancestor(z))))
     }
 
-    /// Gets a tile by the cheapest route available.
+    /// Gets a tile by the cheapest route available, waiting for its turn if need be.
     pub fn fetch(&self, source: &'static TileSource, k: TileKey) -> Result<Vec<u8>, FetchError> {
+        loop {
+            // Whoever this was waiting for could only say the server is busy, so ask for itself.
+            match self.fetch_with(source, k, true) {
+                Err(FetchError::Busy(_)) => {}
+                result => return result,
+            }
+        }
+    }
+
+    /// Like `fetch`, but says what it would have to wait for instead of waiting. This lets a
+    /// thread do other work meanwhile, so a slow server holds up only its own tiles.
+    pub fn try_fetch(&self, source: &'static TileSource, k: TileKey) -> Result<Vec<u8>, FetchError> {
+        self.fetch_with(source, k, false)
+    }
+
+    /// Whether what a tile was waiting for has passed, so it is worth trying again.
+    pub fn is_clear(&self, wait: &Wait) -> bool {
+        match wait {
+            Wait::Server(host) => self.gates.lock().unwrap().get(host).is_none_or(|g| !g.is_full()),
+            Wait::Tile(name) => !self.flights.lock().unwrap().contains_key(name),
+        }
+    }
+
+    fn fetch_with(&self, source: &'static TileSource, k: TileKey, may_wait: bool) -> Result<Vec<u8>, FetchError> {
         if let Some(known) = self.cached(source, k) {
             return known;
         }
@@ -269,6 +318,7 @@ impl Fetcher {
         let (flight, leader) = {
             let mut flights = self.flights.lock().unwrap();
             match flights.get(&name) {
+                Some(_) if !may_wait => return Err(FetchError::Busy(Wait::Tile(name))),
                 Some(f) => (f.clone(), false),
                 None => {
                     let f = Arc::new(Flight::default());
@@ -288,7 +338,7 @@ impl Fetcher {
             }
         }
         let mut guard = FlightGuard { fetcher: self, name: &name, flight, result: None };
-        let result = self.fetch_remote(source, k, &name);
+        let result = self.fetch_remote(source, k, &name, may_wait);
         guard.result = Some(result.clone());
         result
     }
@@ -305,7 +355,7 @@ impl Fetcher {
         self.cache.mark_missing(&name);
     }
 
-    fn fetch_remote(&self, source: &'static TileSource, k: TileKey, name: &str) -> Result<Vec<u8>, FetchError> {
+    fn fetch_remote(&self, source: &'static TileSource, k: TileKey, name: &str, may_wait: bool) -> Result<Vec<u8>, FetchError> {
         if self.offline {
             return Err(FetchError::Transient);
         }
@@ -328,7 +378,7 @@ impl Fetcher {
             source.url.to_string()
         };
         let url = TileSource::url_from(&template, k);
-        match self.download(&url, source.concurrency) {
+        match self.download(&url, source.concurrency, may_wait) {
             Ok(data) => {
                 self.store(name, &data);
                 Ok(data)
@@ -379,16 +429,20 @@ impl Fetcher {
         None
     }
 
-    fn gate(&self, host: &str, concurrency: usize) -> Arc<Gate> {
+    pub(crate) fn gate(&self, host: &str, concurrency: usize) -> Arc<Gate> {
         let mut gates = self.gates.lock().unwrap();
         gates.entry(host.to_string()).or_insert_with(|| Arc::new(Gate::new(concurrency))).clone()
     }
 
     /// One request to a public server, under the rules for that server.
-    fn download(&self, url: &str, concurrency: usize) -> Result<Vec<u8>, FetchError> {
+    fn download(&self, url: &str, concurrency: usize, may_wait: bool) -> Result<Vec<u8>, FetchError> {
         let host = host_of(url);
         let gate = self.gate(&host, concurrency);
-        let _pass = gate.enter();
+        let _pass = if may_wait {
+            gate.enter()
+        } else {
+            gate.try_enter().ok_or_else(|| FetchError::Busy(Wait::Server(host.clone())))?
+        };
         // Asked only now: the server may have been timed out while this request waited.
         self.servers.check(&host, SystemTime::now()).map_err(FetchError::Paused)?;
         let fail = |failure: Failure| match self.servers.failed(&host, failure, SystemTime::now()) {
@@ -454,7 +508,7 @@ impl Fetcher {
         let mut trouble = FetchError::Transient;
         let fresh = match self.cache.get(&name(week)) {
             Some(bytes) => parse(&bytes),
-            None => match self.download(MAP_TILEJSON_URL, 1) {
+            None => match self.download(MAP_TILEJSON_URL, 1, true) {
                 Ok(bytes) => {
                     self.store(&name(week), &bytes);
                     parse(&bytes)
@@ -808,5 +862,69 @@ pub mod tests {
         assert!(json.contains("\"downloads\":1"), "{json}");
         assert!(json.contains("127.0.0.1"), "{json}");
         assert!(json.contains("\"eox\""), "{json}");
+    }
+
+    #[test]
+    fn a_full_server_is_reported_instead_of_waited_for() {
+        let server = TestServer::start(vec![(200, "")], Duration::ZERO);
+        let source = server.source();
+        let f = fetcher("busy-server");
+        let host = host_of(source.url);
+        let gate = f.gate(&host, 1);
+        let pass = gate.enter();
+
+        let wait = Wait::Server(host);
+        assert_eq!(f.try_fetch(source, K), Err(FetchError::Busy(wait.clone())));
+        assert!(!f.is_clear(&wait));
+        assert!(f.is_clear(&Wait::Server("other.example".into())));
+
+        drop(pass);
+        assert!(f.is_clear(&wait));
+        assert_eq!(f.try_fetch(source, K).unwrap(), b"tile-bytes");
+    }
+
+    #[test]
+    fn a_tile_being_fetched_is_reported_instead_of_waited_for() {
+        let server = TestServer::start(vec![(200, "")], Duration::ZERO);
+        let source = server.source();
+        let f = fetcher("busy-tile");
+        let name = source.cache_name(K);
+        f.flights.lock().unwrap().insert(name.clone(), Arc::default());
+
+        let wait = Wait::Tile(name.clone());
+        assert_eq!(f.try_fetch(source, K), Err(FetchError::Busy(wait.clone())));
+        assert!(!f.is_clear(&wait));
+        f.flights.lock().unwrap().remove(&name);
+        assert!(f.is_clear(&wait));
+    }
+
+    #[test]
+    fn someone_waiting_gets_the_tile_even_if_the_one_ahead_found_the_server_busy() {
+        let server = TestServer::start(vec![(200, "")], Duration::ZERO);
+        let source = server.source();
+        let f = Arc::new(fetcher("busy-follower"));
+        let name = source.cache_name(K);
+        let flight: Arc<Flight> = Arc::default();
+        f.flights.lock().unwrap().insert(name.clone(), flight.clone());
+
+        let waiting = {
+            let f = f.clone();
+            std::thread::spawn(move || f.fetch(source, K))
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        f.flights.lock().unwrap().remove(&name);
+        *flight.result.lock().unwrap() = Some(Err(FetchError::Busy(Wait::Server("x".into()))));
+        flight.done.notify_all();
+        assert_eq!(waiting.join().unwrap().unwrap(), b"tile-bytes");
+    }
+
+    #[test]
+    fn a_gate_can_be_tried_without_waiting() {
+        let gate = Gate::new(1);
+        let pass = gate.try_enter();
+        assert!(pass.is_some() && gate.is_full());
+        assert!(gate.try_enter().is_none());
+        drop(pass);
+        assert!(gate.try_enter().is_some());
     }
 }

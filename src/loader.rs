@@ -1,7 +1,7 @@
 //! Background tile loading: download or read from cache, decode, and build meshes.
 
 use crate::buildings::{self, BuildingMesh};
-use crate::fetcher::{FetchError, Fetcher};
+use crate::fetcher::{FetchError, Fetcher, Wait};
 use crate::geo::{geodetic_to_ecef, TileKey, A};
 use crate::overlay::{self, OVERLAY_SIZE};
 use crate::sources;
@@ -11,7 +11,7 @@ use glam::DVec3;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 pub const GRID: usize = 32;
 pub const TERRAIN_MAX_Z: u8 = 14;
@@ -21,6 +21,8 @@ const BLANK_RANGE: u8 = 3;
 /// OpenMapTiles data ends here; closer tiles use a part of a tile at this zoom.
 pub const VECTOR_MAX_Z: u8 = 14;
 const WORKERS: usize = 8;
+/// How often idle workers look whether a blocked job can go on.
+const BLOCKED_CHECK: Duration = Duration::from_millis(20);
 /// Finished results waiting to be collected. Workers pause beyond this, which limits how
 /// much memory decoded tiles can take when they are produced faster than they are uploaded.
 const RESULT_QUEUE: usize = 32;
@@ -70,6 +72,16 @@ pub enum Outcome {
     /// A tile's building mesh, or `None` when it has no buildings.
     Buildings(TileKey, Option<Box<BuildingMesh>>),
     BuildingsRetry(TileKey, Option<SystemTime>),
+    /// Getting on with this job now would mean waiting, so it goes back in the queue.
+    Deferred(Wait),
+}
+
+/// What a failed fetch means for a job: another try now or later.
+fn after_failure(e: FetchError, k: TileKey, retry: fn(TileKey, Option<SystemTime>) -> Outcome) -> Outcome {
+    match e {
+        FetchError::Busy(wait) => Outcome::Deferred(wait),
+        e => retry(k, asks_to_wait(&e)),
+    }
 }
 
 fn asks_to_wait(error: &FetchError) -> Option<SystemTime> {
@@ -263,6 +275,18 @@ struct Queue {
     /// Most urgent last.
     waiting: Vec<Job>,
     in_flight: HashSet<Job>,
+    /// What waiting jobs found in their way the last time they tried.
+    blocked: HashMap<Job, Wait>,
+}
+
+impl Queue {
+    /// Takes the most urgent job that has nothing in its way.
+    fn next_job(&mut self, fetcher: &Fetcher) -> Option<Job> {
+        let at = self.waiting.iter().rposition(|j| self.blocked.get(j).is_none_or(|w| fetcher.is_clear(w)))?;
+        let job = self.waiting.remove(at);
+        self.blocked.remove(&job);
+        Some(job)
+    }
 }
 
 struct Shared {
@@ -280,7 +304,7 @@ impl Shared {
         if let Some(v) = self.vectors.lock().unwrap().get(&k) {
             return Ok(v.clone());
         }
-        let tile = match self.fetcher.fetch(&sources::MAP, k) {
+        let tile = match self.fetcher.try_fetch(&sources::MAP, k) {
             // Where no data exists, such as on the open ocean, there is simply nothing to draw.
             Err(FetchError::Missing) => VectorTile::default(),
             Err(e) => return Err(e),
@@ -306,7 +330,7 @@ impl Shared {
     fn load_buildings(&self, k: TileKey) -> Outcome {
         let tile = match self.vector(k) {
             Ok(tile) => tile,
-            Err(e) => return Outcome::BuildingsRetry(k, asks_to_wait(&e)),
+            Err(e) => return after_failure(e, k, Outcome::BuildingsRetry),
         };
         if tile.buildings.is_empty() {
             return Outcome::Buildings(k, None);
@@ -314,7 +338,7 @@ impl Shared {
         let (dem_key, rect) = terrain_source(k);
         let dem = match self.dem(dem_key) {
             Ok(dem) => dem,
-            Err(e) => return Outcome::BuildingsRetry(k, asks_to_wait(&e)),
+            Err(e) => return after_failure(e, k, Outcome::BuildingsRetry),
         };
         let ground = |x: f64, y: f64| dem.sample(rect.0 + x * rect.2, rect.1 + y * rect.2) * self.exaggeration;
         let mesh = buildings::build_mesh(k, &tile.buildings, &ground);
@@ -325,7 +349,7 @@ impl Shared {
         let source = k.ancestor(k.z.min(VECTOR_MAX_Z));
         let tile = match self.vector(source) {
             Ok(tile) => tile,
-            Err(e) => return Outcome::OverlayRetry(k, asks_to_wait(&e)),
+            Err(e) => return after_failure(e, k, Outcome::OverlayRetry),
         };
         let mips = overlay::render(&tile, k, source)
             .map(|rgba| build_mips(OVERLAY_SIZE, OVERLAY_SIZE, rgba));
@@ -336,7 +360,7 @@ impl Shared {
         if let Some(d) = self.dems.lock().unwrap().get(&k) {
             return Ok(d.clone());
         }
-        let dem = match self.fetcher.fetch(&sources::TERRAIN, k) {
+        let dem = match self.fetcher.try_fetch(&sources::TERRAIN, k) {
             // Where no terrain exists, the surface is simply flat.
             Err(FetchError::Missing) => Dem::flat(),
             Err(e) => return Err(e),
@@ -360,16 +384,22 @@ impl Shared {
     }
 
     fn load(&self, k: TileKey) -> Outcome {
+        // Terrain first: a job sent back to the queue then does not decode its image again.
+        let (dem_key, dem_rect) = terrain_source(k);
+        let dem = match self.dem(dem_key) {
+            Ok(dem) => dem,
+            Err(e) => return after_failure(e, k, Outcome::Retry),
+        };
         // Best imagery first. While a better source is unavailable for a moment the tile
         // waits, with a coarser one staying on screen, so nothing gets stuck on poor imagery.
         for (source, source_key) in sources::imagery_for(k) {
             if source.blank_means_missing() && self.fetcher.empty_above(source, source_key) {
                 continue;
             }
-            let bytes = match self.fetcher.fetch(source, source_key) {
+            let bytes = match self.fetcher.try_fetch(source, source_key) {
                 Ok(bytes) => bytes,
                 Err(FetchError::Missing) => continue,
-                Err(e) => return Outcome::Retry(k, asks_to_wait(&e)),
+                Err(e) => return after_failure(e, k, Outcome::Retry),
             };
             let Ok(img) = image::load_from_memory(&bytes) else {
                 eprintln!("{}: tile {}/{}/{} is damaged", source.id, source_key.z, source_key.x, source_key.y);
@@ -386,11 +416,6 @@ impl Shared {
                 continue; // Others may still have this part, so the image stays known.
             }
             let (w, h) = img.dimensions();
-            let (dem_key, dem_rect) = terrain_source(k);
-            let dem = match self.dem(dem_key) {
-                Ok(dem) => dem,
-                Err(e) => return Outcome::Retry(k, asks_to_wait(&e)),
-            };
             let (center, vertices, heights) = build_mesh(k, &dem, dem_rect, uv_rect, self.exaggeration);
             return Outcome::Ready(Box::new(TileData {
                 key: k,
@@ -444,6 +469,10 @@ impl Loader {
         q.waiting.clear();
         q.waiting.extend(jobs.filter(|j| !in_flight.contains(j)));
         q.in_flight = in_flight;
+        if !q.blocked.is_empty() {
+            let current: HashSet<Job> = q.waiting.iter().copied().collect();
+            q.blocked.retain(|j, _| current.contains(j));
+        }
         drop(q);
         self.shared.wake.notify_all();
     }
@@ -468,11 +497,16 @@ fn worker(shared: &Shared, tx: &SyncSender<(Job, Outcome)>) {
         let job = {
             let mut q = shared.queue.lock().unwrap();
             loop {
-                if let Some(j) = q.waiting.pop() {
+                if let Some(j) = q.next_job(&shared.fetcher) {
                     q.in_flight.insert(j);
                     break j;
                 }
-                q = shared.wake.wait(q).unwrap();
+                // Blocked jobs may become free at any moment, without anyone saying so here.
+                q = if q.waiting.is_empty() {
+                    shared.wake.wait(q).unwrap()
+                } else {
+                    shared.wake.wait_timeout(q, BLOCKED_CHECK).unwrap().0
+                };
             }
         };
         let outcome = match job {
@@ -480,6 +514,14 @@ fn worker(shared: &Shared, tx: &SyncSender<(Job, Outcome)>) {
             Job::Overlay(k) => shared.load_overlay(k),
             Job::Buildings(k) => shared.load_buildings(k),
         };
+        if let Outcome::Deferred(wait) = outcome {
+            let mut q = shared.queue.lock().unwrap();
+            q.in_flight.remove(&job);
+            q.blocked.insert(job, wait);
+            // The next update of the queue restores its place.
+            q.waiting.insert(0, job);
+            continue;
+        }
         if tx.send((job, outcome)).is_err() {
             return;
         }
@@ -492,7 +534,7 @@ mod tests {
     use crate::cache::DiskCache;
     use crate::fetcher::Peers;
     use glam::Vec3;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     fn world(center: DVec3, v: &Vertex) -> DVec3 {
         center + Vec3::from_array(v.pos).as_dvec3()
@@ -802,5 +844,52 @@ mod tests {
         let small = image::RgbaImage::new(256, 256);
         let (same, rect) = keep_tile_part(small, (0.5, 0.25, 0.25));
         assert_eq!((same.width(), rect), (256, (0.5, 0.25, 0.25)));
+    }
+
+    #[test]
+    fn the_most_urgent_job_without_an_obstacle_goes_first() {
+        let f = Fetcher::new(crate::fetcher::tests::temp_cache("next-job"), Peers::default(), true);
+        let gate = f.gate("slow.example", 1);
+        let pass = gate.enter();
+        let (low, high) = (Job::Tile(TileKey::new(5, 1, 1)), Job::Tile(TileKey::new(5, 2, 2)));
+        let mut q = Queue { waiting: vec![low, high], ..Queue::default() };
+        q.blocked.insert(high, Wait::Server("slow.example".into()));
+
+        assert_eq!(q.next_job(&f), Some(low));
+        assert_eq!(q.next_job(&f), None, "only the blocked job is left");
+        drop(pass);
+        assert_eq!(q.next_job(&f), Some(high));
+        assert!(q.blocked.is_empty());
+    }
+
+    #[test]
+    fn a_full_server_does_not_hold_up_jobs_for_other_data() {
+        let cache = crate::fetcher::tests::temp_cache("no-holdup");
+        let ready = TileKey::new(5, 1, 1);
+        cache.mark_missing(&sources::TERRAIN.cache_name(ready.ancestor(3)));
+        cache.put(&sources::EOX.cache_name(ready), &tile_bytes(|_, _| [10, 20, 60])).unwrap();
+
+        // Online, but no request gets out: terrain is the only thing not known, and its server
+        // stays full. More blocked jobs than workers, and all more urgent than the other one.
+        let fetcher = Arc::new(Fetcher::new(cache, Peers::default(), false));
+        let gate = fetcher.gate(&crate::fetcher::host_of(sources::TERRAIN.url), 1);
+        std::mem::forget(gate.enter());
+        let blocked: Vec<TileKey> = (0..(WORKERS as u32 * 2)).map(|i| TileKey::new(5, 16 + i, 16)).collect();
+        let mut wanted = vec![ready];
+        wanted.extend(&blocked);
+        wanted.reverse();
+
+        let loader = Loader::new(fetcher, 1.0, vec!["name".into()]);
+        loader.set_wanted(&wanted, &[], &[]);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut got = None;
+        while got.is_none() && Instant::now() < deadline {
+            got = loader.try_result();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let Some(Outcome::Ready(tile)) = got else { panic!("the free job was held up") };
+        assert_eq!(tile.key, ready);
+        assert!(!loader.is_idle(), "the blocked jobs are still waiting");
+        loader.set_wanted(&[], &[], &[]);
     }
 }

@@ -510,6 +510,8 @@ impl Scene {
                     changed = true;
                 }
                 Some(Outcome::BuildingsRetry(k, until)) => next_retry(&mut self.building_retries, k, until),
+                // The workers keep these themselves.
+                Some(Outcome::Deferred(_)) => {}
                 None => break,
             }
         }
