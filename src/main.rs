@@ -4,10 +4,12 @@ mod blend;
 mod body;
 mod buildings;
 mod cache;
+mod clicks;
 mod camera;
 mod capabilities;
 mod fetcher;
 mod geocode;
+mod help;
 mod geo;
 mod labels;
 mod lan;
@@ -38,6 +40,8 @@ mod service_lib;
 mod services;
 mod sources;
 mod text;
+mod ui;
+mod ui_draw;
 mod vector;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -158,6 +162,10 @@ Usage: orbis [options]
   --service-overlay NAME  lay this map service over the imagery
   --service-opacity N     opacity of the overlay, 0 to 1 (default 0.6; keys + and - in the list)
   --services-panel        with --screenshot, also show the list of map services
+  --show-help             with --screenshot, also show the help window (key H)
+  --help-scroll N         with --screenshot, scroll the help window down by N wheel notches (implies --show-help)
+  --simulate-click X,Y    with --screenshot, click there (pixels from the top left) before the image is taken,
+                          through the same code as a real click; repeatable, in order
   --serve-cache           run as a LAN cache server, with no window
   --share-cache           also offer this cache on the LAN, and use others found there
   --cache-server HOST:PORT  use this LAN cache server (repeatable)
@@ -219,6 +227,9 @@ struct Args {
     imports_panel: bool,
     geocoder_url: String,
     services: service_ui::Cli,
+    show_help: bool,
+    help_scroll: f64,
+    simulate_clicks: Vec<DVec2>,
 }
 
 fn locale_language() -> String {
@@ -282,6 +293,9 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
         imports: Vec::new(),
         imports_panel: false,
         services: Default::default(),
+        show_help: false,
+        help_scroll: 0.0,
+        simulate_clicks: Vec::new(),
         geocoder_url: geocode::DEFAULT_SERVICE.to_string(),
     };
     while let Some(flag) = it.next() {
@@ -341,6 +355,10 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             }
             "--service-tms" => {
                 a.services.tms = true;
+                continue;
+            }
+            "--show-help" => {
+                a.show_help = true;
                 continue;
             }
             "--services-panel" => {
@@ -462,6 +480,15 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
                 }
                 a.services.opacity = Some(v as f32);
             }
+            "--help-scroll" => {
+                a.help_scroll = num()?;
+                a.show_help = true;
+            }
+            "--simulate-click" => {
+                let (x, y) = value.split_once(',').ok_or_else(|| anyhow!("--simulate-click expects X,Y"))?;
+                let n = |v: &str| v.trim().parse::<f64>().context("--simulate-click expects X,Y");
+                a.simulate_clicks.push(DVec2::new(n(x)?, n(y)?));
+            }
             "--save-place" => a.save_place = Some(value.clone()),
             "--geocoder-url" => {
                 if !value.starts_with("http://") && !value.starts_with("https://") {
@@ -541,6 +568,13 @@ struct Scene {
     places: places::Store,
     place_list: places::Picker,
     services: service_ui::Control,
+    /// The mouse-driven interface: the help icon and window, and later dialogs.
+    ui: ui::Ui,
+    clicks: clicks::ClickClassifier,
+    started: Instant,
+    pointer: DVec2,
+    /// Buttons (bit 0 left, bit 1 right) that went down on the map, not on the interface.
+    map_buttons: u8,
     /// The choice of map services the drawn tiles were made under.
     services_seen: u64,
     library: import::Library,
@@ -757,6 +791,11 @@ impl Scene {
             places,
             place_list: places::Picker::default(),
             services: make_services(args),
+            ui: ui::Ui::new(),
+            clicks: clicks::ClickClassifier::default(),
+            started: Instant::now(),
+            pointer: DVec2::ZERO,
+            map_buttons: 0,
             services_seen: service_lib::active().generation,
             clear_overlays: false,
             library: import::Library::default(),
@@ -812,7 +851,123 @@ impl Scene {
         for path in &args.imports {
             scene.import_path(path, false);
         }
+        scene.ui.resize(size, 1.0);
+        scene.ui.add(help::icon_panel());
+        scene.ui.add(help::window_panel());
         scene
+    }
+
+    /// Mouse input, shared by the window and `--simulate-click`. Each returns whether the
+    /// picture needs drawing again: a plain pointer move over the map does not.
+    fn mouse_moved(&mut self, pos: DVec2) -> bool {
+        self.pointer = pos;
+        let r = self.ui.pointer_moved(pos);
+        if r.consumed {
+            return r.redraw;
+        }
+        // A drag that began on the map stays with it, even across a panel.
+        if self.mode == Mode::Atlas {
+            self.map.moved(pos);
+        } else {
+            self.nav.moved(pos);
+        }
+        r.redraw || self.map_buttons != 0
+    }
+
+    fn mouse_pressed(&mut self, b: Button, mods: Mods) -> bool {
+        let r = self.ui.press(b, self.pointer);
+        if r.consumed {
+            return true;
+        }
+        self.map_buttons |= 1 << (b == Button::Right) as u8;
+        if self.mode == Mode::Atlas {
+            if b == Button::Left {
+                self.map.press(self.pointer);
+            }
+        } else {
+            self.nav.press(b, self.pointer, mods);
+        }
+        if b == Button::Left {
+            let now = self.started.elapsed().as_secs_f64();
+            self.clicks.press(now, self.pointer);
+        }
+        true
+    }
+
+    fn mouse_released(&mut self, b: Button, mods: Mods) -> bool {
+        let r = self.ui.release(b, self.pointer);
+        if let Some(event) = r.event {
+            help::handle(&mut self.ui, event);
+        }
+        let bit = 1 << (b == Button::Right) as u8;
+        if r.consumed || self.map_buttons & bit == 0 {
+            return r.consumed;
+        }
+        self.map_buttons &= !bit;
+        if self.mode == Mode::Atlas {
+            self.map.release();
+        } else {
+            self.nav.release();
+        }
+        if b == Button::Left {
+            let now = self.started.elapsed().as_secs_f64();
+            if let Some(click) = self.clicks.release(now, self.pointer, mods) {
+                self.map_click(click);
+            }
+        }
+        true
+    }
+
+    fn mouse_wheel(&mut self, lines: f64, mods: Mods) -> bool {
+        let r = self.ui.wheel(lines, self.pointer);
+        if r.consumed {
+            return r.redraw;
+        }
+        if self.mode == Mode::Atlas {
+            self.map.scroll(lines, self.pointer);
+        } else {
+            self.nav.scroll(lines, self.pointer, mods);
+        }
+        true
+    }
+
+    /// The pointer left the window, or the window lost focus.
+    fn mouse_lost(&mut self) {
+        self.ui.pointer_moved(DVec2::new(-1.0, -1.0));
+        self.map_buttons = 0;
+        self.clicks.cancel();
+    }
+
+    /// Releases single clicks whose double-click window ran out. Returns when to look again.
+    fn poll_clicks(&mut self) -> Option<Instant> {
+        let now = self.started.elapsed().as_secs_f64();
+        if let Some(click) = self.clicks.poll(now) {
+            self.map_click(click);
+        }
+        self.clicks.deadline().map(|t| self.started + Duration::from_secs_f64(t))
+    }
+
+    /// A click or double click on the map that no panel took.
+    fn map_click(&mut self, click: clicks::Click) {
+        if click.kind == clicks::ClickKind::Double {
+            if self.mode == Mode::Atlas {
+                self.map.double_click(click.pos, click.mods.shift);
+            } else {
+                self.nav.double_click(click.pos, click.mods);
+            }
+        }
+        self.on_map_click(click);
+    }
+
+    /// The hook for what a click on the map means (picking a place, flying there). It is
+    /// called for single clicks after the double-click window and for double clicks.
+    fn on_map_click(&mut self, _click: clicks::Click) {}
+
+    /// A left click at a point, as the window would deliver it.
+    fn simulate_click(&mut self, pos: DVec2) {
+        self.mouse_moved(pos);
+        self.mouse_pressed(Button::Left, Mods::default());
+        self.mouse_released(Button::Left, Mods::default());
     }
 
     /// Reads a file and adds what is in it, saying what happened. With `fly` the view moves to it.
@@ -1316,6 +1471,8 @@ impl Scene {
                 pad(r.panel_rect(1, Corner::TopRight, width, height)),
                 pad(r.panel_rect(2, Corner::TopLeft, width, height)),
                 pad(r.panel_rect(3, Corner::TopLeft, width, height)),
+                pad(r.panel_rect(render::UI_PANEL_BASE, Corner::TopLeft, width, height)),
+                pad(r.panel_rect(render::UI_PANEL_BASE + 1, Corner::TopLeft, width, height)),
             ],
         };
         let mut shown: Vec<(&vector::Label, i32, u64)> = sets
@@ -1466,8 +1623,12 @@ impl Scene {
         text
     }
 
-    fn set_panels(&self, r: &mut Renderer, width: u32, scale: usize) {
+    fn set_panels(&mut self, r: &mut Renderer, width: u32, height: u32, scale: usize) {
+        self.ui.resize(DVec2::new(width as f64, height as f64), scale as f64);
         let columns = ((width as usize).saturating_sub(40) / (8 * scale)).max(20);
+        // The help icon sits at the bottom right, so the credits leave room for it.
+        let icon = help::icon_size(scale as f64) as usize + 8 * scale;
+        let credit_columns = ((width as usize).saturating_sub(40 + icon) / (8 * scale)).max(20);
         let mut credits = credits_for(self.draw.iter().map(|k| r.tile_credit(*k)));
         if self.sky_on && self.mode == Mode::Globe {
             credits.push('\n');
@@ -1481,11 +1642,23 @@ impl Scene {
             credits.push('\n');
             credits.push_str(search::CREDIT);
         }
-        r.set_panel(0, &credits, columns, scale);
+        r.set_panel(0, &credits, credit_columns, scale);
         r.set_panel(1, &self.hud(r), columns, scale);
         let wide = (columns * 3 / 5).clamp(20, SEARCH_COLUMNS);
         r.set_panel(2, &self.search.panel_text(), wide, scale);
         r.set_panel(3, &self.side_panel_text(), wide, scale);
+        for (i, visible) in self.ui.take_changes() {
+            if i >= Renderer::ui_panel_count() {
+                continue;
+            }
+            if visible {
+                let (w, h, rgba) = ui_draw::render(&self.ui, i, scale);
+                let rect = self.ui.panels()[i].rect;
+                r.set_ui_panel(i, Some(([rect.x, rect.y], w, h, &rgba)));
+            } else {
+                r.set_ui_panel(i, None);
+            }
+        }
     }
 
     /// The list of saved places, or a notice, below where the search box would be.
@@ -1827,13 +2000,22 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     if args.services.panel {
         scene.services.toggle();
     }
+    if args.show_help {
+        scene.ui.set_visible(help::WINDOW, true);
+        if let Some(r) = scene.ui.panels().iter().find(|p| p.id == help::WINDOW).map(|p| p.rect) {
+            scene.ui.wheel(-args.help_scroll, DVec2::new(r.x + r.w / 2.0, r.y + r.h / 2.0));
+        }
+    }
+    for pos in &args.simulate_clicks {
+        scene.simulate_click(*pos);
+    }
 
     let started = Instant::now();
     let mut quiet_since = Instant::now();
     let step = 1.0 / 30.0;
     loop {
         scene.update(&mut r, step, (aspect, height as f64));
-        scene.set_panels(&mut r, width, 1);
+        scene.set_panels(&mut r, width, height, 1);
         scene.place_labels(&mut r, (width, height), 1, step);
         r.flush_uploads();
         scene.poll_feeds();
@@ -1852,7 +2034,7 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     for _ in 0..90 {
         scene.update(&mut r, step, (aspect, height as f64));
     }
-    scene.set_panels(&mut r, width, 1);
+    scene.set_panels(&mut r, width, height, 1);
     let text_deadline = Instant::now() + Duration::from_secs(10);
     loop {
         scene.place_labels(&mut r, (width, height), 1, step);
@@ -1972,9 +2154,6 @@ struct App {
     gfx: Option<Gfx>,
     error: Option<anyhow::Error>,
     mods: Mods,
-    pointer: DVec2,
-    pressed_at: Option<(Instant, DVec2)>,
-    last_click: Option<(Instant, DVec2)>,
 }
 
 impl App {
@@ -2060,7 +2239,7 @@ impl App {
         let aspect = w as f64 / h as f64;
         gfx.scene.update(&mut gfx.renderer, dt, (aspect, h as f64));
         let scale = gfx.window.scale_factor().round().max(1.0) as usize;
-        gfx.scene.set_panels(&mut gfx.renderer, w, scale);
+        gfx.scene.set_panels(&mut gfx.renderer, w, h, scale);
         gfx.scene.place_labels(&mut gfx.renderer, (w, h), scale as u32, dt);
 
         let frame = match gfx.surface.get_current_texture() {
@@ -2173,6 +2352,10 @@ impl ApplicationHandler<UserEvent> for App {
             if g.scene.retry_tick(now) || g.meter.is_stale(now) {
                 g.redraw_wanted = true;
             }
+            // A single click waits out the double-click window before it counts.
+            if let Some(at) = g.scene.poll_clicks() {
+                wake = wake.min(at);
+            }
             // While a search is out, the answer is looked for often enough to feel instant.
             if g.scene.search.is_searching() {
                 wake = wake.min(now + Duration::from_millis(100));
@@ -2232,17 +2415,21 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Focused(false) => {
                 nav.release_all();
                 map.release();
+                gfx.scene.mouse_lost();
+            }
+            WindowEvent::CursorLeft { .. } => {
+                if gfx.scene.map_buttons == 0 {
+                    gfx.scene.ui.pointer_moved(DVec2::new(-1.0, -1.0));
+                }
             }
             WindowEvent::ModifiersChanged(m) => {
                 let s = m.state();
                 self.mods = Mods { shift: s.shift_key(), alt: s.alt_key(), ctrl: s.control_key() };
             }
             WindowEvent::CursorMoved { position: PhysicalPosition { x, y }, .. } => {
-                self.pointer = DVec2::new(x, y);
-                if atlas {
-                    map.moved(self.pointer);
-                } else {
-                    nav.moved(self.pointer);
+                // Only a drag or a change in the interface needs a new picture.
+                if !gfx.scene.mouse_moved(DVec2::new(x, y)) {
+                    return;
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -2252,57 +2439,17 @@ impl ApplicationHandler<UserEvent> for App {
                     _ => return,
                 };
                 match state {
-                    ElementState::Pressed => {
-                        if atlas {
-                            if b == Button::Left {
-                                map.press(self.pointer);
-                            }
-                        } else {
-                            nav.press(b, self.pointer, self.mods);
-                        }
-                        if b == Button::Left {
-                            self.pressed_at = Some((Instant::now(), self.pointer));
-                        }
-                    }
-                    ElementState::Released => {
-                        if atlas {
-                            map.release();
-                        } else {
-                            nav.release();
-                        }
-                        let was_click = b == Button::Left
-                            && self.pressed_at.is_some_and(|p| {
-                                p.0.elapsed() < Duration::from_millis(300)
-                                    && p.1.distance(self.pointer) < 5.0
-                            });
-                        if was_click {
-                            let again = self.last_click.is_some_and(|c| {
-                                c.0.elapsed() < Duration::from_millis(400)
-                                    && c.1.distance(self.pointer) < 6.0
-                            });
-                            if again {
-                                if atlas {
-                                    map.double_click(self.pointer, self.mods.shift);
-                                } else {
-                                    nav.double_click(self.pointer, self.mods);
-                                }
-                                self.last_click = None;
-                            } else {
-                                self.last_click = Some((Instant::now(), self.pointer));
-                            }
-                        }
-                    }
-                }
+                    ElementState::Pressed => gfx.scene.mouse_pressed(b, self.mods),
+                    ElementState::Released => gfx.scene.mouse_released(b, self.mods),
+                };
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let lines = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y as f64,
                     MouseScrollDelta::PixelDelta(p) => p.y / 40.0,
                 };
-                if atlas {
-                    map.scroll(lines, self.pointer);
-                } else {
-                    nav.scroll(lines, self.pointer, self.mods);
+                if !gfx.scene.mouse_wheel(lines, self.mods) {
+                    return;
                 }
             }
             WindowEvent::Ime(Ime::Commit(text)) if gfx.scene.search.is_open() => {
@@ -2381,7 +2528,13 @@ impl ApplicationHandler<UserEvent> for App {
                         nav.arrow_down(a, self.mods);
                     }
                 } else if pressed && !event.repeat {
+                    let question = matches!(&event.logical_key, winit::keyboard::Key::Character(c) if c.as_str() == "?");
                     match code {
+                        _ if question => gfx.scene.ui.toggle(help::WINDOW),
+                        KeyCode::KeyH | KeyCode::F1 if !self.mods.ctrl => gfx.scene.ui.toggle(help::WINDOW),
+                        KeyCode::Escape if gfx.scene.ui.is_visible(help::WINDOW) => {
+                            gfx.scene.ui.set_visible(help::WINDOW, false);
+                        }
                         KeyCode::Escape => {
                             nav.stop();
                             gfx.scene.notice = None;
@@ -2543,9 +2696,6 @@ fn main() -> Result<()> {
         gfx: None,
         error: None,
         mods: Mods::default(),
-        pointer: DVec2::ZERO,
-        pressed_at: None,
-        last_click: None,
     };
     event_loop.run_app(&mut app)?;
     match app.error {

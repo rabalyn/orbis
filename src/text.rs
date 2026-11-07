@@ -6,7 +6,7 @@ const GLYPH: usize = 8;
 const PAD: usize = 4;
 const LINE_GAP: usize = 2;
 
-fn glyph(c: char) -> [u8; 8] {
+pub(crate) fn glyph(c: char) -> [u8; 8] {
     let code = c as usize;
     match code {
         0..=127 => BASIC_LEGACY[code],

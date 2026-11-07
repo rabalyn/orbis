@@ -32,7 +32,7 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | Ctrl-0 | Whole Earth, or the whole map on the map |
 | Ctrl-Alt-N | Straighten up, one step per press: north up, straight down, whole body, equator centred |
 | SpaceMouse | Push or pull: climb or sink; slide: move across the ground; twist: turn; tilt: tilt, and on through the horizon; button 1: whole body (Ctrl-0); button 2: straighten up (Ctrl-Alt-N). On the map: slide pans, push or pull zooms (see Milestone 10) |
-| Escape | Stop a flight or a gliding movement |
+| Escape | Stop a flight or a gliding movement; or, while the help window is open, close it |
 | R | Show or hide roads and boundaries |
 | L | Show or hide labels |
 | B | Show or hide 3D buildings (globe only) |
@@ -52,6 +52,7 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | I | Show or hide the list of imported items |
 | E | Show or hide the list of eclipses around the clock's date (see Milestone 9a). In it: Enter sets the clock to the greatest moment, pauses it and flies to the greatest point, and 1 to 5 show or hide quakes, eruptions, tsunamis, fireballs and eclipses (see Milestone 9b) |
 | G | Show or hide the list of map services (see Milestone 8). In it: Enter uses the chosen service as the base layer (again: back to the usual imagery), O as the overlay, + and - change the overlay's opacity, A opens the box to add a service, Delete removes one |
+| H, ?, F1 | Show or hide the help window (see Milestone 11) |
 | Ctrl-Q | Quit |
 
 An arrow key keeps its meaning while held, even if modifiers change. Moving by hand ends a
@@ -481,13 +482,37 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
 - Only the first matching HID device is used, and its buttons beyond the first two do nothing. The device's LEDs and its own settings are not touched.
 - The first frame after a long rest moves by up to 0.1 s of motion at once.
 
+## Milestone 11: help window and clickable interface (done)
+
+### Interface layer
+- Floating panels of widgets (labels, buttons, a scrolling body with a scroll bar) are laid out in pixels, in src/ui.rs, independently of the window. They have hit testing, hover, press and release, wheel scrolling and scroll bar dragging, and are drawn with the same bitmap font as the other panels (src/ui_draw.rs).
+- A press, a release or a wheel turn over a panel belongs to the panel and does not move the globe or the map, for both buttons. A drag that began on the globe or map stays with it, even across a panel. A scroll bar drag stays with the bar.
+- A button clicks when it is pressed and released while the pointer is on it. Hovered and pressed buttons are drawn lighter.
+- Drawing again happens only when something visible changed: the pointer moving onto or off a button, a scroll, a toggle, a resize. Moving the pointer over the map, or over a panel without changing the button under it, causes no redraw.
+
+### Clicks on the map
+- A press and release on the map (not on a panel) is classified: further than 5 pixels apart, or held longer than 0.3 s, is a drag; otherwise a click. A second click within 0.4 s and 6 pixels of the first is a double click.
+- A single click is reported only once the double-click window has passed without a second click, so a double click never also gives a single one. A double click is reported at once and flies one level closer or farther, as before. Both go through one function (`Scene::on_map_click`) that does nothing yet; picking a place and flying are built on it.
+
+### Help window
+- A small square with a question mark sits in the bottom right corner, always shown. Clicking it, or pressing H, ? or F1, shows or hides the window of keyboard and mouse controls. Its close button and Escape hide it (Escape does nothing else while it is open).
+- The window sits above the icon in the bottom right corner, and lists the controls in groups, with keys in one column and what they do in the other (stacked when the window is narrow). It is as high as its list, and shrinks with the window; a list that does not fit scrolls with the wheel and shows a scroll bar, which can be dragged or clicked.
+- The list is one table in src/help.rs. A test checks that every key row of the table under Navigation in this file is in it, and that it has no row that is not here.
+- The credits leave room for the icon, and the labels keep clear of the icon and the window.
+- For saved images: `--show-help`, `--help-scroll N` (wheel notches, implies `--show-help`) and `--simulate-click X,Y` (repeatable; clicks are sent through the same code as the mouse's, after `--show-help`).
+
+### Limitations
+- Mouse input in a real window was not tried by hand: the window cannot be driven here. The routing, the clicks and the scroll bar are unit-tested, and saved images show the icon, the window, scrolling and an icon click.
+- While open, the help window covers part of the credits and the readout at the top right if it is tall (on a small window).
+- Panels have no keyboard focus, and the wheel scrolls three lines per notch with no smoothing. Text uses the 8x8 bitmap font, scaled by whole numbers.
+- The icon is a plain square with a question mark; it has no tooltip.
+
 ## Later milestones
 
 Order and scope are open, and depend on which features are wanted.
 
 | # | Feature | Notes |
 |---|---|---|
-| M11 | Help dialog and clickable interface | A help icon toggles a floating window in a corner that lists the keyboard shortcuts, scrollable when they don't fit. Brings the mouse-driven interface layer that M12 and M16 also use |
 | M12 | View options and saved settings | A dialog to show or hide streets, cities, trails, trains and 3D buildings, to switch map projection, and to choose what the globe shows. Every setting is saved in the application's configuration directory; during development, a committed configuration directory in the working directory takes priority |
 | M13 | Information on click | Clicking a place on the map, such as a city name, peak or sea, opens a box with relevant data from Wikipedia and Wikidata |
 | M14 | Smooth flight on double-click | Double-clicking land or a label flies there with an accelerating, smooth automatic flight |

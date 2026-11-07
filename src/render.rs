@@ -104,7 +104,13 @@ struct Panel {
     height: u32,
     max_cols: usize,
     scale: usize,
+    /// Where an image panel sits, instead of in a corner.
+    at: Option<[f64; 2]>,
 }
+
+/// Panels 0 to 3 are text panels in corners; the interface's panels follow.
+pub const UI_PANEL_BASE: usize = 4;
+const UI_PANELS: usize = 6;
 
 #[derive(Clone, Copy)]
 pub enum Corner {
@@ -172,7 +178,7 @@ pub struct Renderer {
     instance_capacity: usize,
     depth: Option<(wgpu::TextureView, u32, u32)>,
     tiles: HashMap<TileKey, GpuTile>,
-    panels: [Panel; 4],
+    panels: Vec<Panel>,
     frame_no: u64,
 }
 
@@ -706,8 +712,9 @@ impl Renderer {
             height: 0,
             max_cols: 0,
             scale: 1,
+            at: None,
         };
-        let panels = [panel(), panel(), panel(), panel()];
+        let panels = (0..UI_PANEL_BASE + UI_PANELS).map(|_| panel()).collect();
 
         Self {
             tile_pipeline,
@@ -1008,6 +1015,9 @@ impl Renderer {
         let margin = 8.0;
         let (sw, sh) = (width as f64, height as f64);
         let (pw, ph) = (p.width as f64, p.height as f64);
+        if let Some([x, y]) = p.at {
+            return [x, y, x + pw, y + ph];
+        }
         let (x0, y0) = match corner {
             Corner::TopRight => (sw - pw - margin, margin),
             Corner::BottomLeft => (margin, sh - ph - margin),
@@ -1087,6 +1097,35 @@ impl Renderer {
         }
         let lines = text::wrap(content, max_cols);
         let (w, h, rgba) = text::rasterize(&lines, scale);
+        self.upload_panel(i, w, h, &rgba);
+        let p = &mut self.panels[i];
+        p.text = content.to_string();
+        p.max_cols = max_cols;
+        p.scale = scale;
+    }
+
+    /// Shows an image from the interface at a screen position, or hides the panel for `None`.
+    /// `i` counts from the first interface panel.
+    pub fn set_ui_panel(&mut self, i: usize, image: Option<([f64; 2], u32, u32, &[u8])>) {
+        let i = UI_PANEL_BASE + i;
+        let Some((at, w, h, rgba)) = image else {
+            let p = &mut self.panels[i];
+            (p.bind_group, p.texture, p.width, p.height, p.at) = (None, None, 0, 0, None);
+            return;
+        };
+        if w == 0 || h == 0 {
+            return;
+        }
+        self.upload_panel(i, w, h, rgba);
+        self.panels[i].at = Some(at);
+    }
+
+    pub fn ui_panel_count() -> usize {
+        UI_PANELS
+    }
+
+    fn upload_panel(&mut self, i: usize, w: u32, h: u32, rgba: &[u8]) {
+        let p = &self.panels[i];
         let same_size = p.width == w && p.height == h && p.texture.is_some();
         if !same_size {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -1114,11 +1153,8 @@ impl Renderer {
             p.bind_group = Some(bind);
         }
         let p = &mut self.panels[i];
-        p.text = content.to_string();
         p.width = w;
         p.height = h;
-        p.max_cols = max_cols;
-        p.scale = scale;
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: p.texture.as_ref().unwrap(),
@@ -1126,7 +1162,7 @@ impl Renderer {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &rgba,
+            rgba,
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
@@ -1261,6 +1297,9 @@ impl Renderer {
         self.place_panel(1, Corner::TopRight, width, height);
         self.place_panel(2, Corner::TopLeft, width, height);
         self.place_panel(3, Corner::TopLeft, width, height);
+        for i in UI_PANEL_BASE..self.panels.len() {
+            self.place_panel(i, Corner::TopLeft, width, height);
+        }
         let depth = self.depth_view(width, height);
         let msaa = self.msaa_view(width, height);
         // With anti-aliasing the target only receives the resolved image.
