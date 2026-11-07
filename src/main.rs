@@ -11,8 +11,10 @@ mod loader;
 mod nav;
 mod overlay;
 mod pacing;
+mod planets;
 mod render;
 mod select;
+mod sky;
 mod sky_time;
 mod servers;
 mod sources;
@@ -25,7 +27,7 @@ use atlas_nav::AtlasNav;
 use cache::DiskCache;
 use camera::Camera;
 use fetcher::{Fetcher, Peers};
-use geo::TileKey;
+use geo::{ecef_to_geodetic, TileKey};
 use glam::DVec2;
 use labels::{Screen, TextKey, TextWorker, ATLAS_SIZE};
 use loader::{Loader, Outcome, VECTOR_MAX_Z};
@@ -51,6 +53,8 @@ const CREDITS: &str = "EOxCloudless https://cloudless.eox.at by EOX IT Services 
 (Contains modified Copernicus Sentinel data 2024)\n\
 Terrain: © Mapterhorn https://mapterhorn.com/attribution\n\
 Map: OpenFreeMap © OpenMapTiles Data from OpenStreetMap";
+/// Shown while the stars are displayed.
+const STARS_CREDIT: &str = "Stars: HYG database by David Nash, CC BY-SA 4.0";
 const GIB: u64 = 1024 * 1024 * 1024;
 const CACHE_LIMIT_GIB: u64 = 10;
 /// A long-running program checks its cache's size this often.
@@ -84,6 +88,7 @@ Usage: orbis [options]
   --time ISO8601          set the clock, such as 2026-06-21T12:00:00Z (default now, UTC)
   --time-speed N          clock seconds per real second (default 1)
   --no-sun                start with flat, always-lit imagery (key S)
+  --no-stars              start with stars, planets and the Moon hidden (key O)
   --fps 120|90            frame rate limit (default 120, key F switches)
   --benchmark SECONDS     turn the view in the window, print frame timings and exit
   --cache-dir PATH        tile cache location
@@ -120,6 +125,7 @@ struct Args {
     time: Option<f64>,
     time_speed: f64,
     sun: bool,
+    stars: bool,
     limit: FrameLimit,
     benchmark: Option<f64>,
     cache_limit_gib: u64,
@@ -166,6 +172,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
         time: None,
         time_speed: 1.0,
         sun: true,
+        stars: true,
         limit: FrameLimit::Fps120,
         benchmark: None,
         cache_limit_gib: CACHE_LIMIT_GIB,
@@ -189,6 +196,10 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             }
             "--no-buildings" => {
                 a.buildings = false;
+                continue;
+            }
+            "--no-stars" => {
+                a.stars = false;
                 continue;
             }
             "--no-sun" => {
@@ -335,6 +346,11 @@ struct Scene {
     sun_on: bool,
     /// The clock reading when the picture was last drawn.
     drawn_time: f64,
+    /// Stars, planets and the Moon are shown.
+    sky_on: bool,
+    /// The planets and the Moon as of `bodies_time`.
+    bodies: Vec<planets::Body>,
+    bodies_time: f64,
     fetcher: Arc<Fetcher>,
     /// Keeps a slow tick going for tiles waiting out a retry delay.
     last_retry_tick: Instant,
@@ -534,14 +550,33 @@ impl Scene {
             clock_epoch: Instant::now(),
             sun_on: args.sun,
             drawn_time: 0.0,
+            sky_on: args.stars,
+            bodies: Vec::new(),
+            bodies_time: f64::NEG_INFINITY,
         }
     }
 
     /// Brings the clock up to date and hands the Sun's place to the renderer.
     fn sync_sky(&mut self, r: &mut Renderer) {
         self.clock.advance(self.clock_epoch.elapsed().as_secs_f64());
-        r.sun = Sun::at(self.clock.time()).direction();
+        let time = self.clock.time();
+        r.sun = Sun::at(time).direction();
         r.sun_on = self.sun_on;
+        r.sky_on = self.sky_on;
+        if !r.has_stars() {
+            r.set_stars(&sky::star_points());
+        }
+        r.sky_rot = sky::earth_fixed(time);
+        let (_, _, height) = ecef_to_geodetic(self.nav.cam.basis().pos);
+        let sun_sin = self.sun_on.then(|| self.nav.cam.basis().pos.normalize().dot(r.sun));
+        r.sky_limit = sky::limiting_magnitude(height, sun_sin);
+        // Planets move slowly: a few seconds' error is far below a pixel.
+        if (time - self.bodies_time).abs() > 10.0 {
+            self.bodies = planets::bodies(time);
+            let points: Vec<_> = self.bodies.iter().map(|b| b.point()).collect();
+            r.set_sky_bodies(&points);
+            self.bodies_time = time;
+        }
         self.drawn_time = self.clock.time();
     }
 
@@ -780,9 +815,54 @@ impl Scene {
                 }
             })
             .collect();
+        let mut instances = instances;
+        instances.extend(self.sky_labels(r, &screen, scale));
         self.labels_shown = instances.len();
         self.label_alpha = alpha;
         r.set_labels(&instances);
+    }
+
+    /// Names for the planets and the Moon where they are seen, above the ground and bright
+    /// enough to be visible.
+    fn sky_labels(&mut self, r: &mut Renderer, screen: &Screen, scale: u32) -> Vec<LabelInstance> {
+        if !self.sky_on || !r.has_stars() {
+            return Vec::new();
+        }
+        let pos = screen.basis.pos;
+        let rotation = r.sky_rot;
+        let atlas = ATLAS_SIZE as f32;
+        let mut out = Vec::new();
+        for body in &self.bodies {
+            let fade = ((r.sky_limit - body.mag) / 1.5).clamp(0.0, 1.0);
+            if fade < 0.3 {
+                continue;
+            }
+            let dir = (rotation * body.dir).normalize();
+            if geo::ray_ellipsoid(pos, dir, 0.0).is_some() {
+                continue;
+            }
+            let Some(p) = screen.project(pos + dir * 1.0e10) else { continue };
+            if p.x < 0.0 || p.y < 0.0 || p.x > screen.size.x || p.y > screen.size.y {
+                continue;
+            }
+            let key = TextKey { text: body.name.to_string(), style: vector::LabelStyle::Sea, scale };
+            let Some(rect) = r.label_rect(&key, &mut self.text) else { continue };
+            let look = labels::appearance(key.style);
+            let radius = if body.radius > 0.0 { 7.0 } else { 6.0 };
+            out.push(LabelInstance {
+                center: [p.x as f32 + rect.w as f32 / 2.0 + radius as f32, p.y as f32 - rect.h as f32 / 2.0],
+                half: [rect.w as f32 / 2.0, rect.h as f32 / 2.0],
+                uv: [
+                    rect.x as f32 / atlas,
+                    rect.y as f32 / atlas,
+                    (rect.x + rect.w) as f32 / atlas,
+                    (rect.y + rect.h) as f32 / atlas,
+                ],
+                fill: [look.fill[0], look.fill[1], look.fill[2], fade as f32],
+                halo: [look.halo[0], look.halo[1], look.halo[2], 0.0],
+            });
+        }
+        out
     }
 
     /// True while labels are still arriving or fading in.
@@ -830,7 +910,11 @@ impl Scene {
 
     fn set_panels(&self, r: &mut Renderer, width: u32, scale: usize) {
         let columns = ((width as usize).saturating_sub(40) / (8 * scale)).max(20);
-        let credits = credits_for(self.draw.iter().map(|k| r.tile_credit(*k)));
+        let mut credits = credits_for(self.draw.iter().map(|k| r.tile_credit(*k)));
+        if self.sky_on && self.mode == Mode::Globe {
+            credits.push('\n');
+            credits.push_str(STARS_CREDIT);
+        }
         r.set_panel(0, &credits, columns, scale);
         r.set_panel(1, &self.hud(r), columns, scale);
     }
@@ -1388,6 +1472,9 @@ impl ApplicationHandler for App {
                         KeyCode::KeyB if !self.mods.ctrl => {
                             gfx.scene.buildings_on = !gfx.scene.buildings_on;
                         }
+                        KeyCode::KeyO if !self.mods.ctrl => {
+                            gfx.scene.sky_on = !gfx.scene.sky_on;
+                        }
                         KeyCode::KeyL if !self.mods.ctrl => {
                             gfx.scene.labels_on = !gfx.scene.labels_on;
                         }
@@ -1573,6 +1660,9 @@ mod tests {
         assert_eq!((a.time, a.time_speed, a.sun), (Some(1_782_043_200.0), 60.0, false));
         assert!(parse(&["--time", "noon"]).is_err());
         assert!(parse(&[]).unwrap().unwrap().sun);
+        assert!(parse(&[]).unwrap().unwrap().stars);
+        assert!(!parse(&["--no-stars"]).unwrap().unwrap().stars);
+        assert_eq!(parse(&["--tilt", "100"]).unwrap().unwrap().cam.sky.to_degrees().round(), 15.0);
     }
 
     #[test]

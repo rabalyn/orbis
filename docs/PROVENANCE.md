@@ -45,6 +45,22 @@ the capability documents of the PDOK, Bavaria, NRW, Lower Saxony and Berlin serv
 document, and VersaTiles' sources page, which lists a licence per country. USGS products are
 listed as US public domain from general knowledge; its terms page could not be loaded.
 
+### Stars and planets
+
+| Data | Source | Terms | Credit shown in the app |
+|---|---|---|---|
+| Star positions, magnitudes and colours | [HYG database v4.4](https://www.astronexus.com/projects/hyg) by David Nash (compiled from Hipparcos, Yale Bright Star and Gliese catalogues), file `data/hyg/CURRENT/hyg_v44.csv.gz` in the [archive](https://codeberg.org/astronexus/hyg) | Creative Commons Attribution-ShareAlike 4.0, stated on the project page, in the archive's README and its LICENSE file. Redistribution and adaptation are allowed with credit, and adaptations under the same licence | `Stars: HYG database by David Nash, CC BY-SA 4.0` |
+
+`data/stars.bin` is a derived table of 5,070 stars of magnitude 6.0 or brighter, six bytes each (right
+ascension, declination, magnitude and colour index, quantised), made with `tools/gen_stars.py` from the
+HYG file above. It is an adaptation of the HYG database, so it is under CC BY-SA 4.0 too. Compiling it
+into the program is a collection and does not change the licence of the program's own code.
+
+The planets use the orbital elements of JPL's "Keplerian elements for approximate positions of the major
+planets" (Table 1, 1800-2050, https://ssd.jpl.nasa.gov/planets/approx_pos.html), the Moon uses the
+Astronomical Almanac's low-precision lunar formulae, and sidereal time and precession follow the Almanac
+and Meeus, "Astronomical Algorithms". These are published formulae and constants, not data files.
+
 The credits must stay visible wherever the data is displayed, including saved images.
 Label text comes from the system's installed fonts; none are bundled.
 EOX's license page does not explicitly address its public WMTS endpoint, and Mapterhorn's

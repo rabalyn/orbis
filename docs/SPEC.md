@@ -43,6 +43,7 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | , and . | Step the clock back or forward by one hour, or one day with Shift |
 | T | Set the clock back to the real time, running at normal speed |
 | S | Switch between sunlight and flat, always-lit imagery |
+| O | Show or hide stars, planets and the Moon (globe only) |
 | F | Switch the frame rate limit between 120 and 90 fps |
 | Ctrl-Q | Quit |
 
@@ -171,8 +172,44 @@ sharper imagery near the ground.
 ### Limitations
 - Imagery already contains the light of the day it was taken, so lit slopes are lit twice.
 - The clock ignores leap seconds and the difference between UT and terrestrial time (under 70 s).
-- No shadows cast by terrain or buildings, no clouds, no sunrise colours in the sky from the ground.
-- Stars, planets and looking up into the sky are still to come.
+- No shadows cast by terrain or buildings, no clouds.
+
+## Milestone 5b: the sky (done)
+
+### Looking up
+- Tilting past the horizon is possible (see Navigation), so the camera can look at the horizon and up
+  into the sky from a view point on or above the ground. Tile selection and labels follow what is on screen.
+
+### Sky colour and Sun
+- Seen from inside the atmosphere the sky is a blue gradient, lighter at the horizon, that darkens
+  with the Sun's altitude to night. A low Sun warms the sky around it and along the horizon.
+  The effect fades out with height over about 15 km, giving way to the glow seen from space.
+- The Sun is drawn as a small bright disc with a halo, reddened when low, from the ground and from space.
+- With S (flat light) the sky stays at its daytime blue and shows no Sun.
+
+### Stars, planets and the Moon
+- About 5,000 stars down to magnitude 6 from the HYG database (J2000 positions, magnitudes, B-V colour),
+  bundled as a compact table (see PROVENANCE.md). Stars are points whose size and brightness follow
+  their magnitude, tinted by colour. They are drawn in one instanced draw.
+- Stars are rotated by Greenwich mean sidereal time (Astronomical Almanac formula) and precessed from J2000
+  to the date, so they turn with the clock.
+- Mercury, Venus, Mars, Jupiter and Saturn come from JPL's approximate Keplerian elements (arcminutes,
+  1800-2050) and the Moon from the Astronomical Almanac's low-precision lunar formulae (about 0.3°).
+  Planets are points with their magnitudes; the Moon is a disc lit by the Sun, so it shows its phase,
+  drawn at least 10 pixels wide. Names are drawn beside them while labels are on (L).
+- Faint objects disappear as the sky brightens: at night within the air all of them show, in daylight only
+  Venus and the Moon, and from space everything shows, even over the day side.
+- O (or `--no-stars` at the start) hides stars, planets, the Moon and their names.
+- The stars credit is shown while they are displayed, also in saved images.
+
+### Limitations
+- Positions are geocentric: the Moon can be up to 1° off for an observer, and the Moon, planets and
+  stars are at infinity, so a camera far from the Earth does not see parallax.
+- No Saturn rings in its brightness, no other planets, no constellation lines, no star names, no
+  deep-sky objects, no twinkling and no light from the Moon or planets on the ground.
+- The sky ignores terrain: a mountain does not hide a planet behind it, and names of planets behind
+  a mountain are drawn anyway. There are no clouds or haze.
+- The sky is not drawn on the flat map.
 
 ## Later milestones
 
@@ -180,7 +217,6 @@ Order and scope are open, and depend on which features are wanted.
 
 | # | Feature | Notes |
 |---|---|---|
-| M5b | Sky | Stars, planets, looking up into the sky (time, sun, day and night are done) |
 | M6 | Other bodies | Moon, Mars, Mercury, Ceres, Vesta |
 | M7 | Search and saved places | Geocoding, plus KML, KMZ, GeoJSON, GPX and IGC import |
 | M8 | Map service library | User-added WMS, WMTS and XYZ, with an independently built directory |

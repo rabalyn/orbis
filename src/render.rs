@@ -6,10 +6,11 @@ use crate::buildings::{BuildingMesh, BuildingVertex};
 use crate::camera::{Camera, FOV_Y};
 use crate::geo::{geodetic_to_ecef, TileKey, A};
 use crate::labels::{AtlasRect, Mask, Shelves, TextKey, TextWorker, ATLAS_SIZE};
+use crate::sky::SkyPoint;
 use crate::loader::{mesh_indices, TileData, Vertex, GRID, TILE_MAX_Z};
 use crate::text;
 use bytemuck::{Pod, Zeroable};
-use glam::DVec3;
+use glam::{DMat3, DVec3};
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 use std::ops::Range;
@@ -35,7 +36,14 @@ struct FrameUniform {
     viewport: [f32; 4],
     /// Direction to the Sun in the Earth-fixed frame; w is 1 with sunlight, 0 for flat light.
     sun: [f32; 4],
+    /// From J2000 equatorial directions to the Earth-fixed frame, as columns.
+    sky_rot: [[f32; 4]; 4],
+    /// The faintest magnitude that can be seen from here.
+    sky: [f32; 4],
 }
+
+/// Room for the bright planets and the Moon after the stars.
+const SKY_BODIES: usize = 8;
 
 struct GpuTile {
     vertices: wgpu::Buffer,
@@ -126,6 +134,15 @@ pub struct Renderer {
     /// Direction to the Sun in the Earth-fixed frame, and whether it lights the scene.
     pub sun: DVec3,
     pub sun_on: bool,
+    /// Whether stars, planets and the Moon are drawn, the rotation that puts them in the
+    /// Earth-fixed frame, and the faintest magnitude visible from the camera.
+    pub sky_on: bool,
+    pub sky_rot: DMat3,
+    pub sky_limit: f64,
+    sky_points: wgpu::Buffer,
+    star_count: usize,
+    body_count: usize,
+    star_pipeline: wgpu::RenderPipeline,
     frame_buffer: wgpu::Buffer,
     frame_bind: wgpu::BindGroup,
     tile_layout: wgpu::BindGroupLayout,
@@ -429,6 +446,46 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        let additive = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let added = [Some(wgpu::ColorTargetState {
+            format,
+            blend: Some(wgpu::BlendState { color: additive, alpha: additive }),
+            write_mask: wgpu::ColorWrites::ALL,
+        })];
+        let star_attrs = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4];
+        let star_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("stars"),
+            layout: Some(&sky_pl),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_star"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: size_of::<SkyPoint>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &star_attrs,
+                })],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..Default::default()
+            },
+            depth_stencil: Some(no_depth.clone()),
+            multisample,
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_star"),
+                compilation_options: Default::default(),
+                targets: &added,
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let sky_points = create_sky_buffer(&device, 0);
         let building_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("building"),
             bind_group_layouts: &[Some(&frame_layout)],
@@ -659,6 +716,13 @@ impl Renderer {
             roads_visible: true,
             sun: DVec3::X,
             sun_on: true,
+            sky_on: true,
+            sky_rot: DMat3::IDENTITY,
+            sky_limit: 6.5,
+            sky_points,
+            star_count: 0,
+            body_count: 0,
+            star_pipeline,
             frame_buffer,
             frame_bind,
             tile_layout,
@@ -879,6 +943,25 @@ impl Renderer {
         self.label_rects.insert(mask.key, Some(AtlasRect { x, y, w: mask.width, h: mask.height }));
     }
 
+    /// Loads the stars, once. Planets and the Moon follow them in the same buffer.
+    pub fn set_stars(&mut self, stars: &[SkyPoint]) {
+        self.sky_points = create_sky_buffer(&self.device, stars.len());
+        self.queue.write_buffer(&self.sky_points, 0, bytemuck::cast_slice(stars));
+        self.star_count = stars.len();
+        self.body_count = 0;
+    }
+
+    pub fn has_stars(&self) -> bool {
+        self.star_count > 0
+    }
+
+    pub fn set_sky_bodies(&mut self, bodies: &[SkyPoint]) {
+        let bodies = &bodies[..bodies.len().min(SKY_BODIES)];
+        let offset = (self.star_count * size_of::<SkyPoint>()) as u64;
+        self.queue.write_buffer(&self.sky_points, offset, bytemuck::cast_slice(bodies));
+        self.body_count = bodies.len();
+    }
+
     pub fn set_labels(&mut self, instances: &[LabelInstance]) {
         if instances.len() > self.label_capacity {
             self.label_capacity = instances.len().next_power_of_two();
@@ -1088,6 +1171,12 @@ impl Renderer {
             look: vec4(basis.look, 0.0),
             viewport: [width as f32, height as f32, 0.0, 0.0],
             sun: [self.sun.x as f32, self.sun.y as f32, self.sun.z as f32, if self.sun_on { 1.0 } else { 0.0 }],
+            sky_rot: {
+                let r = self.sky_rot;
+                let c = |v: DVec3| [v.x as f32, v.y as f32, v.z as f32, 0.0];
+                [c(r.x_axis), c(r.y_axis), c(r.z_axis), [0.0, 0.0, 0.0, 1.0]]
+            },
+            sky: [self.sky_limit as f32, 0.0, 0.0, 0.0],
         };
         self.queue.write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
 
@@ -1170,6 +1259,13 @@ impl Renderer {
                 pass.set_pipeline(&self.sky_pipeline);
                 pass.draw(0..3, 0..1);
 
+                let points = (self.star_count + self.body_count) as u32;
+                if self.sky_on && points > 0 {
+                    pass.set_pipeline(&self.star_pipeline);
+                    pass.set_vertex_buffer(0, self.sky_points.slice(..));
+                    pass.draw(0..4, 0..points);
+                }
+
                 pass.set_pipeline(&self.tile_pipeline);
                 pass.set_vertex_buffer(1, self.instances.slice(..));
 
@@ -1228,6 +1324,15 @@ fn create_label_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("label instances"),
         size: (capacity * size_of::<LabelInstance>()) as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn create_sky_buffer(device: &wgpu::Device, stars: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("sky points"),
+        size: ((stars + SKY_BODIES).max(1) * size_of::<SkyPoint>()) as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })

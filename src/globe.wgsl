@@ -10,6 +10,10 @@ struct Frame {
     viewport: vec4<f32>,
     // Direction to the Sun in the Earth-fixed frame; w is 1 with sunlight and 0 for flat light.
     sun: vec4<f32>,
+    // From J2000 equatorial directions to the Earth-fixed frame.
+    sky_rot: mat4x4<f32>,
+    // The faintest magnitude that can be seen from here.
+    sky: vec4<f32>,
 }
 
 const EARTH_RADIUS: f32 = 6378137.0;
@@ -193,6 +197,29 @@ fn vs_sky(@builtin(vertex_index) i: u32) -> SkyOut {
     return out;
 }
 
+// Air seen from inside the atmosphere: daylight blue, the warm glow of a low Sun, then night.
+fn sky_inside(dir: vec3<f32>, up: vec3<f32>) -> vec3<f32> {
+    let e = dot(dir, up);
+    var s = 1.0;
+    var cg = -1.0;
+    if (frame.sun.w > 0.5) {
+        s = dot(up, frame.sun.xyz);
+        cg = dot(dir, frame.sun.xyz);
+    }
+    // Daylight, from the end of nautical twilight to a Sun about nine degrees up.
+    let k = smoothstep(-0.2, 0.15, s);
+    let zenith = vec3<f32>(0.03, 0.14, 0.50);
+    let horizon = vec3<f32>(0.34, 0.58, 0.90);
+    let day = mix(horizon, zenith, pow(clamp(e, 0.0, 1.0), 0.45));
+    let band = exp(-max(e, 0.0) / 0.12);
+    let low = exp(-s * s / 0.02);
+    let toward = clamp(cg * 0.5 + 0.5, 0.0, 1.0);
+    let warm = vec3<f32>(1.0, 0.30, 0.07);
+    let glow = warm * low * (band * (0.1 + 0.9 * pow(toward, 4.0)) + 0.8 * exp((cg - 1.0) / 0.04));
+    let night = vec3<f32>(0.0015, 0.003, 0.009) + vec3<f32>(0.003, 0.005, 0.012) * band;
+    return night + day * k * k + glow * 0.8;
+}
+
 @fragment
 fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let t = frame.cam.w;
@@ -215,7 +242,99 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
         let dusk = exp(-high * high / 0.02);
         colour = colour * mix(0.04, 1.0, lit) + vec3<f32>(0.9, 0.38, 0.15) * glow * dusk * 0.5;
     }
+    // Close to the ground the whole sky is air; the weight fades out over 15 km.
+    let altitude = (length(o) - 1.0) * EARTH_RADIUS;
+    let inside = exp(-max(altitude, 0.0) / 15000.0);
+    if (inside > 0.002) {
+        colour = mix(colour, sky_inside(dir, normalize(o)), inside);
+    }
+    if (frame.sun.w > 0.5) {
+        // The Sun's disc and the bright halo around it.
+        let cg = dot(dir, frame.sun.xyz);
+        if (cg > 0.0) {
+            let a = length(cross(dir, frame.sun.xyz));
+            let low = exp(-pow(max(dot(normalize(o), frame.sun.xyz), -0.1), 2.0) / 0.02);
+            let tint = mix(vec3<f32>(1.0, 0.96, 0.88), vec3<f32>(1.0, 0.5, 0.22), low);
+            let core = 1.0 - smoothstep(0.0042, 0.0052, a);
+            colour = colour + tint * (core * 6.0 + exp(-a / 0.012) * 0.35 * inside);
+        }
+    }
     return vec4<f32>(colour, 1.0);
+}
+
+// Stars, planets and the Moon, drawn additively on the sky
+
+struct StarOut {
+    @builtin(position) clip: vec4<f32>,
+    // Offset from the centre in units of half the quad's size, y up.
+    @location(0) local: vec2<f32>,
+    @location(1) colour: vec3<f32>,
+    // The point's radius and the quad's half size in pixels, the brightness, and 1 for a disc.
+    @location(2) shape: vec4<f32>,
+    @location(3) dir: vec3<f32>,
+}
+
+@vertex
+fn vs_star(
+    @builtin(vertex_index) i: u32,
+    @location(0) pos_mag: vec4<f32>,
+    @location(1) colour_radius: vec4<f32>,
+) -> StarOut {
+    var out: StarOut;
+    out.clip = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+    let d = normalize((frame.sky_rot * vec4<f32>(pos_mag.xyz, 0.0)).xyz);
+    let depth = dot(d, frame.look.xyz);
+    if (depth < 0.02) {
+        return out;
+    }
+    let mag = pos_mag.w;
+    let fade = clamp((frame.sky.x - mag) / 1.5, 0.0, 1.0);
+    if (fade <= 0.0) {
+        return out;
+    }
+    let t = frame.cam.w;
+    let ndc = vec2<f32>(
+        dot(d, frame.right.xyz) / (depth * t * frame.right.w),
+        dot(d, frame.up.xyz) / (depth * t),
+    );
+    var radius = clamp(0.9 + 0.55 * max(4.0 - mag, 0.0), 0.9, 5.5);
+    var bright = (0.2 + 0.8 * pow(clamp((6.6 - mag) / 6.6, 0.0, 1.0), 1.5)) * fade;
+    var disc = 0.0;
+    if (colour_radius.w > 0.0) {
+        radius = max(colour_radius.w * 0.5 * frame.viewport.y / (t * depth * depth), 5.0);
+        bright = fade;
+        disc = 1.0;
+    }
+    let half_px = radius + 2.0;
+    let corner = vec2<f32>(f32(i & 1u), f32((i >> 1u) & 1u)) * 2.0 - 1.0;
+    let off = corner * half_px * 2.0 / frame.viewport.xy;
+    out.clip = vec4<f32>(ndc + off, 0.0, 1.0);
+    out.local = corner;
+    out.colour = colour_radius.xyz;
+    out.shape = vec4<f32>(radius, half_px, bright, disc);
+    out.dir = d;
+    return out;
+}
+
+@fragment
+fn fs_star(in: StarOut) -> @location(0) vec4<f32> {
+    let p = in.local * in.shape.y;
+    let r = length(p);
+    var colour = in.colour;
+    var cover = exp(-r * r / (in.shape.x * in.shape.x * 0.5));
+    if (in.shape.w > 0.5) {
+        cover = clamp(in.shape.x - r + 0.5, 0.0, 1.0);
+        // The Moon is a ball lit by the Sun: its normal here, then the light on it.
+        let q = p / in.shape.x;
+        let z = sqrt(max(1.0 - dot(q, q), 0.0));
+        let n = frame.right.xyz * q.x + frame.up.xyz * q.y - in.dir * z;
+        var lit = 1.0;
+        if (frame.sun.w > 0.5) {
+            lit = smoothstep(-0.03, 0.03, dot(n, frame.sun.xyz));
+        }
+        colour = colour * (0.04 + 0.96 * lit);
+    }
+    return vec4<f32>(colour * cover * in.shape.z, 1.0);
 }
 
 // Text panels
