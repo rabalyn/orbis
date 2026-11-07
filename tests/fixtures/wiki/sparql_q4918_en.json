@@ -1,0 +1,80 @@
+{
+  "head" : {
+    "vars" : [ "classes", "classLabels", "countryLabel", "pop", "popDate", "elev", "area", "site", "tzLabel" ]
+  },
+  "results" : {
+    "bindings" : [ {
+      "classes" : {
+        "type" : "literal",
+        "value" : "Q166620 Q1973404"
+      },
+      "classLabels" : {
+        "type" : "literal",
+        "value" : "drainage basin, adjacent sea"
+      },
+      "elev" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "0"
+      },
+      "area" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "2500000000000"
+      },
+      "countryLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "Spain"
+      }
+    }, {
+      "classes" : {
+        "type" : "literal",
+        "value" : "Q166620 Q1973404"
+      },
+      "classLabels" : {
+        "type" : "literal",
+        "value" : "drainage basin, adjacent sea"
+      },
+      "elev" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "0"
+      },
+      "area" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "2500000000000"
+      },
+      "countryLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "Italy"
+      }
+    }, {
+      "classes" : {
+        "type" : "literal",
+        "value" : "Q166620 Q1973404"
+      },
+      "classLabels" : {
+        "type" : "literal",
+        "value" : "drainage basin, adjacent sea"
+      },
+      "elev" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "0"
+      },
+      "area" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "2500000000000"
+      },
+      "countryLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "Greece"
+      }
+    } ]
+  }
+}

@@ -6,6 +6,7 @@
   "cities": true,
   "event_markers": true,
   "frame_rate_limit": 120,
+  "info_on_click": true,
   "language": "",
   "other_names": true,
   "projection": "Equal Earth",

@@ -313,7 +313,6 @@ impl AtlasView {
     }
 
     /// Latitude and longitude at a window position, or `None` outside the map.
-    #[cfg(test)]
     pub fn lat_lon_at(&self, px: f64, py: f64) -> Option<(f64, f64)> {
         let (x, y) = self.map_of((px, py));
         let (lat, dlon) = self.projection.inverse(x, y)?;

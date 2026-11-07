@@ -302,13 +302,13 @@ pub struct Reply {
 }
 
 /// Stored answers carry the time they were fetched in a first line.
-fn pack(now: f64, body: &[u8]) -> Vec<u8> {
+pub(crate) fn pack(now: f64, body: &[u8]) -> Vec<u8> {
     let mut out = format!("orbis-feed {now:.0}\n").into_bytes();
     out.extend_from_slice(body);
     out
 }
 
-fn unpack(data: &[u8]) -> Option<(f64, &str)> {
+pub(crate) fn unpack(data: &[u8]) -> Option<(f64, &str)> {
     let end = data.iter().position(|b| *b == b'\n')?;
     let stamp = std::str::from_utf8(&data[..end]).ok()?.strip_prefix("orbis-feed ")?.parse().ok()?;
     Some((stamp, std::str::from_utf8(&data[end + 1..]).ok()?))
@@ -322,7 +322,7 @@ fn cache_name(feed: Feed, url: &str) -> String {
     format!("events/{}-{h:016x}.json", feed.source())
 }
 
-fn unix_now() -> f64 {
+pub(crate) fn unix_now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 

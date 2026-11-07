@@ -24,6 +24,7 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | Shift-drag | Climb or sink (vertical), look around from the same spot (horizontal) |
 | Scroll | Zoom around the point under the pointer |
 | Alt-scroll / Shift-scroll | Tilt / look around |
+| Click | Open the information box for the label or ground under the pointer (Wikipedia and Wikidata); with the box open, close it instead |
 | Double-click, Shift-double-click | Fly smoothly to the label or ground point under the pointer: one level closer (a place gets a distance that suits it), or with Shift one level farther |
 | Arrow keys | Fly forward, back and sideways; speed builds while held |
 | Alt-arrows | Tilt and turn around the view point |
@@ -32,7 +33,7 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | Ctrl-0 | Whole Earth, or the whole map on the map |
 | Ctrl-Alt-N | Straighten up, one step per press: north up, straight down, whole body, equator centred |
 | SpaceMouse | Push or pull: climb or sink; slide: move across the ground; twist: turn; tilt: tilt, and on through the horizon; button 1: whole body (Ctrl-0); button 2: straighten up (Ctrl-Alt-N). On the map: slide pans, push or pull zooms (see Milestone 10) |
-| Escape | Stop a flight or a gliding movement; or, while the help or the view options window is open, close it |
+| Escape | Stop a flight or a gliding movement; or, while the information box, the help or the view options window is open, close it |
 | R | Show or hide all map lines: streets, trails, trains and boundaries (if any is shown they all go, otherwise they all come back) |
 | L | Show or hide all names: place names and other names (the same way) |
 | B | Show or hide 3D buildings (globe only) |
@@ -493,7 +494,7 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
 
 ### Clicks on the map
 - A press and release on the map (not on a panel) is classified: further than 5 pixels apart, or held longer than 0.3 s, is a drag; otherwise a click. A second click within 0.4 s and 6 pixels of the first is a double click.
-- A single click is reported only once the double-click window has passed without a second click, so a double click never also gives a single one. A double click is reported at once and starts a smooth flight (Milestone 14). Both go through one function (`Scene::on_map_click`); a single click does nothing yet, and picking a place for information is built on it.
+- A single click is reported only once the double-click window has passed without a second click, so a double click never also gives a single one. A double click is reported at once and starts a smooth flight (Milestone 14). Both go through one function (`Scene::on_map_click`); a single click opens the information box (Milestone 13).
 
 ### Help window
 - A small square with a question mark sits in the bottom right corner, always shown. Clicking it, or pressing H, ? or F1, shows or hides the window of keyboard and mouse controls. Its close button and Escape hide it (Escape does nothing else while it is open).
@@ -557,13 +558,36 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
 - A label's distance depends only on its kind and the importance it was drawn with, not on the size of the place.
 - On the flat map a flight is a straight pan in map coordinates; near the edge of a projection it is clamped to the map.
 
+## Milestone 13: information on click (done, untried in a window)
+
+### Behaviour
+- A single click on the map (after the double-click window, so a double click never opens it) asks about what is under the pointer: a placed label if there is one, else the ground point. Nothing is asked at start, on hover or while moving; no request is made unless the click needs one. The checkbox "Information on click" in the view options (saved as `info_on_click`, default on; `--no-info`) switches it off: no box and no requests.
+- The box is a panel at the bottom left, above the credits, with a close button and Escape. It opens at once, with "Looking up..." until the answer comes; the interface never waits for the network. With the box open, a click on the map only closes it and does nothing else (a double click still flies, and closes it). Where it would overlap the help or the options window, the one opened last stays.
+- A label is looked up in Wikipedia in the interface's language (`--lang`, the saved language or the locale), and in English if the first search has no match. The article is accepted only if its title is the label's name (a bracketed or comma qualifier such as "Paris, Texas" is allowed), it is not a disambiguation page, and its own coordinates, on Earth, lie within a radius that fits the label kind (peak 3 km, quarter 4 km, village 6 km, town 12 km, city 30 km, lake 100 km, state 1000 km, sea 2500 km, country 3000 km). Two places of that name both in range and not clearly apart (the second within three times the nearest one's distance plus a kilometre) give no match. Countries and seas must also be of that kind in Wikidata (instance of country or sovereign state, or sea, ocean, strait, bay and the like), and a country or sea whose article has no coordinates is accepted on name alone only with that check. Labels of streets are never looked up. Without a confident match the box says "No article found for NAME." and nothing is guessed.
+- Small places (peak, quarter, village, town, city) that the word search does not list are also looked for among the articles around the label (at most 10 km, the service's limit) and matched the same way.
+- Open ground shows the coordinates and up to five articles nearby, nearest first, with their distances. The radius follows the altitude (0.4 times it, from 1 to 10 km). A row opens that article in the box.
+- The article box shows the title, the one-line description, facts from Wikidata where there are some (type, country or countries, population with the year, elevation, area, official website, time zone), then the article's introduction as plain text, scrollable, and the credit: the article's title, "(xx.wikipedia.org), CC BY-SA 4.0" and for facts "Wikidata, CC0". The credit stays in the box while the content is shown, so it is in saved images. A button opens the article in the default browser (`xdg-open` with the https address from the API, checked to be a Wikipedia address, started without a shell; a failure is shown in the box). Text only: no images.
+- Requests: at most five per click, one after another and at least 0.3 s apart, through the fetcher (user agent, pauses, back-off). Wikipedia: a search (and one in English if needed), a search around a small label, the text; Wikidata's query service: one query for the facts. All answers are kept on disk for a week; with `--offline` only kept answers are used and otherwise the box says so. Answers that do not parse are never kept, a stale answer is used when the service cannot be reached, and a service that asks to wait pauses further requests as everywhere.
+- On other bodies the box shows the coordinates and says that information is available for Earth only; nothing is asked.
+- On the flat map a click on the map gives the ground list; there are no labels to pick there.
+- Headless: `--simulate-click X,Y` opens the box like a real click, and the image waits for the answer. `--lang` chooses the language, `--offline` the stored answers.
+- Sources and terms are in PROVENANCE.md.
+
+### Limitations
+- The box uses the built-in font (ASCII and Latin-1, with accents of Latin Extended-A folded to plain letters and common punctuation simplified). Other scripts (Cyrillic, Greek, CJK, Arabic, Hebrew, Vietnamese and so on) show as `?`, so articles in those languages are largely unreadable; pronunciation guides are dropped.
+- Wikipedia's word search ranks by words, so a place with a common name may be found only by the search around the label, which reaches 10 km; a village label whose article lies farther, or has no coordinates, gets no article. Names on labels that differ from the article's title (an exonym, a local spelling) get none.
+- Wikipedia's coordinates for countries and seas are rough, hence the large radii.
+- The facts are taken as Wikidata states them; population is the newest statement that is not deprecated, which may be old or an estimate.
+- The public Wikidata query service throttles clients. When it asks to wait, articles still show without facts, but countries and seas, which need the class check, show a message instead.
+- No marker is drawn at the selected place.
+- The user agent has no contact address, which Wikimedia's policy asks for (see PROVENANCE.md).
+
 ## Later milestones
 
 Order and scope are open, and depend on which features are wanted.
 
 | # | Feature | Notes |
 |---|---|---|
-| M13 | Information on click | Clicking a place on the map, such as a city name, peak or sea, opens a box with relevant data from Wikipedia and Wikidata |
 | M15 | Cast shadows | Terrain and buildings cast shadows calculated from their height and the Sun's position |
 | M16 | Time slider | A slider for travelling in time, moving the Sun, Moon and planets continuously, and with them shadows, day and night, and solar and lunar eclipses. Depends on M11, and on M15 for shadows. Dates beyond the range of the planet formulae (about 1800 to 2050) are limited or marked as less accurate |
 

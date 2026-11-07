@@ -123,6 +123,27 @@ searches. The policy may change without notice and the service may be withdrawn:
 and consider a contact address in the user agent. Typed coordinates are read locally and never sent.
 The JSON answers are read with `serde_json` (MIT or Apache-2.0).
 
+### Information on click (Wikipedia and Wikidata)
+
+| Data | Source | Terms | Credit shown in the app |
+|---|---|---|---|
+| Article text, titles, descriptions, coordinates | Wikipedia's MediaWiki Action API, `https://{lang}.wikipedia.org/w/api.php` (generator `search` and `geosearch`, props `coordinates`, `pageprops`, `description`, `info`, `extracts`; JSON) | Text is CC BY-SA 4.0 (and GFDL), per the [Wikimedia Terms of Use](https://foundation.wikimedia.org/wiki/Policy:Terms_of_Use): reuse needs a link or URL to the article, or a list of authors, and the licence named; changes must be indicated. The text is shown as the API gives it, only with pronunciation guides dropped and characters the built-in font lacks simplified or replaced | `Text: Wikipedia, "TITLE" (xx.wikipedia.org), CC BY-SA 4.0.` in the box while it shows the article; the "Open article in browser" button leads to the page and its history |
+| Facts (type, country, population, elevation, area, website, time zone) | Wikidata's query service, `https://query.wikidata.org/sparql`, one SPARQL query per article by item number | Structured data in the main namespaces is CC0 ([Wikidata:Licensing](https://www.wikidata.org/wiki/Wikidata:Licensing)); the page does not say whether credit is expected, so it is given anyway. The [query service manual](https://www.mediawiki.org/wiki/Wikidata_Query_Service/User_Manual) limits each client to 60 s of query time per minute and 5 parallel queries, answers HTTP 429 with Retry-After when exceeded and may ban clients that go on | `Facts: Wikidata, CC0.` in the box while facts are shown |
+
+Etiquette read from [API:Etiquette](https://www.mediawiki.org/wiki/API:Etiquette): requests are serial, at least 0.3 s apart and at most five per click, only
+after a click (nothing at start or on hover), batched through generators, with `maxlag=5`, in JSON, and answers are cached on disk for a week (CACHING.md). A
+`maxlag`, `ratelimited` or HTTP 429 answer pauses the host through the usual back-off. Only text is used, no images, whose licences vary per file.
+
+The [Wikimedia User-Agent policy](https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy) asks for a descriptive agent in the form
+`name/version (contact information)`, and says generic agents may be blocked without notice. **Unresolved gap:** the program's agent is `orbis-globe/0.1` and has no
+contact address, because no personal address or name may be put in it and the project has no generic contact yet. It is distinctive but does not meet the policy; a
+project contact (a page or a role address) must be added before publishing. Requests worked from this agent on 2026-11-07, but the query service answered HTTP 429
+after about ten queries within a few minutes of testing. Wikipedia's licence page and the policies above could be read; nothing about requests per second for the
+Action API beyond "serial, be considerate" was found.
+
+Saved real answers used as test data are in `tests/fixtures/wiki/`: short extracts of Wikipedia text (CC BY-SA 4.0, from the articles Vienna, Tokyo Metropolis and
+Cairo) and facts from Wikidata (CC0), recorded on 2026-11-07, kept with the source's licence.
+
 ### Map service directory (`data/services.json`)
 
 The directory was built independently from each publisher's own documents, and not from any other program's list.

@@ -46,6 +46,8 @@ Every public server, identified by its host name, is tracked separately.
 - Nothing is pre-fetched: only what a view needs is loaded, and queued tiles that leave the view are dropped.
 - `--offline` sends no requests at all. `--cache-status` prints the cache size and server timeouts.
 
+Answers of Wikipedia and Wikidata for the information box (`wikipedia/` in the cache) carry the time they were fetched and are used for a week; when offline or when the service cannot be reached, older ones are used too. Only answers that parse are kept. A click makes at most five such requests, one after another.
+
 Map data does not refresh by itself in this version: a cached tile is used until it is evicted.
 
 ## LAN cache server

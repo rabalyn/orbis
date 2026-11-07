@@ -1,0 +1,86 @@
+{
+  "head" : {
+    "vars" : [ "classes", "classLabels", "countryLabel", "pop", "popDate", "elev", "area", "site", "tzLabel" ]
+  },
+  "results" : {
+    "bindings" : [ {
+      "classes" : {
+        "type" : "literal",
+        "value" : "Q35657"
+      },
+      "classLabels" : {
+        "type" : "literal",
+        "value" : "U.S. state"
+      },
+      "pop" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "10711908"
+      },
+      "popDate" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#dateTime",
+        "type" : "literal",
+        "value" : "2020-04-01T00:00:00Z"
+      },
+      "elev" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "180"
+      },
+      "area" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "153909000000"
+      },
+      "countryLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "United States"
+      },
+      "tzLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "Eastern Time Zone"
+      }
+    }, {
+      "classes" : {
+        "type" : "literal",
+        "value" : "Q35657"
+      },
+      "classLabels" : {
+        "type" : "literal",
+        "value" : "U.S. state"
+      },
+      "pop" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "10711908"
+      },
+      "popDate" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#dateTime",
+        "type" : "literal",
+        "value" : "2020-04-01T00:00:00Z"
+      },
+      "elev" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "180"
+      },
+      "area" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "153909000000"
+      },
+      "countryLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "United States"
+      },
+      "tzLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "America/New_York"
+      }
+    } ]
+  }
+}

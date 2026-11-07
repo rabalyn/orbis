@@ -1,0 +1,84 @@
+{
+  "head" : {
+    "vars" : [ "classes", "classLabels", "countryLabel", "pop", "popDate", "elev", "area", "site", "tzLabel" ]
+  },
+  "results" : {
+    "bindings" : [ {
+      "classes" : {
+        "type" : "literal",
+        "value" : "Q3624078 Q6256"
+      },
+      "classLabels" : {
+        "type" : "literal",
+        "value" : "sovereign state, country"
+      },
+      "pop" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "83467117"
+      },
+      "popDate" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#dateTime",
+        "type" : "literal",
+        "value" : "2025-12-31T00:00:00Z"
+      },
+      "area" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "357587770000"
+      },
+      "site" : {
+        "type" : "uri",
+        "value" : "https://verwaltung.bund.de"
+      },
+      "countryLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "Germany"
+      },
+      "tzLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "UTC+01:00"
+      }
+    }, {
+      "classes" : {
+        "type" : "literal",
+        "value" : "Q3624078 Q6256"
+      },
+      "classLabels" : {
+        "type" : "literal",
+        "value" : "sovereign state, country"
+      },
+      "pop" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "83467117"
+      },
+      "popDate" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#dateTime",
+        "type" : "literal",
+        "value" : "2025-12-31T00:00:00Z"
+      },
+      "area" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "357587770000"
+      },
+      "site" : {
+        "type" : "uri",
+        "value" : "https://verwaltung.bund.de"
+      },
+      "countryLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "Germany"
+      },
+      "tzLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "UTC+02:00"
+      }
+    } ]
+  }
+}

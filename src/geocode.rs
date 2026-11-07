@@ -58,22 +58,22 @@ impl Geocoder {
 }
 
 /// Keeps requests at least a given time apart.
-struct MinGap {
+pub(crate) struct MinGap {
     gap: Duration,
     last: Option<Instant>,
 }
 
 impl MinGap {
-    fn new(gap: Duration) -> Self {
+    pub(crate) fn new(gap: Duration) -> Self {
         Self { gap, last: None }
     }
 
     /// How long to wait before a request at `now`.
-    fn wait(&self, now: Instant) -> Duration {
+    pub(crate) fn wait(&self, now: Instant) -> Duration {
         self.last.map_or(Duration::ZERO, |l| (l + self.gap).saturating_duration_since(now))
     }
 
-    fn sent(&mut self, now: Instant) {
+    pub(crate) fn sent(&mut self, now: Instant) {
         self.last = Some(now);
     }
 }
@@ -126,7 +126,7 @@ fn request_url(service: &str, lang: &str, query: &str) -> String {
     url
 }
 
-fn percent_encode(text: &str) -> String {
+pub(crate) fn percent_encode(text: &str) -> String {
     let mut out = String::new();
     for b in text.bytes() {
         if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {

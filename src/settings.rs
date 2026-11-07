@@ -147,6 +147,8 @@ settings! {
     sunlight: bool = true, "sunlight";
     stars: bool = true, "stars_and_planets";
     event_markers: bool = true, "event_markers";
+    /// A click on the map looks up Wikipedia and Wikidata for the place.
+    info_on_click: bool = true, "info_on_click";
     view: ViewKind = ViewKind::Globe, "view";
     projection: Projection = Projection::EqualEarth, "projection";
     frame_rate: FrameLimit = FrameLimit::Fps120, "frame_rate_limit";

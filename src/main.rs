@@ -10,6 +10,7 @@ mod capabilities;
 mod fetcher;
 mod geocode;
 mod help;
+mod info;
 mod geo;
 mod labels;
 mod layers;
@@ -48,6 +49,8 @@ mod text;
 mod ui;
 mod ui_draw;
 mod vector;
+mod wiki;
+mod wikilookup;
 
 use anyhow::{anyhow, bail, Context, Result};
 use atlas::{AtlasView, Projection};
@@ -125,6 +128,7 @@ Usage: orbis [options]
   --no-labels             start with all names hidden (key L)
   --no-cities  --no-names start with just place names, or just other names (peaks, water, streets) hidden
   --no-markers            start with event markers hidden
+  --no-info               start with the information box on click off (clicks look nothing up)
   --config-dir DIR        keep the saved options (settings.json) in DIR. Without it they are in ./config
                           if that exists, else in orbis/ in your config folder. The command line wins
                           over saved options for one run and is not saved; only what you change in the
@@ -368,6 +372,10 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
             }
             "--no-markers" => {
                 a.settings.event_markers = false;
+                continue;
+            }
+            "--no-info" => {
+                a.settings.info_on_click = false;
                 continue;
             }
             "--globe" => {
@@ -684,6 +692,13 @@ struct Scene {
     /// The renderer is to drop its overlays at the next update.
     clear_overlays: bool,
     geocoder: geocode::Geocoder,
+    /// The information box: what it shows, the thread that asks, and the number of the question it waits for.
+    info: info::Shared,
+    lookup: wikilookup::Lookup,
+    info_id: u64,
+    info_pending: bool,
+    /// The box was opened or closed by a click that no event of the window announced.
+    info_changed: bool,
     /// Keeps a slow tick going for tiles waiting out a retry delay.
     last_retry_tick: Instant,
 }
@@ -897,6 +912,11 @@ impl Scene {
             eclipse_path: None,
             eclipse_path_version: 0,
             geocoder: geocode::Geocoder::new(fetcher.clone(), args.geocoder_url.clone(), args.lang.clone()),
+            info: info::Shared::default(),
+            lookup: wikilookup::Lookup::new(fetcher.clone(), &args.lang),
+            info_id: 0,
+            info_pending: false,
+            info_changed: false,
             fetcher,
             last_retry_tick: Instant::now(),
             retries: HashMap::new(),
@@ -946,6 +966,7 @@ impl Scene {
         scene.ui.add(help::window_panel());
         scene.ui.add(options::icon_panel());
         scene.ui.add(options::window_panel(scene.options.clone()));
+        scene.ui.add(info::window_panel(scene.info.clone()));
         scene
     }
 
@@ -1001,7 +1022,14 @@ impl Scene {
     fn options_action(&mut self, action: options::Action) {
         use options::Action;
         match action {
-            Action::Set(index, value) => options::set_toggle(&mut self.view, index, value),
+            Action::Set(index, value) => {
+                options::set_toggle(&mut self.view, index, value);
+                if !self.view.info_on_click {
+                    self.ui.set_visible(info::WINDOW, false);
+                    self.info_id += 1;
+                    self.info_pending = false;
+                }
+            }
             Action::View(kind) => {
                 if (kind == ViewKind::Map) != (self.mode == Mode::Atlas) {
                     self.toggle_mode();
@@ -1022,7 +1050,7 @@ impl Scene {
 
     fn separate_dialogs(&mut self, opened: ui::PanelId) {
         self.sync_options();
-        self.ui.close_overlapping(opened, &[help::WINDOW, options::WINDOW]);
+        self.ui.close_overlapping(opened, &[help::WINDOW, options::WINDOW, info::WINDOW]);
     }
 
     /// Notes what the user changed since the last call, and saves it. A value that only the
@@ -1095,6 +1123,9 @@ impl Scene {
             if let Some(a) = action {
                 self.options_action(a);
             }
+            if let (true, Some(a)) = info::handle(&mut self.ui, event) {
+                self.info_action(a);
+            }
         }
         let bit = 1 << (b == Button::Right) as u8;
         if r.consumed || self.map_buttons & bit == 0 {
@@ -1160,7 +1191,110 @@ impl Scene {
 
     /// The hook for what a click on the map means (picking a place, flying there). It is
     /// called for single clicks after the double-click window and for double clicks.
-    fn on_map_click(&mut self, _click: clicks::Click) {}
+    fn on_map_click(&mut self, click: clicks::Click) {
+        // With the box open, a click on the map only closes it; a double click still flies.
+        if self.ui.is_visible(info::WINDOW) {
+            self.ui.set_visible(info::WINDOW, false);
+            self.info_id += 1;
+            self.info_pending = false;
+            self.info_changed = true;
+            return;
+        }
+        if click.kind == clicks::ClickKind::Single && self.view.info_on_click {
+            self.start_info(click.pos);
+        }
+    }
+
+    /// Opens the information box for the label or the ground under a point, and asks for its
+    /// content. Nothing is asked for other bodies, whose places Wikipedia does not locate.
+    fn start_info(&mut self, pos: DVec2) {
+        let (target, altitude) = if self.mode == Mode::Atlas {
+            let ground = self.map.view.lat_lon_at(pos.x, pos.y).map(|(lat, lon)| pick::Target::Ground { lat, lon });
+            (ground, self.map.view.distance_for_scale())
+        } else {
+            (pick::pick(pos, &self.placed_labels, self.nav.ground_at(pos)), self.nav.cam.distance)
+        };
+        let Some(target) = target else { return };
+        // Positions are in radians here, and in degrees for Wikipedia and for the box.
+        let (lat, lon) = (target.position().0.to_degrees(), target.position().1.to_degrees());
+        let (title, job) = match &target {
+            pick::Target::Label { name, style, .. } => {
+                let name = wiki::label_name(name, *style);
+                (wiki::display_text(&name), wikilookup::Job::Label { name, style: *style, lat, lon })
+            }
+            pick::Target::Ground { .. } => ("Nearby articles".to_string(), wikilookup::Job::Ground { lat, lon, altitude }),
+        };
+        let earth = body::current().id == body::EARTH.id;
+        self.info_id += 1;
+        *self.info.borrow_mut() = info::Model {
+            title: if earth { title } else { body::current().name.to_string() },
+            at: Some((lat, lon)),
+            content: if earth { info::Content::Looking } else { info::Content::Message("Information from Wikipedia is available for Earth only.".to_string()) },
+            note: None,
+        };
+        if earth {
+            self.lookup.submit(self.info_id, job);
+        }
+        self.info_pending = earth;
+        self.show_info();
+    }
+
+    fn show_info(&mut self) {
+        self.ui.refresh(info::WINDOW);
+        self.ui.set_visible(info::WINDOW, true);
+        self.separate_dialogs(info::WINDOW);
+        self.info_changed = true;
+    }
+
+    /// Carries out what a click in the information box asked for.
+    fn info_action(&mut self, action: info::Action) {
+        match action {
+            info::Action::OpenBrowser => {
+                let url = self.info.borrow().article_url().map(str::to_string);
+                if let Some(url) = url {
+                    self.info.borrow_mut().note = info::open_in_browser(&url).err();
+                    self.ui.refresh(info::WINDOW);
+                }
+            }
+            info::Action::Pick(i) => {
+                let Some(near) = self.info.borrow().near(i).cloned() else { return };
+                self.info_id += 1;
+                *self.info.borrow_mut() = info::Model { title: near.title.clone(), at: None, content: info::Content::Looking, note: None };
+                self.lookup.submit(self.info_id, wikilookup::Job::Page { lang: near.lang, page_id: near.page_id, item: near.item });
+                self.info_pending = true;
+                self.ui.refresh(info::WINDOW);
+            }
+        }
+    }
+
+    /// Takes in the answer to the question the box waits for. True if the box changed.
+    fn poll_info(&mut self) -> bool {
+        let mut changed = std::mem::take(&mut self.info_changed);
+        while let Some(reply) = self.lookup.poll() {
+            if reply.id != self.info_id {
+                continue;
+            }
+            eprintln!("info: {} request(s) to the network", reply.requests);
+            self.info_pending = false;
+            let mut m = self.info.borrow_mut();
+            match reply.outcome {
+                wikilookup::Outcome::Article(a) => {
+                    m.title = a.title.clone();
+                    m.content = info::Content::Article(a);
+                }
+                wikilookup::Outcome::Nearby { items, radius } => m.content = info::Content::Nearby { items, radius },
+                wikilookup::Outcome::NoArticle => {
+                    let text = format!("No article found for {}.", m.title);
+                    m.content = info::Content::Message(text);
+                }
+                wikilookup::Outcome::Failed(f) => m.content = info::Content::Message(f.message().to_string()),
+            }
+            drop(m);
+            self.ui.refresh(info::WINDOW);
+            changed = true;
+        }
+        changed
+    }
 
     /// A double click at a point, as the window would deliver it.
     fn simulate_double_click(&mut self, pos: DVec2) {
@@ -2187,8 +2321,8 @@ fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue)
 
 /// Whether a saved image must keep waiting. A flight in progress counts: the tiles of the view it
 /// ends in are not asked for until it gets there, so a quiet loader mid-flight proves nothing.
-fn screenshot_busy(loader_idle: bool, waiting: usize, text_idle: bool, feeds_pending: usize, animating: bool) -> bool {
-    !loader_idle || waiting > 0 || !text_idle || feeds_pending > 0 || animating
+fn screenshot_busy(loader_idle: bool, waiting: usize, text_idle: bool, feeds_pending: usize, animating: bool, click_pending: bool) -> bool {
+    !loader_idle || waiting > 0 || !text_idle || feeds_pending > 0 || animating || click_pending
 }
 
 fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
@@ -2280,7 +2414,11 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
                 flight_clock = None;
             }
         }
-        if screenshot_busy(scene.loader.is_idle(), scene.waiting, scene.text.is_idle(), scene.feeds_pending, scene.nav.is_animating() || scene.map.is_animating()) {
+        // A single click is not acted on until the double-click window has passed, and the box it opens waits for its text.
+        scene.poll_clicks();
+        scene.poll_info();
+        let click_pending = scene.clicks.deadline().is_some() || scene.info_pending;
+        if screenshot_busy(scene.loader.is_idle(), scene.waiting, scene.text.is_idle(), scene.feeds_pending, scene.nav.is_animating() || scene.map.is_animating(), click_pending) {
             quiet_since = Instant::now();
         } else if quiet_since.elapsed() > Duration::from_millis(300) {
             let pending: Vec<DVec2> = clicks.by_ref().copied().collect();
@@ -2634,6 +2772,12 @@ impl ApplicationHandler<UserEvent> for App {
             if let Some(at) = g.scene.poll_clicks() {
                 wake = wake.min(at);
             }
+            if g.scene.info_pending {
+                wake = wake.min(now + Duration::from_millis(100));
+            }
+            if g.scene.poll_info() {
+                g.redraw_wanted = true;
+            }
             // While a search is out, the answer is looked for often enough to feel instant.
             if g.scene.search.is_searching() {
                 wake = wake.min(now + Duration::from_millis(100));
@@ -2811,6 +2955,11 @@ impl ApplicationHandler<UserEvent> for App {
                         _ if question => gfx.scene.toggle_dialog(help::WINDOW),
                         KeyCode::KeyH | KeyCode::F1 if !self.mods.ctrl => gfx.scene.toggle_dialog(help::WINDOW),
                         KeyCode::KeyV if !self.mods.ctrl => gfx.scene.toggle_dialog(options::WINDOW),
+                        KeyCode::Escape if gfx.scene.ui.is_visible(info::WINDOW) => {
+                            gfx.scene.ui.set_visible(info::WINDOW, false);
+                            gfx.scene.info_id += 1;
+                            gfx.scene.info_pending = false;
+                        }
                         KeyCode::Escape if gfx.scene.ui.is_visible(options::WINDOW) => {
                             gfx.scene.ui.set_visible(options::WINDOW, false);
                         }
@@ -3223,11 +3372,12 @@ mod tests {
 
     #[test]
     fn saved_image_waits_for_a_flight() {
-        assert!(!screenshot_busy(true, 0, true, 0, false));
-        assert!(screenshot_busy(true, 0, true, 0, true));
-        assert!(screenshot_busy(false, 0, true, 0, false));
-        assert!(screenshot_busy(true, 3, true, 0, false));
-        assert!(screenshot_busy(true, 0, true, 1, false));
+        assert!(!screenshot_busy(true, 0, true, 0, false, false));
+        assert!(screenshot_busy(true, 0, true, 0, true, false));
+        assert!(screenshot_busy(false, 0, true, 0, false, false));
+        assert!(screenshot_busy(true, 3, true, 0, false, false));
+        assert!(screenshot_busy(true, 0, true, 1, false, false));
+        assert!(screenshot_busy(true, 0, true, 0, false, true));
     }
 
     #[test]

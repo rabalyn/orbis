@@ -43,7 +43,7 @@ E lists the solar and lunar eclipses around the clock's date, computed in the pr
 
 G lists map services (WMS, WMTS or XYZ) to use as the Earth's imagery or to lay over it. Add one with `--add-service ADDRESS` (kept in `orbis/services.json`), and choose with `--service NAME` or `--service-overlay NAME`; `--list-services` shows your library and a built-in directory of public services.
 
-The second icon (or V) opens the view options: map lines, names, scene, globe or flat map, projection, imagery and frame rate. The question-mark icon in the bottom right corner (or H, ? or F1) shows a window listing all keyboard and mouse controls; Escape closes it. For saved images, `--show-help`, `--show-options`, `--help-scroll N` and `--simulate-click X,Y` show them, scroll and click.
+Clicking a label or a spot on the map opens a box with the Wikipedia article and Wikidata facts for it (or the articles nearby); a click on the map closes it, and `--no-info` or the option "Information on click" switches it off. The second icon (or V) opens the view options: map lines, names, scene, globe or flat map, projection, imagery and frame rate. The question-mark icon in the bottom right corner (or H, ? or F1) shows a window listing all keyboard and mouse controls; Escape closes it. For saved images, `--show-help`, `--show-options`, `--help-scroll N` and `--simulate-click X,Y` show them, scroll and click.
 
 `--body moon|mars|mercury|ceres|vesta` shows that body instead of the Earth, lit by the Sun at the clock's time, with its own imagery and the planets in its sky.
 

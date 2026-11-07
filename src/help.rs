@@ -19,6 +19,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("Shift-drag", "Climb or sink; look around from the same spot"),
             ("Scroll", "Zoom around the point under the pointer"),
             ("Alt-scroll / Shift-scroll", "Tilt / look around"),
+            ("Click", "Information about the label or place under the pointer; another click closes it"),
             ("Double-click, Shift-double-click", "Fly smoothly to the point or place; one level closer / farther"),
         ],
     ),
@@ -32,7 +33,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl-0", "Whole Earth, or the whole map"),
             ("Ctrl-Alt-N", "Straighten up, one step per press"),
             ("SpaceMouse", "Climb, slide, twist and tilt; button 1 whole body, button 2 straighten"),
-            ("Escape", "Stop a flight or glide; close the help or options window"),
+            ("Escape", "Stop a flight or glide; close the information box, the help or options window"),
         ],
     ),
     (

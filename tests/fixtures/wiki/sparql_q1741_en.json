@@ -1,0 +1,84 @@
+{
+  "head" : {
+    "vars" : [ "classes", "classLabels", "countryLabel", "pop", "popDate", "elev", "area", "site", "tzLabel" ]
+  },
+  "results" : {
+    "bindings" : [ {
+      "classes" : {
+        "type" : "literal",
+        "value" : "Q133442 Q171441 Q200250 Q257391 Q261543 Q262882 Q667509 Q871419 Q13539802 Q51929311"
+      },
+      "classLabels" : {
+        "type" : "literal",
+        "value" : "city-state, enclave, metropolis, federal capital, federal state of Austria, statutory city of Austria, municipality of Austria, district of Austria, place with town rights and privileges, largest city"
+      },
+      "pop" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "2028289"
+      },
+      "popDate" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#dateTime",
+        "type" : "literal",
+        "value" : "2025-01-01T00:00:00Z"
+      },
+      "elev" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "198"
+      },
+      "area" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "414830000"
+      },
+      "site" : {
+        "type" : "uri",
+        "value" : "https://www.wien.gv.at/"
+      },
+      "countryLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "Austria"
+      }
+    }, {
+      "classes" : {
+        "type" : "literal",
+        "value" : "Q133442 Q171441 Q200250 Q257391 Q261543 Q262882 Q667509 Q871419 Q13539802 Q51929311"
+      },
+      "classLabels" : {
+        "type" : "literal",
+        "value" : "city-state, enclave, metropolis, federal capital, federal state of Austria, statutory city of Austria, municipality of Austria, district of Austria, place with town rights and privileges, largest city"
+      },
+      "pop" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "2028289"
+      },
+      "popDate" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#dateTime",
+        "type" : "literal",
+        "value" : "2025-01-01T00:00:00Z"
+      },
+      "elev" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "151"
+      },
+      "area" : {
+        "datatype" : "http://www.w3.org/2001/XMLSchema#decimal",
+        "type" : "literal",
+        "value" : "414830000"
+      },
+      "site" : {
+        "type" : "uri",
+        "value" : "https://www.wien.gv.at/"
+      },
+      "countryLabel" : {
+        "xml:lang" : "en",
+        "type" : "literal",
+        "value" : "Austria"
+      }
+    } ]
+  }
+}

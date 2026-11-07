@@ -52,6 +52,7 @@ const TOGGLES: &[(&str, &[Toggle])] = &[
             ("Sunlight", |s| s.sunlight, |s, v| s.sunlight = v),
             ("Stars and planets", |s| s.stars, |s, v| s.stars = v),
             ("Event markers", |s| s.event_markers, |s, v| s.event_markers = v),
+            ("Information on click", |s| s.info_on_click, |s, v| s.info_on_click = v),
         ],
     ),
 ];
