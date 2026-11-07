@@ -421,6 +421,24 @@ mod tests {
     }
 
     #[test]
+    fn the_directory_is_small_complete_and_plain() {
+        let d = directory();
+        assert!((5..=15).contains(&d.len()), "{} entries", d.len());
+        let ids: HashSet<_> = d.iter().map(|s| &s.id).collect();
+        assert_eq!(ids.len(), d.len());
+        for s in d {
+            assert!(!s.attribution.trim().is_empty(), "{} has no credit", s.name);
+            assert!(s.tiles.starts_with("https://"), "{}", s.name);
+            assert!(crate::services::check_url(&s.tiles).is_ok());
+        }
+        // Every entry records where its terms were read.
+        let raw: Value = serde_json::from_str(include_str!("../data/services.json")).unwrap();
+        for e in raw["services"].as_array().unwrap() {
+            assert!(e["terms"].as_str().is_some_and(|t| t.len() > 20), "{}", e["name"]);
+        }
+    }
+
+    #[test]
     fn the_library_survives_a_restart() {
         let path = temp("restart");
         let mut lib = Library::load(path.clone());

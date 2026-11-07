@@ -176,7 +176,7 @@ pub fn clean(s: &str) -> String {
 fn has_tile_fields(tiles: &str, kind: Kind) -> bool {
     match kind {
         Kind::Wms => tiles.contains("{bbox}"),
-        _ => tiles.contains("{z}") && tiles.contains("{x}") && (tiles.contains("{y}") || tiles.contains("{-y}")),
+        _ => (tiles.contains("{z}") || tiles.contains("{z02}")) && tiles.contains("{x}") && (tiles.contains("{y}") || tiles.contains("{-y}")),
     }
 }
 
@@ -408,13 +408,17 @@ fn wmts_layer_service(d: &Wmts, l: &WmtsLayer, url: &str) -> Result<Service, Str
     };
     // The template can only count levels from their numbers, so identifiers must end in them.
     let prefix = levels[0].1.id.trim_end_matches(|c: char| c.is_ascii_digit()).to_string();
-    let follows = levels.iter().all(|(z, m)| m.id == format!("{prefix}{z}"));
+    let levels = &levels;
+    // Some services pad the level to two digits ("00", "01", ... "18").
+    let padded = levels.iter().all(|(z, m)| m.id == format!("{prefix}{z:02}"));
+    let follows = padded || levels.iter().all(|(z, m)| m.id == format!("{prefix}{z}"));
+    let level_token = if padded && levels.iter().any(|(z, _)| *z < 10) { "{z02}" } else { "{z}" };
     if !follows {
         return Err(format!("layer {} uses matrix names ({}) that do not follow the zoom levels", l.id, levels[0].1.id));
     }
     let (min_z, max_z) = (levels.iter().map(|x| x.0).min().unwrap_or(0), levels.iter().map(|x| x.0).max().unwrap_or(0));
     let style = l.styles.first().map_or("default", String::as_str);
-    let matrix = format!("{prefix}{{z}}");
+    let matrix = format!("{prefix}{level_token}");
     let resource = l
         .resources
         .iter()
@@ -429,7 +433,7 @@ fn wmts_layer_service(d: &Wmts, l: &WmtsLayer, url: &str) -> Result<Service, Str
                 pct(&l.id),
                 pct(style),
                 pct(&set.id),
-                pct(&prefix) + "{z}",
+                pct(&prefix) + level_token,
                 pct(&format)
             );
             for (name, value) in &l.dimensions {
@@ -513,7 +517,7 @@ fn wms_service(d: &Wms, url: &str, wanted: Option<&str>) -> Result<Service, Stri
         "SERVICE=WMS&VERSION={}&REQUEST=GetMap&LAYERS={}&STYLES=&{crs_param}={}&BBOX={{bbox}}&WIDTH=256&HEIGHT=256&FORMAT={}",
         d.version,
         pct(&l.name),
-        pct(crs),
+        pct(&crs.to_ascii_uppercase()),
         pct(&format)
     );
     if format.ends_with("png") || format.ends_with("webp") {
@@ -596,6 +600,21 @@ mod tests {
         assert_eq!(s.name, "Test WMTS: Relief");
         assert_eq!(s.layer, "relief");
         assert!(s.id.starts_with("test-wmts-relief-"));
+    }
+
+    #[test]
+    fn wmts_with_two_digit_matrix_names_uses_a_padded_level() {
+        let xml = fixtures::WMTS.replace("<ows:Identifier>0</ows:Identifier>", "<ows:Identifier>00</ows:Identifier>")
+            .replace("<ows:Identifier>1</ows:Identifier>", "<ows:Identifier>01</ows:Identifier>")
+            .replace("<ows:Identifier>2</ows:Identifier>", "<ows:Identifier>02</ows:Identifier>")
+            .replace("<ows:Identifier>3</ows:Identifier>", "<ows:Identifier>03</ows:Identifier>")
+            .replace("<TileMatrix>0</TileMatrix>", "<TileMatrix>00</TileMatrix>")
+            .replace("<TileMatrix>1</TileMatrix>", "<TileMatrix>01</TileMatrix>")
+            .replace("<TileMatrix>2</TileMatrix>", "<TileMatrix>02</TileMatrix>");
+        let s = from_capabilities(&parse(&xml).unwrap(), "https://t.example/cap", Some("relief")).unwrap();
+        assert!(s.tiles.contains("GoogleMapsCompatible/{z02}/{y}/{x}.png"), "{}", s.tiles);
+        let k = crate::geo::TileKey::new(3, 5, 2);
+        assert!(crate::sources::TileSource::url_from(&s.tiles, k).contains("/03/2/5.png"));
     }
 
     #[test]

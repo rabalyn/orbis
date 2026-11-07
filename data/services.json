@@ -1,1 +1,140 @@
-{"version":1,"services":[]}
+{
+ "version": 1,
+ "services": [
+  {
+   "name": "OpenTopoMap",
+   "kind": "xyz",
+   "url": "",
+   "tiles": "https://tile.opentopomap.org/{z}/{x}/{y}.png",
+   "layer": "",
+   "format": "image/png",
+   "tile_size": 256,
+   "min_zoom": 0,
+   "max_zoom": 17,
+   "bounds": null,
+   "attribution": "Kartendaten: © OpenStreetMap-Mitwirkende, SRTM | Kartendarstellung: © OpenTopoMap (CC-BY-SA)",
+   "credit": "",
+   "terms": "https://opentopomap.org/about: free use with the attribution shown, CC-BY-SA; embedding welcome unless the server is overloaded"
+  },
+  {
+   "name": "TopPlusOpen (Germany, BKG)",
+   "kind": "wmts",
+   "url": "https://sgx.geodatenzentrum.de/wmts_topplus_open/1.0.0/WMTSCapabilities.xml",
+   "tiles": "https://sgx.geodatenzentrum.de/wmts_topplus_open/tile/1.0.0/web/default/WEBMERCATOR/{z02}/{y}/{x}.png",
+   "layer": "web",
+   "format": "image/png",
+   "tile_size": 256,
+   "min_zoom": 0,
+   "max_zoom": 18,
+   "bounds": null,
+   "attribution": "Kartendarstellung: © BKG dl-de/by-2-0, Datenquellen: https://sgx.geodatenzentrum.de/web_public/gdz/datenquellen/datenquellen_topplusopen.html",
+   "credit": "",
+   "terms": "WMTS capabilities: dl-de/by-2-0, no access restrictions, source credit required"
+  },
+  {
+   "name": "BRT Achtergrondkaart (Netherlands, PDOK)",
+   "kind": "wmts",
+   "url": "https://service.pdok.nl/brt/achtergrondkaart/wmts/v2_0?request=GetCapabilities&service=wmts",
+   "tiles": "https://service.pdok.nl/kadaster/brt-achtergrondkaart/wmts/v2_0/standaard/EPSG:3857/{z02}/{x}/{y}.png",
+   "layer": "standaard",
+   "format": "image/png",
+   "tile_size": 256,
+   "min_zoom": 0,
+   "max_zoom": 19,
+   "bounds": [
+    -1.657292,
+    48.040502,
+    12.431727,
+    56.11059
+   ],
+   "attribution": "Kaartgegevens: © Kadaster, BRT Achtergrondkaart via PDOK",
+   "credit": "",
+   "terms": "WMTS capabilities: Fees none, AccessConstraints none; PDOK page: free to use"
+  },
+  {
+   "name": "basemap.at map (Austria)",
+   "kind": "wmts",
+   "url": "https://mapsneu.wien.gv.at/basemapneu/1.0.0/WMTSCapabilities.xml",
+   "tiles": "https://mapsneu.wien.gv.at/basemap/geolandbasemap/normal/google3857/{z}/{y}/{x}.png",
+   "layer": "geolandbasemap",
+   "format": "image/png",
+   "tile_size": 256,
+   "min_zoom": 0,
+   "max_zoom": 19,
+   "bounds": [
+    8.782379,
+    46.35877,
+    17.5,
+    49.037872
+   ],
+   "attribution": "Grundkarte: basemap.at",
+   "credit": "",
+   "terms": "CC BY 4.0 (see CACHING.md); capabilities: Fees none"
+  },
+  {
+   "name": "basemap.at labels (Austria, overlay)",
+   "kind": "wmts",
+   "url": "https://mapsneu.wien.gv.at/basemapneu/1.0.0/WMTSCapabilities.xml",
+   "tiles": "https://mapsneu.wien.gv.at/basemap/bmapoverlay/normal/google3857/{z}/{y}/{x}.png",
+   "layer": "bmapoverlay",
+   "format": "image/png",
+   "tile_size": 256,
+   "min_zoom": 0,
+   "max_zoom": 19,
+   "bounds": [
+    8.782379,
+    46.35877,
+    17.5,
+    49.037872
+   ],
+   "attribution": "Grundkarte: basemap.at",
+   "credit": "",
+   "terms": "as basemap.at map; transparent labels layer for use as an overlay"
+  },
+  {
+   "name": "NASA Blue Marble (GIBS WMTS)",
+   "kind": "wmts",
+   "url": "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/wmts.cgi",
+   "tiles": "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpeg",
+   "layer": "BlueMarble_ShadedRelief_Bathymetry",
+   "format": "image/jpeg",
+   "tile_size": 256,
+   "min_zoom": 0,
+   "max_zoom": 8,
+   "bounds": null,
+   "attribution": "Imagery: NASA GIBS, part of NASA ESDIS (https://earthdata.nasa.gov/gibs)",
+   "credit": "",
+   "terms": "NASA full and open data sharing; acknowledgement of GIBS requested"
+  },
+  {
+   "name": "NASA Blue Marble (GIBS WMS)",
+   "kind": "wms",
+   "url": "https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi",
+   "tiles": "https://gibs.earthdata.nasa.gov/wms/epsg3857/best/?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=BlueMarble_ShadedRelief_Bathymetry&STYLES=&CRS=epsg:3857&BBOX={bbox}&WIDTH=256&HEIGHT=256&FORMAT=image%2Fpng&TRANSPARENT=TRUE",
+   "layer": "BlueMarble_ShadedRelief_Bathymetry",
+   "format": "image/png",
+   "tile_size": 256,
+   "min_zoom": 0,
+   "max_zoom": 8,
+   "bounds": null,
+   "attribution": "Imagery: NASA GIBS, part of NASA ESDIS (https://earthdata.nasa.gov/gibs)",
+   "credit": "",
+   "terms": "as GIBS WMTS; the same layer through WMS GetMap"
+  },
+  {
+   "name": "NASA MODIS Terra true colour, latest (GIBS)",
+   "kind": "wmts",
+   "url": "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/wmts.cgi",
+   "tiles": "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/default/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpeg",
+   "layer": "MODIS_Terra_CorrectedReflectance_TrueColor",
+   "format": "image/jpeg",
+   "tile_size": 256,
+   "min_zoom": 0,
+   "max_zoom": 9,
+   "bounds": null,
+   "attribution": "Imagery: NASA GIBS, part of NASA ESDIS (https://earthdata.nasa.gov/gibs)",
+   "credit": "",
+   "terms": "as GIBS WMTS; time 'default' is the latest day"
+  }
+ ]
+}

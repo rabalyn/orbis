@@ -423,6 +423,7 @@ impl TileSource {
 fn fill(template: &str, k: TileKey) -> String {
     template
         .replace("{z}", &k.z.to_string())
+        .replace("{z02}", &format!("{:02}", k.z))
         .replace("{x}", &k.x.to_string())
         .replace("{y}", &k.y.to_string())
         // TMS counts rows from the south.

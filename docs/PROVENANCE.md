@@ -118,3 +118,31 @@ and that no-code generators may not offer it; this program is a conventional app
 searches. The policy may change without notice and the service may be withdrawn: recheck before publishing,
 and consider a contact address in the user agent. Typed coordinates are read locally and never sent.
 The JSON answers are read with `serde_json` (MIT or Apache-2.0).
+
+### Map service directory (`data/services.json`)
+
+The directory was built independently from each publisher's own documents, and not from any other program's list.
+Every entry has its terms and the page they were read from in its `terms` field. One tile of each was fetched once, on
+2026-11-07, with the program's user agent, to prove the address works (all answered 200 with a 256 pixel picture).
+The addresses were found by adding each service with `--add-service` from its capabilities document, except OpenTopoMap, whose tile address
+is its published one (`tile.opentopomap.org`) and was confirmed by the fetch. Users can add any other service themselves.
+
+| Entry | Source and terms read | Credit shown |
+|---|---|---|
+| OpenTopoMap (XYZ, zoom 0-17) | opentopomap.org/about: free use including commercial with attribution, CC-BY-SA; embedding in applications welcome as long as the server is not overloaded (no mass downloads); no limits stated. They ask for a short notice of use, which has not been sent. | `Kartendaten: © OpenStreetMap-Mitwirkende, SRTM | Kartendarstellung: © OpenTopoMap (CC-BY-SA)` (the wording the page gives) |
+| TopPlusOpen (WMTS, Germany and surroundings) | BKG's TopPlusOpen page and its capabilities (`Fees`, `AccessConstraints`): free of charge for anyone under Datenlizenz Deutschland Namensnennung 2.0 (dl-de/by-2-0), no access restrictions, source credit required | `Kartendarstellung: © BKG dl-de/by-2-0, Datenquellen: ...` (the form the capabilities give, without the year) |
+| BRT Achtergrondkaart (WMTS, Netherlands) | PDOK's capabilities: Fees none, AccessConstraints none; PDOK page: "gratis te gebruiken", openly available through WMTS. The licence is not named in what was read, and no attribution is stated | `Kaartgegevens: © Kadaster, BRT Achtergrondkaart via PDOK` (our wording, kept as a courtesy). Recheck the licence before publishing |
+| basemap.at map and labels overlay (WMTS, Austria) | CC BY 4.0, as for the aerial layer (CACHING.md); capabilities: Fees none | `Grundkarte: basemap.at` |
+| NASA GIBS Blue Marble (WMTS and WMS) and MODIS Terra true colour (WMTS) | GIBS documentation (nasa-gibs.github.io): NASA promotes full and open sharing of data; no limits are stated; users of GIBS in clients are asked to include an acknowledgement beginning "We acknowledge the use of imagery provided by services from NASA's Global Imagery Browse Services (GIBS)". NASA's data policy page returned 403, so the policy itself was not read | `Imagery: NASA GIBS, part of NASA ESDIS (https://earthdata.nasa.gov/gibs)`, a short form of that acknowledgement |
+
+Considered and left out:
+
+| Source | Reason |
+|---|---|
+| OpenStreetMap standard tiles (`tile.openstreetmap.org`) | The usage policy allows apps with a distinct user agent, attribution and view-only requests, but says the address should not be hard-coded so it can change without a software update, and forbids prefetching and offline use. A built-in directory entry would hard-code it. Users can add it themselves |
+| swisstopo (wmts.geo.admin.ch) as a map | The terms pages could not be loaded (404 on the addresses tried), so the permission could not be confirmed for this purpose |
+| USGS National Map basemaps | USGS says its own products are public domain, but the maps mix in material from others and the service's own terms page was not found |
+| OpenSeaMap seamark tiles | No usage policy could be found (the wiki page returned 404) |
+| Esri, Mapbox, Google, Bing, Stadia and similar commercial tiles | Not evaluated: commercial services that generally need keys or accounts, which Orbis does not handle |
+
+The credit of an added service is shown while its tiles are on screen, also in saved images.

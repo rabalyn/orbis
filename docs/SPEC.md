@@ -49,6 +49,7 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | Ctrl-S | Name and save the current view as a place (see Milestone 7b) |
 | K | Show or hide the list of saved places |
 | I | Show or hide the list of imported items |
+| G | Show or hide the list of map services (see Milestone 8). In it: Enter uses the chosen service as the base layer (again: back to the usual imagery), O as the overlay, + and - change the overlay's opacity, A opens the box to add a service, Delete removes one |
 | Ctrl-Q | Quit |
 
 An arrow key keeps its meaning while held, even if modifiers change. Moving by hand ends a
@@ -397,13 +398,39 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
 - Dropping and the keys were not driven by hand here; the logic is unit-tested and the display was
   checked in saved images only.
 
+## Milestone 8: map services (done)
+
+### Adding services
+- A service is an XYZ address template (with `{z}`, `{x}` and `{y}` or `{-y}`; `{s}` becomes `a`; `--service-tms` counts rows from the south), a WMTS service or a WMS 1.1.1 or 1.3.0 service.
+- `--add-service ADDRESS` adds one to the library and exits; the box opened with A in the list does the same (the address, then a layer name if wanted). A WMS or WMTS address is asked for its capabilities document once, and the kind is detected from it. A service with several layers is added with its first usable layer, or the one named by `--service-layer`; the other layer names are printed.
+- WMTS is used in RESTful or key-value form, in web-mercator matrix sets (GoogleMapsCompatible and the like: square tiles, 2^z tiles across, top left corner at the corner of the Mercator square). If a layer is offered only in other sets, the message names them and says only web-mercator sets are used.
+- WMS pictures are requested with GetMap in EPSG:3857 (or an alias such as EPSG:900913), with `CRS` in 1.3.0 and `SRS` in 1.1.1. The BBOX is east, north in both versions for this system.
+- Only http and https addresses are used, without user names or passwords. No cookies or credentials are sent. A document that is HTML, an error report, malformed or not WMTS or WMS is refused with a plain message.
+- The library is `orbis/services.json` in the config folder (`--services-file`), written atomically; a file that cannot be read is left alone. Each service has a name, address, the attribution the service itself gives, and a credit the user may declare (`--service-name`, `--service-credit`).
+
+### Showing services
+- `--service NAME` replaces the imagery of the Earth view with a service, `--service-overlay NAME` lays one over it at `--service-opacity` (default 0.6). NAME is a name from the library or the directory, matched ignoring case, or any part of it if only one fits. In the window, G lists services; the base and the overlay are chosen there and the opacity changed with + and -.
+- Terrain, roads, labels and buildings are unchanged. Where a service has no tiles (outside its bounds or zoom range) the usual imagery shows. Beyond a service's highest zoom its finest tiles are enlarged. With nothing chosen, imagery and requests are as before.
+- Credits follow what is in view: the credit of a service in view appears as "Map service: ...", the user's own wording first, else the service's attribution, else its host name. The usual credits stay listed.
+- Tiles are cached under a folder of their own for each service. A service gets two requests at once, with the pacing and pausing used for other servers, and is never asked through LAN cache servers.
+- A service that answers with errors, web pages instead of pictures, or pictures of the wrong size is reported in the list ("N failed: ..."); tiles already shown stay, and the bad answer is not kept or asked for again. If an overlay fails, the tile shows without it.
+
+### Directory
+- `data/services.json` lists public services whose publishers' own documents allow this use (see PROVENANCE.md for each, and for those left out). `--list-services` prints it. Choosing a directory entry in the list adds it to the library.
+
+### Limitations
+- Services show on Earth only, and a change of service redraws the globe's tiles from the cache or the network, so the view flashes empty for a moment.
+- XYZ `{s}` always takes the first subdomain. WMS layers have no zoom limit of their own: 18 is used unless the layer states a smallest scale. Time and other WMTS dimensions are fixed at the default found when the service was added.
+- Only EPSG:3857 is used; services offering only other systems are refused. Only PNG, JPEG and WebP pictures are read.
+- The credit of the usual imagery stays on screen while a service replaces it.
+- There is no clipboard paste in the address box. The panel, the keys and adding in the window were not driven by hand here; the logic is unit-tested and the display was checked in saved images.
+
 ## Later milestones
 
 Order and scope are open, and depend on which features are wanted.
 
 | # | Feature | Notes |
 |---|---|---|
-| M8 | Map service library | User-added WMS, WMTS and XYZ, with an independently built directory |
 | M9 | Events | Computed eclipses, plus earthquakes, eruptions, tsunamis and fireballs |
 | M10 | SpaceMouse | Through HID or `spacenavd` |
 
