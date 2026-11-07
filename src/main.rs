@@ -30,6 +30,7 @@ mod events;
 mod ephemeris;
 mod search;
 mod service_ui;
+mod settings;
 mod select;
 mod sky;
 mod spacemouse;
@@ -58,6 +59,7 @@ use nav::{Arrow, Button, Mods, Nav, WHOLE_EARTH};
 use pacing::{FrameLimit, Pacer, RateMeter};
 use render::{hemisphere_label, Corner, LabelInstance, Renderer};
 use select::View;
+use settings::{Settings, ViewKind};
 use sky_time::{Clock, ClockKey};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -111,8 +113,17 @@ Usage: orbis [options]
   --atlas PROJECTION      show the flat map instead of the globe: equal-earth, mollweide,
                           hammer-aitoff, mercator or plate-carree (key M switches, P cycles)
   --central-meridian DEG  longitude at the middle of the map (default 0, keys [ and ])
-  --no-roads              start with roads and boundaries hidden (key R)
-  --no-labels             start with labels hidden (key L)
+  --globe                 show the globe, whatever the saved options say
+  --no-roads              start with streets, trails, trains and boundaries hidden (key R)
+  --no-streets  --no-trails  --no-trains  --no-boundaries
+                          start with just that kind of line hidden
+  --no-labels             start with all names hidden (key L)
+  --no-cities  --no-names start with just place names, or just other names (peaks, water, streets) hidden
+  --no-markers            start with event markers hidden
+  --config-dir DIR        keep the saved options (settings.json) in DIR. Without it they are in ./config
+                          if that exists, else in orbis/ in your config folder. The command line wins
+                          over saved options for one run and is not saved; only what you change in the
+                          window is. A --screenshot ignores saved options and saves none, unless DIR is given
   --no-buildings          start with 3D buildings hidden (key B)
   --time ISO8601          set the clock, such as 2026-06-21T12:00:00Z (default now, UTC)
   --time-speed N          clock seconds per real second (default 1)
@@ -182,8 +193,12 @@ struct Args {
     /// The body to view; chosen once for the run.
     body: &'static body::Body,
     distance_given: bool,
-    /// The flat map's projection, when it is shown instead of the globe.
-    atlas: Option<Projection>,
+    /// The saved options, with what the command line chose put over them.
+    settings: Settings,
+    /// Where `settings.json` is read and written; `None` keeps the options for this run only.
+    config_dir: Option<PathBuf>,
+    /// `--config-dir`, as given.
+    config_flag: Option<PathBuf>,
     central_meridian: f64,
     exaggeration: f32,
     cache_dir: PathBuf,
@@ -192,17 +207,11 @@ struct Args {
     size_given: bool,
     timeout: f64,
     lang: String,
-    roads: bool,
-    labels: bool,
-    buildings: bool,
     /// The clock's start, as seconds since 1970 UTC; now when not given.
     time: Option<f64>,
     time_speed: f64,
-    sun: bool,
-    stars: bool,
     spacemouse: bool,
     spacemouse_sensitivity: f64,
-    limit: FrameLimit,
     benchmark: Option<f64>,
     cache_limit_gib: u64,
     cache_status: bool,
@@ -241,9 +250,24 @@ fn locale_language() -> String {
         .unwrap_or_default()
 }
 
-fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
+/// Where the options are kept for this run, found before the rest of the command line is read:
+/// a picture ignores them unless the folder is given, so that images are the same on every machine.
+fn settings_dir(argv: &[String]) -> (Option<PathBuf>, Option<PathBuf>) {
+    let flag = argv.iter().position(|a| a == "--config-dir").and_then(|i| argv.get(i + 1)).map(PathBuf::from);
+    let picture = argv.iter().any(|a| a == "--screenshot");
+    if picture && flag.is_none() {
+        return (None, None);
+    }
+    let work = std::env::current_dir().unwrap_or_default();
+    (settings::config_dir(flag.as_deref(), &work, settings::user_config_dir()), flag)
+}
+
+fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<Option<Args>> {
     let mut a = Args {
-        body: &body::EARTH,
+        settings: saved.clone(),
+        config_dir: None,
+        config_flag: None,
+        body: body::by_id(&saved.body).unwrap_or(&body::EARTH),
         distance_given: false,
         cam: Camera {
             lat: 30f64.to_radians(),
@@ -254,7 +278,6 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             tilt: 0.0,
             sky: 0.0,
         },
-        atlas: None,
         central_meridian: 0.0,
         exaggeration: 1.0,
         cache_dir: DiskCache::default_root(),
@@ -262,17 +285,11 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
         size: (1600, 1000),
         size_given: false,
         timeout: 90.0,
-        lang: locale_language(),
-        roads: true,
-        labels: true,
-        buildings: true,
+        lang: Some(saved.language.clone()).filter(|l| !l.is_empty()).unwrap_or_else(locale_language),
         time: None,
         time_speed: 1.0,
-        sun: true,
-        stars: true,
         spacemouse: true,
         spacemouse_sensitivity: 1.0,
-        limit: FrameLimit::Fps120,
         benchmark: None,
         cache_limit_gib: CACHE_LIMIT_GIB,
         cache_status: false,
@@ -302,19 +319,52 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
         match flag.as_str() {
             "--help" | "-h" => return Ok(None),
             "--no-roads" => {
-                a.roads = false;
+                let s = &mut a.settings;
+                (s.streets, s.trails, s.trains, s.boundaries) = (false, false, false, false);
                 continue;
             }
             "--no-labels" => {
-                a.labels = false;
+                (a.settings.cities, a.settings.other_names) = (false, false);
+                continue;
+            }
+            "--no-streets" => {
+                a.settings.streets = false;
+                continue;
+            }
+            "--no-trails" => {
+                a.settings.trails = false;
+                continue;
+            }
+            "--no-trains" => {
+                a.settings.trains = false;
+                continue;
+            }
+            "--no-boundaries" => {
+                a.settings.boundaries = false;
+                continue;
+            }
+            "--no-cities" => {
+                a.settings.cities = false;
+                continue;
+            }
+            "--no-names" => {
+                a.settings.other_names = false;
+                continue;
+            }
+            "--no-markers" => {
+                a.settings.event_markers = false;
+                continue;
+            }
+            "--globe" => {
+                a.settings.view = ViewKind::Globe;
                 continue;
             }
             "--no-buildings" => {
-                a.buildings = false;
+                a.settings.buildings = false;
                 continue;
             }
             "--no-stars" => {
-                a.stars = false;
+                a.settings.stars = false;
                 continue;
             }
             "--no-spacemouse" => {
@@ -322,7 +372,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
                 continue;
             }
             "--no-sun" => {
-                a.sun = false;
+                a.settings.sunlight = false;
                 continue;
             }
             "--cache-status" => {
@@ -393,6 +443,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             "--body" => {
                 a.body = body::by_id(&value)
                     .ok_or_else(|| anyhow!("--body expects one of: {}", body::ids().join(", ")))?;
+                a.settings.body = a.body.id.to_string();
             }
             "--heading" => a.cam.heading = num()?.to_radians(),
             "--tilt" => a.cam.set_total_tilt(num()?.to_radians()),
@@ -417,9 +468,10 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             }
             "--exaggeration" => a.exaggeration = num()? as f32,
             "--atlas" => {
-                a.atlas = Some(Projection::parse(&value).ok_or_else(|| {
+                a.settings.projection = Projection::parse(&value).ok_or_else(|| {
                     anyhow!("--atlas expects equal-earth, mollweide, hammer-aitoff, mercator or plate-carree")
-                })?);
+                })?;
+                a.settings.view = ViewKind::Map;
             }
             "--central-meridian" => a.central_meridian = atlas::wrap_lon(num()?.to_radians()),
             "--timeout" => a.timeout = num()?,
@@ -445,7 +497,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
                 })?;
             }
             "--fps" => {
-                a.limit = FrameLimit::parse(&value).ok_or_else(|| anyhow!("--fps expects 120 or 90"))?;
+                a.settings.frame_rate = FrameLimit::parse(&value).ok_or_else(|| anyhow!("--fps expects 120 or 90"))?;
             }
             "--benchmark" => {
                 let seconds = num()?;
@@ -463,6 +515,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             "--search" => a.search = Some(value.clone()).filter(|v| !v.trim().is_empty()),
             "--import" => a.imports.push(value.into()),
             "--places-file" => a.places_file = Some(value.into()),
+            "--config-dir" => a.config_flag = Some(value.into()),
             "--add-service" => a.services.add = Some(value.clone()),
             "--service-name" => a.services.name = Some(value.clone()),
             "--service-credit" => a.services.credit = Some(value.clone()),
@@ -534,8 +587,6 @@ struct Scene {
     waiting: usize,
     /// How many of those have failed before.
     retrying: usize,
-    roads_on: bool,
-    labels_on: bool,
     /// Tiles whose map data contains no lines, so they need no overlay.
     overlay_empty: HashSet<TileKey>,
     overlay_retries: HashMap<TileKey, (Instant, u32)>,
@@ -545,7 +596,6 @@ struct Scene {
     /// How visible each label on screen is, as it fades in.
     label_alpha: HashMap<u64, f64>,
     labels_shown: usize,
-    buildings_on: bool,
     /// Tiles known to have no buildings.
     building_empty: HashSet<TileKey>,
     building_retries: HashMap<TileKey, (Instant, u32)>,
@@ -554,11 +604,14 @@ struct Scene {
     clock: Clock,
     /// Real time for the clock is counted from here.
     clock_epoch: Instant,
-    sun_on: bool,
     /// The clock reading when the picture was last drawn.
     drawn_time: f64,
     /// Stars, planets and the Moon are shown.
-    sky_on: bool,
+    /// What the user sees chosen: the saved options with the command line over them, and as changed
+    /// since. `view_last` is what they were when `store` was last told.
+    view: Settings,
+    view_last: Settings,
+    store: settings::Store,
     /// The planets and the Moon as of `bodies_time`.
     bodies: Vec<planets::Body>,
     bodies_time: f64,
@@ -779,11 +832,11 @@ impl Scene {
             Some(path) => places::Store::load(path),
             None => places::Store::in_memory(),
         };
-        let mut view = AtlasView::whole(args.atlas.unwrap_or(Projection::EqualEarth), args.central_meridian, (size.x, size.y));
+        let mut view = AtlasView::whole(args.settings.projection, args.central_meridian, (size.x, size.y));
         view.match_globe(args.cam.lat, args.cam.lon, args.cam.distance);
         let mut scene = Self {
             nav: Nav::starting_above_ground(args.cam, size),
-            mode: if args.atlas.is_some() { Mode::Atlas } else { Mode::Globe },
+            mode: if args.settings.view == ViewKind::Map { Mode::Atlas } else { Mode::Globe },
             map: AtlasNav::new(view),
             loader: Loader::new(fetcher.clone(), args.exaggeration, vector::name_fields(&args.lang)),
             search: search::Search::new(args.body.surface_data),
@@ -819,15 +872,12 @@ impl Scene {
             draw: Vec::new(),
             waiting: 0,
             retrying: 0,
-            roads_on: args.roads,
-            labels_on: args.labels,
             overlay_empty: HashSet::new(),
             overlay_retries: HashMap::new(),
             label_sets: HashMap::new(),
             text: TextWorker::new(),
             label_alpha: HashMap::new(),
             labels_shown: 0,
-            buildings_on: args.buildings,
             building_empty: HashSet::new(),
             building_retries: HashMap::new(),
             frame_status: None,
@@ -841,9 +891,10 @@ impl Scene {
                 clock
             },
             clock_epoch: Instant::now(),
-            sun_on: args.sun,
             drawn_time: 0.0,
-            sky_on: args.stars,
+            view: args.settings.clone(),
+            view_last: args.settings.clone(),
+            store: args.config_dir.as_deref().map_or_else(settings::Store::in_memory, settings::Store::open),
             bodies: Vec::new(),
             bodies_time: f64::NEG_INFINITY,
             bodies_pos: DVec3::ZERO,
@@ -851,10 +902,53 @@ impl Scene {
         for path in &args.imports {
             scene.import_path(path, false);
         }
+        let base = scene.services.base_id().unwrap_or_default().to_string();
+        (scene.view.base_service, scene.view_last.base_service) = (base.clone(), base);
         scene.ui.resize(size, 1.0);
         scene.ui.add(help::icon_panel());
         scene.ui.add(help::window_panel());
         scene
+    }
+
+    fn lines_on(&self) -> bool {
+        let v = &self.view;
+        v.streets || v.trails || v.trains || v.boundaries
+    }
+
+    fn names_on(&self) -> bool {
+        self.view.cities || self.view.other_names
+    }
+
+    /// Key R: all the lines off, or if they are all off, on.
+    fn toggle_lines(&mut self) {
+        let on = !self.lines_on();
+        let v = &mut self.view;
+        (v.streets, v.trails, v.trains, v.boundaries) = (on, on, on, on);
+    }
+
+    /// Key L: all the names off, or if they are all off, on.
+    fn toggle_names(&mut self) {
+        let on = !self.names_on();
+        (self.view.cities, self.view.other_names) = (on, on);
+    }
+
+    /// Notes what the user changed since the last call, and saves it. A value that only the
+    /// command line set is not a change, so it is not saved.
+    fn persist(&mut self) {
+        let mut live = self.view.clone();
+        live.view = if self.mode == Mode::Atlas { ViewKind::Map } else { ViewKind::Globe };
+        live.projection = self.map.view.projection;
+        live.base_service = self.services.base_id().unwrap_or_default().to_string();
+        if live == self.view_last {
+            return;
+        }
+        live.copy_changes(&self.view_last, &mut self.store.values);
+        self.view_last = live.clone();
+        self.view = live;
+        if let Err(e) = self.store.save_if_changed() {
+            eprintln!("{e}");
+            self.notice = Some(e);
+        }
     }
 
     /// Mouse input, shared by the window and `--simulate-click`. Each returns whether the
@@ -895,6 +989,12 @@ impl Scene {
     }
 
     fn mouse_released(&mut self, b: Button, mods: Mods) -> bool {
+        let r = self.release_input(b, mods);
+        self.persist();
+        r
+    }
+
+    fn release_input(&mut self, b: Button, mods: Mods) -> bool {
         let r = self.ui.release(b, self.pointer);
         if let Some(event) = r.event {
             help::handle(&mut self.ui, event);
@@ -1212,13 +1312,14 @@ impl Scene {
         let time = self.clock.time();
         let earth = body::current().id == body::EARTH.id;
         r.sun = (body::current().sun)(time);
-        r.sun_on = self.sun_on;
-        r.sky_on = self.sky_on;
+        r.sun_on = self.view.sunlight;
+        r.roads_visible = self.lines_on();
+        r.sky_on = self.view.stars;
         if !r.has_stars() {
             r.set_stars(&sky::star_points());
         }
         r.sky_rot = (body::current().rotation)(time);
-        r.shadow = (self.sun_on && earth).then(|| eclipse::shadow_at(time)).flatten();
+        r.shadow = (self.view.sunlight && earth).then(|| eclipse::shadow_at(time)).flatten();
         let pos = self.nav.cam.basis().pos;
         let (_, _, height) = ecef_to_geodetic(pos);
         // On the Earth the Sun and the Moon come from the long series, the Moon as seen from the
@@ -1228,10 +1329,10 @@ impl Scene {
         if let Some(sm) = discs {
             r.sun = (sm.to_earth_fixed() * sm.sun).normalize();
         }
-        let sun_sin = self.sun_on.then(|| pos.normalize().dot(r.sun));
+        let sun_sin = self.view.sunlight.then(|| pos.normalize().dot(r.sun));
         // Without air, nothing hides the stars, whatever the Sun is doing.
         let air_height = if body::current().atmosphere { height } else { f64::INFINITY };
-        let daylight = r.sky_discs.filter(|_| self.sun_on).map_or(1.0, |d| 1.0 - d.obscuration());
+        let daylight = r.sky_discs.filter(|_| self.view.sunlight).map_or(1.0, |d| 1.0 - d.obscuration());
         r.sky_limit = sky::limiting_magnitude(air_height, sun_sin, daylight);
         // The planets move slowly, but the Moon is worked out again whenever the clock or the
         // viewer has moved, so that it looks continuous at any clock speed. At real-time speed
@@ -1263,7 +1364,7 @@ impl Scene {
     fn sky_key(&mut self, key: ClockKey) {
         self.clock.advance(self.clock_epoch.elapsed().as_secs_f64());
         if key == ClockKey::ToggleSun {
-            self.sun_on = !self.sun_on;
+            self.view.sunlight = !self.view.sunlight;
         }
         self.clock.apply(key, sky_time::wall_clock_now());
     }
@@ -1393,8 +1494,8 @@ impl Scene {
 
         let mut overlays = Vec::new();
         // Labels are placed on the globe only.
-        let labels_wanted = self.labels_on && !atlas;
-        if body::current().surface_data && (self.roads_on || labels_wanted) {
+        let labels_wanted = self.names_on() && !atlas;
+        if body::current().surface_data && (self.lines_on() || labels_wanted) {
             for &k in &self.draw {
                 let lines_needed = !r.has_overlay(k) && !self.overlay_empty.contains(&k);
                 if !lines_needed && (!labels_wanted || self.label_sets.contains_key(&vector_source(k))) {
@@ -1412,7 +1513,7 @@ impl Scene {
             }
         }
         let mut building_jobs = Vec::new();
-        let visible = if body::current().surface_data && self.buildings_on && !atlas { building_tiles(&self.draw) } else { Vec::new() };
+        let visible = if body::current().surface_data && self.view.buildings && !atlas { building_tiles(&self.draw) } else { Vec::new() };
         for &k in &visible {
             if r.has_buildings(k) || self.building_empty.contains(&k) {
                 continue;
@@ -1444,7 +1545,7 @@ impl Scene {
             }
         }
         self.labels_shown = 0;
-        if !self.labels_on || self.mode == Mode::Atlas {
+        if !self.names_on() || self.mode == Mode::Atlas {
             r.set_labels(&[]);
             self.label_alpha.clear();
             return;
@@ -1536,7 +1637,7 @@ impl Scene {
     /// Names for the planets and the Moon where they are seen, above the ground and bright
     /// enough to be visible.
     fn sky_labels(&mut self, r: &mut Renderer, screen: &Screen, scale: u32) -> Vec<LabelInstance> {
-        if !self.sky_on || !r.has_stars() {
+        if !self.view.stars || !r.has_stars() {
             return Vec::new();
         }
         let pos = screen.basis.pos;
@@ -1605,7 +1706,7 @@ impl Scene {
             b if b.id == body::EARTH.id => position,
             b => format!("{}  {position}", b.name),
         };
-        let sky = if self.sun_on { self.clock.label() } else { format!("{}  flat light", self.clock.label()) };
+        let sky = if self.view.sunlight { self.clock.label() } else { format!("{}  flat light", self.clock.label()) };
         let mut text = format!(
             "{position}\n{sky}\n{scale}  tiles {}/{}\n{}",
             self.draw.len(),
@@ -1630,7 +1731,7 @@ impl Scene {
         let icons = self.ui.icons_width() as usize;
         let credit_columns = ((width as usize).saturating_sub(32 + icons) / (8 * scale)).max(20);
         let mut credits = credits_for(self.draw.iter().map(|k| r.tile_credit(*k)));
-        if self.sky_on && self.mode == Mode::Globe {
+        if self.view.stars && self.mode == Mode::Globe {
             credits.push('\n');
             credits.push_str(STARS_CREDIT);
         }
@@ -1958,7 +2059,6 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let samples = render::sample_count(&adapter, format);
     let mut r = Renderer::new(device, queue, format, samples);
-    r.roads_visible = args.roads;
     let target = r.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("screenshot"),
         size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
@@ -2013,6 +2113,7 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     for pos in &args.simulate_clicks {
         scene.simulate_click(*pos);
     }
+    scene.persist();
 
     let started = Instant::now();
     let mut quiet_since = Instant::now();
@@ -2194,8 +2295,7 @@ impl App {
         config.present_mode = pacing::present_mode(&caps.present_modes);
         surface.configure(&device, &config);
         let samples = render::sample_count(&adapter, config.format);
-        let mut renderer = Renderer::new(device, queue, config.format, samples);
-        renderer.roads_visible = self.args.roads;
+        let renderer = Renderer::new(device, queue, config.format, samples);
         let mut scene = Scene::new(&self.args, DVec2::new(w as f64, h as f64));
         scene.start_feeds(&self.args);
         let now = Instant::now();
@@ -2212,7 +2312,7 @@ impl App {
             renderer,
             scene,
             last_frame: now,
-            pacer: Pacer::new(self.args.limit, now),
+            pacer: Pacer::new(self.args.settings.frame_rate, now),
             meter: RateMeter::default(),
             redraw_wanted: true,
             benchmark,
@@ -2345,6 +2445,11 @@ impl ApplicationHandler<UserEvent> for App {
         // A slow tick picks up tiles whose retry time has come.
         let mut wake = now + Duration::from_secs(1);
         if let Some(g) = &mut self.gfx {
+            // Whatever the user changed, by key, click or list, is noted and saved here.
+            g.scene.persist();
+            if g.pacer.limit() != g.scene.view.frame_rate {
+                g.pacer.set_limit(g.scene.view.frame_rate);
+            }
             if let Some(b) = &g.benchmark {
                 if now >= b.end {
                     Self::report_benchmark(g, b);
@@ -2589,18 +2694,20 @@ impl ApplicationHandler<UserEvent> for App {
                         KeyCode::KeyN if self.mods.ctrl && self.mods.alt => nav.straighten(),
                         KeyCode::KeyQ if self.mods.ctrl => event_loop.exit(),
                         KeyCode::KeyR if !self.mods.ctrl => {
-                            gfx.scene.roads_on = !gfx.scene.roads_on;
-                            gfx.renderer.roads_visible = gfx.scene.roads_on;
+                            gfx.scene.toggle_lines();
                         }
-                        KeyCode::KeyF if !self.mods.ctrl => gfx.pacer.toggle(),
+                        KeyCode::KeyF if !self.mods.ctrl => {
+                            gfx.pacer.toggle();
+                            gfx.scene.view.frame_rate = gfx.pacer.limit();
+                        }
                         KeyCode::KeyB if !self.mods.ctrl => {
-                            gfx.scene.buildings_on = !gfx.scene.buildings_on;
+                            gfx.scene.view.buildings = !gfx.scene.view.buildings;
                         }
                         KeyCode::KeyO if !self.mods.ctrl => {
-                            gfx.scene.sky_on = !gfx.scene.sky_on;
+                            gfx.scene.view.stars = !gfx.scene.view.stars;
                         }
                         KeyCode::KeyL if !self.mods.ctrl => {
-                            gfx.scene.labels_on = !gfx.scene.labels_on;
+                            gfx.scene.toggle_names();
                         }
                         _ => {}
                     }
@@ -2661,10 +2768,29 @@ fn search_key(event: &KeyEvent, mods: Mods) -> Option<search::Key> {
 }
 
 fn main() -> Result<()> {
-    let Some(mut args) = parse_args(std::env::args().skip(1))? else {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let (dir, flag) = settings_dir(&argv);
+    let store = dir.as_deref().map_or_else(settings::Store::in_memory, settings::Store::open);
+    for w in &store.warnings {
+        eprintln!("settings: {w}");
+    }
+    let Some(mut args) = parse_args(argv.into_iter(), &store.values)? else {
         println!("{USAGE}");
         return Ok(());
     };
+    args.config_dir = dir;
+    args.config_flag = flag;
+    if args.settings.body != args.body.id {
+        // Only reached by a flag that is not a body: the saved name is unknown.
+        args.settings.body = args.body.id.to_string();
+    }
+    if args.services.base.is_none() && !store.values.base_service.is_empty() {
+        if service_ui::Control::new(args.services.library(), true).has(&store.values.base_service) {
+            args.services.base = Some(store.values.base_service.clone());
+        } else {
+            eprintln!("settings: the map service {:?} is not in your library, using the usual imagery", store.values.base_service);
+        }
+    }
     body::select(args.body);
     if !args.distance_given {
         args.cam.distance = nav::whole_body();
@@ -2713,7 +2839,7 @@ mod tests {
     use super::*;
 
     fn parse(s: &[&str]) -> Result<Option<Args>> {
-        parse_args(s.iter().map(|x| x.to_string()))
+        parse_args(s.iter().map(|x| x.to_string()), &Settings::default())
     }
 
     #[test]
@@ -2845,8 +2971,8 @@ mod tests {
 
     #[test]
     fn frame_options() {
-        assert_eq!(parse(&[]).unwrap().unwrap().limit, FrameLimit::Fps120);
-        assert_eq!(parse(&["--fps", "90"]).unwrap().unwrap().limit, FrameLimit::Fps90);
+        assert_eq!(parse(&[]).unwrap().unwrap().settings.frame_rate, FrameLimit::Fps120);
+        assert_eq!(parse(&["--fps", "90"]).unwrap().unwrap().settings.frame_rate, FrameLimit::Fps90);
         assert!(parse(&["--fps", "60"]).is_err());
         assert_eq!(parse(&["--benchmark", "5"]).unwrap().unwrap().benchmark, Some(5.0));
         assert!(parse(&["--benchmark", "0"]).is_err());
@@ -2855,32 +2981,56 @@ mod tests {
     #[test]
     fn time_and_sun_flags() {
         let a = parse(&["--time", "2026-06-21T12:00:00Z", "--time-speed", "60", "--no-sun"]).unwrap().unwrap();
-        assert_eq!((a.time, a.time_speed, a.sun), (Some(1_782_043_200.0), 60.0, false));
+        assert_eq!((a.time, a.time_speed, a.settings.sunlight), (Some(1_782_043_200.0), 60.0, false));
         assert!(parse(&["--time", "noon"]).is_err());
-        assert!(parse(&[]).unwrap().unwrap().sun);
-        assert!(parse(&[]).unwrap().unwrap().stars);
-        assert!(!parse(&["--no-stars"]).unwrap().unwrap().stars);
+        assert!(parse(&[]).unwrap().unwrap().settings.sunlight);
+        assert!(parse(&[]).unwrap().unwrap().settings.stars);
+        assert!(!parse(&["--no-stars"]).unwrap().unwrap().settings.stars);
         assert_eq!(parse(&["--tilt", "100"]).unwrap().unwrap().cam.sky.to_degrees().round(), 15.0);
     }
 
     #[test]
     fn atlas_options() {
         let a = parse(&["--atlas", "mollweide", "--central-meridian", "190"]).unwrap().unwrap();
-        assert_eq!(a.atlas, Some(Projection::Mollweide));
+        assert_eq!((a.settings.view, a.settings.projection), (ViewKind::Map, Projection::Mollweide));
         assert!((a.central_meridian.to_degrees() + 170.0).abs() < 1e-9);
-        assert_eq!(parse(&[]).unwrap().unwrap().atlas, None);
+        assert_eq!(parse(&[]).unwrap().unwrap().settings.view, ViewKind::Globe);
         assert!(parse(&["--atlas", "robinson"]).is_err());
         assert!(parse(&["--central-meridian", "x"]).is_err());
+    }
+
+    #[test]
+    fn the_command_line_wins_over_saved_options_for_a_run() {
+        let saved = Settings { trains: false, stars: false, projection: Projection::Mercator, ..Settings::default() };
+        let run = |flags: &[&str]| parse_args(flags.iter().map(|x| x.to_string()), &saved).unwrap().unwrap();
+        let a = run(&[]);
+        assert!(!a.settings.trains && !a.settings.stars && a.settings.projection == Projection::Mercator);
+        let a = run(&["--atlas", "mollweide", "--no-trails"]);
+        assert_eq!((a.settings.view, a.settings.projection), (ViewKind::Map, Projection::Mollweide));
+        assert!(!a.settings.trails && !a.settings.trains, "flag and saved value both apply");
+        assert_eq!(run(&["--body", "mars"]).body.id, "mars");
+        let moon = Settings { body: "moon".into(), view: ViewKind::Map, ..Settings::default() };
+        let a = parse_args(["--globe".to_string()].into_iter(), &moon).unwrap().unwrap();
+        assert_eq!((a.body.id, a.settings.view), ("moon", ViewKind::Globe));
+    }
+
+    #[test]
+    fn pictures_ignore_saved_options_unless_the_folder_is_given() {
+        let argv = |a: &[&str]| a.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(settings_dir(&argv(&["--screenshot", "a.png"])), (None, None));
+        let (dir, flag) = settings_dir(&argv(&["--screenshot", "a.png", "--config-dir", "/x"]));
+        assert_eq!((dir, flag), (Some(PathBuf::from("/x")), Some(PathBuf::from("/x"))));
+        assert_eq!(settings_dir(&argv(&["--config-dir", "/y"])).0, Some(PathBuf::from("/y")));
     }
 
     #[test]
     fn map_options() {
         let a = parse(&["--lang", "EN", "--no-roads", "--lat", "1"]).unwrap().unwrap();
         assert_eq!(a.lang, "en");
-        assert!(!a.roads && a.labels);
+        assert!(!a.settings.streets && !a.settings.boundaries && a.settings.cities);
         assert!(parse(&["--lang", "../x"]).is_err());
         let b = parse(&["--no-labels"]).unwrap().unwrap();
-        assert!(b.roads && !b.labels);
+        assert!(b.settings.streets && !b.settings.cities && !b.settings.other_names);
     }
 
     #[test]

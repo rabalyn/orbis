@@ -272,6 +272,7 @@ impl Ui {
     }
 
     /// Visible panels that reach into the credit strip. Always empty, if layouts keep the rule.
+    #[cfg(test)]
     pub fn covering_credits(&self) -> Vec<PanelId> {
         let floor = self.metrics.floor();
         let eps = 0.01;

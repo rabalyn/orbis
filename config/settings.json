@@ -1,0 +1,18 @@
+{
+  "base_service": "",
+  "body": "earth",
+  "boundaries": true,
+  "buildings_3d": true,
+  "cities": true,
+  "event_markers": true,
+  "frame_rate_limit": 120,
+  "language": "",
+  "other_names": true,
+  "projection": "Equal Earth",
+  "stars_and_planets": true,
+  "streets": true,
+  "sunlight": true,
+  "trails": true,
+  "trains": true,
+  "view": "globe"
+}

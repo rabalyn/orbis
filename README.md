@@ -52,6 +52,8 @@ A 3Dconnexion SpaceMouse is used when found, through `spacenavd` or `/dev/hidraw
 `--help` lists all options. If your desktop reserves Alt-drag for moving windows, use
 right-drag to turn and tilt.
 
+View options are saved in `settings.json`: in `./config/` when the working directory has that folder (the committed `config/settings.json` holds the defaults and is what a checkout of the source uses), otherwise in `orbis/` in your config folder, or in the folder given with `--config-dir`. Flags apply to one run and are not saved; a `--screenshot` ignores saved options unless `--config-dir` is given. Saved places and map services stay in your own config folder.
+
 ## Data and cache
 
 Orbis tries hard not to burden the public services it uses. Tiles are kept in

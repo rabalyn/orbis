@@ -161,6 +161,31 @@ impl Control {
         rows
     }
 
+    /// Whether the library or the directory has a service of this name or identifier.
+    pub fn has(&self, name: &str) -> bool {
+        find(&self.library, name).is_ok()
+    }
+
+    /// The identifier of the service in use instead of the usual imagery, if any.
+    pub fn base_id(&self) -> Option<&str> {
+        self.base.as_deref()
+    }
+
+    /// The services of the library, as (identifier, name), for choosing a base.
+    pub fn library_choices(&self) -> Vec<(String, String)> {
+        self.library.services().iter().map(|s| (s.id.clone(), s.name.clone())).collect()
+    }
+
+    /// Uses the library service with this identifier as the base, or the usual imagery for
+    /// `None`. Earth only.
+    pub fn choose_base(&mut self, id: Option<&str>) {
+        let service = id.and_then(|id| find(&self.library, id).ok());
+        if id.is_some() && (service.is_none() || !self.earth) {
+            return;
+        }
+        self.set_base(service.as_ref());
+    }
+
     fn set_base(&mut self, s: Option<&Service>) {
         self.base = s.map(|s| s.id.clone());
         if let Some(s) = s {

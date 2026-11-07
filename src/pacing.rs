@@ -60,6 +60,10 @@ impl Pacer {
         self.limit = self.limit.other();
     }
 
+    pub fn set_limit(&mut self, limit: FrameLimit) {
+        self.limit = limit;
+    }
+
     pub fn due(&self, now: Instant) -> bool {
         now >= self.next
     }
