@@ -37,6 +37,7 @@ mod ephemeris;
 mod search;
 mod service_ui;
 mod settings;
+mod shadows;
 mod select;
 mod sky;
 mod spacemouse;
