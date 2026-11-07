@@ -155,6 +155,11 @@ pub fn by_id(id: &str) -> Option<&'static Body> {
     ALL.iter().copied().find(|b| b.id == id.to_ascii_lowercase())
 }
 
+/// Every body that can be chosen, Earth first.
+pub fn all() -> &'static [&'static Body] {
+    &ALL
+}
+
 pub fn ids() -> Vec<&'static str> {
     ALL.iter().map(|b| b.id).collect()
 }

@@ -32,9 +32,9 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | Ctrl-0 | Whole Earth, or the whole map on the map |
 | Ctrl-Alt-N | Straighten up, one step per press: north up, straight down, whole body, equator centred |
 | SpaceMouse | Push or pull: climb or sink; slide: move across the ground; twist: turn; tilt: tilt, and on through the horizon; button 1: whole body (Ctrl-0); button 2: straighten up (Ctrl-Alt-N). On the map: slide pans, push or pull zooms (see Milestone 10) |
-| Escape | Stop a flight or a gliding movement; or, while the help window is open, close it |
-| R | Show or hide roads and boundaries |
-| L | Show or hide labels |
+| Escape | Stop a flight or a gliding movement; or, while the help or the view options window is open, close it |
+| R | Show or hide all map lines: streets, trails, trains and boundaries (if any is shown they all go, otherwise they all come back) |
+| L | Show or hide all names: place names and other names (the same way) |
 | B | Show or hide 3D buildings (globe only) |
 | M | Switch between the globe and the flat map, keeping place and scale |
 | P, Shift-P | On the map: next or previous projection |
@@ -52,6 +52,7 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | I | Show or hide the list of imported items |
 | E | Show or hide the list of eclipses around the clock's date (see Milestone 9a). In it: Enter sets the clock to the greatest moment, pauses it and flies to the greatest point, and 1 to 5 show or hide quakes, eruptions, tsunamis, fireballs and eclipses (see Milestone 9b) |
 | G | Show or hide the list of map services (see Milestone 8). In it: Enter uses the chosen service as the base layer (again: back to the usual imagery), O as the overlay, + and - change the overlay's opacity, A opens the box to add a service, Delete removes one |
+| V | Show or hide the view options window (see Milestone 12) |
 | H, ?, F1 | Show or hide the help window (see Milestone 11) |
 | Ctrl-Q | Quit |
 
@@ -499,7 +500,7 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
 - The window sits above the icon in the bottom right corner, and lists the controls in groups, with keys in one column and what they do in the other (stacked when the window is narrow). It is as high as its list, and shrinks with the window; a list that does not fit scrolls with the wheel and shows a scroll bar, which can be dragged or clicked.
 - The list is one table in src/help.rs. A test checks that every key row of the table under Navigation in this file is in it, and that it has no row that is not here.
 - The credits leave room for the icon, and the labels keep clear of the icon and the window.
-- For saved images: `--show-help`, `--help-scroll N` (wheel notches, implies `--show-help`) and `--simulate-click X,Y` (repeatable; clicks are sent through the same code as the mouse's, after `--show-help`).
+- For saved images: `--show-help`, `--help-scroll N` (wheel notches, implies `--show-help`) and `--simulate-click X,Y` (repeatable; clicks are sent through the same code as the mouse's, once everything in the picture has loaded, so they land on what the picture shows).
 
 ### Limitations
 - Mouse input in a real window was not tried by hand: the window cannot be driven here. The routing, the clicks and the scroll bar are unit-tested, and saved images show the icon, the window, scrolling and an icon click.
@@ -507,13 +508,42 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
 - Panels have no keyboard focus, and the wheel scrolls three lines per notch with no smoothing. Text uses the 8x8 bitmap font, scaled by whole numbers.
 - The icon is a plain square with a question mark; it has no tooltip.
 
+## Milestone 12: view options and saved settings (done)
+
+### Credits and panels
+- Credits stay fully readable while their data is shown, in the window and in saved images. The scene tells the interface how tall the wrapped credits are, and no panel is laid out below the strip they use (the interface's `Metrics::floor`). Credits wrap in the width the row of icons leaves. A panel that does not fit above them shrinks and scrolls. New dialogs follow this by laying out above `floor`; a unit test checks it for the help and options windows.
+
+### Settings
+- Options are kept in `settings.json`: in the folder given with `--config-dir`, else in `./config/` if the working directory has that folder (the development configuration; `config/settings.json` is committed and holds the defaults), else in `orbis/` in the user's config folder. Saved places and services stay in the user's folder and never go in `./config/`.
+- Order of precedence: defaults, then saved settings, then the command line. A flag applies to that run only and is not written back. Only what the user changes in the session, by dialog or key, is written, one field at a time, and only when something changed, through a temporary file and a rename. A value in the file that is missing, of the wrong kind or unknown to this version is the default for that field, with a warning on standard error; other keys are kept when the file is written; a file that is not JSON is moved to `settings.json.bad`.
+- A `--screenshot` ignores saved settings and saves none, so that pictures are reproducible, unless `--config-dir` is given.
+- Saved: streets, trails, trains, boundaries, cities and towns, other names, 3D buildings, sunlight, stars and planets, event markers, globe or flat map, projection, frame rate limit, the body for the next start, the library service used as the base imagery, and a language code for names (empty follows the system; set in the file only). Not saved: the camera, the clock, which windows are open.
+- Every key that changes one of these goes through the same path, and the dialog shows the live state, whichever way it changed.
+
+### Map layers
+- Switches, each independent: streets (all road classes and ferries), trails (classes path and track), trains (rail and transit), boundaries, cities and towns (country, state, city, town, village, suburb and smaller place names), other names (water, peaks and street names). Street names also need streets on. The classes are those of the OpenMapTiles schema, kept on each decoded feature.
+- R switches all four kinds of line: if any is shown they all go, otherwise they all come back. L does the same for the two kinds of name. Flags: `--no-streets`, `--no-trails`, `--no-trains`, `--no-boundaries`, `--no-cities`, `--no-names`, besides `--no-roads` and `--no-labels`.
+- Switching a kind of name only filters the labels placed. Switching a kind of line draws the overlays of the tiles in view again from the decoded tiles held in memory, or from the disk cache; nothing is asked of a server for it.
+
+### View options window
+- The second icon at the bottom right, next to the question mark, and the key V open it; Escape or its close button closes it. It has checkboxes for the six map layers, 3D buildings, sunlight, stars and planets and event markers, a choice of globe or flat map, a choice of projection (usable on the flat map only), a choice of body, a choice of Earth imagery (the usual imagery, or a service of the user's library, on Earth only) and the frame rate limit. Clicking acts at once and is saved.
+- The window sits at the bottom left and the help window at the bottom right, so both fit side by side at usual sizes; where they would overlap, opening one closes the other.
+- For saved images: `--show-options`, with `--simulate-click`, which now clicks after loading. With `--config-dir DIR` a click writes `DIR/settings.json`, and another run with the same DIR shows the same state.
+- The interface layer has two more kinds of widget: a checkbox and a choice (one option of a group, drawn as a radio button), each of which can be disabled.
+
+### Limitations
+- The body cannot be changed in a running program: the choice is saved and takes effect at the next start, and the window says so.
+- Only services in the user's library are listed as imagery; the directory is reached through the services list (G). Overlays and opacity are not in the window.
+- Language is not in the window, since names are decoded under it when the program starts.
+- Trails appear from tile zoom 15, service roads at 15, minor roads at 12, rail at 10 and ferries at 8, as before; at coarser views a switch changes nothing visible. Boundaries are drawn for country and state levels only. Park and other area names are not decoded from the map data, so "other names" has none of them. Trails and streets are told apart by the data's class only: a footway tagged as a path counts as a trail.
+- The map shows the flat map's lines and names as before: names are placed on the globe only.
+
 ## Later milestones
 
 Order and scope are open, and depend on which features are wanted.
 
 | # | Feature | Notes |
 |---|---|---|
-| M12 | View options and saved settings | A dialog to show or hide streets, cities, trails, trains and 3D buildings, to switch map projection, and to choose what the globe shows. Every setting is saved in the application's configuration directory; during development, a committed configuration directory in the working directory takes priority |
 | M13 | Information on click | Clicking a place on the map, such as a city name, peak or sea, opens a box with relevant data from Wikipedia and Wikidata |
 | M14 | Smooth flight on double-click | Double-clicking land or a label flies there with an accelerating, smooth automatic flight |
 | M15 | Cast shadows | Terrain and buildings cast shadows calculated from their height and the Sun's position |

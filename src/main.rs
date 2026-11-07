@@ -17,6 +17,7 @@ mod lan;
 mod loader;
 mod moon;
 mod nav;
+mod options;
 mod overlay;
 mod pacing;
 mod planetary;
@@ -176,6 +177,7 @@ Usage: orbis [options]
   --service-opacity N     opacity of the overlay, 0 to 1 (default 0.6; keys + and - in the list)
   --services-panel        with --screenshot, also show the list of map services
   --show-help             with --screenshot, also show the help window (key H)
+  --show-options          with --screenshot, also show the view options dialog (key V)
   --help-scroll N         with --screenshot, scroll the help window down by N wheel notches (implies --show-help)
   --simulate-click X,Y    with --screenshot, click there (pixels from the top left) before the image is taken,
                           through the same code as a real click; repeatable, in order
@@ -239,6 +241,7 @@ struct Args {
     geocoder_url: String,
     services: service_ui::Cli,
     show_help: bool,
+    show_options: bool,
     help_scroll: f64,
     simulate_clicks: Vec<DVec2>,
 }
@@ -313,6 +316,7 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
         imports_panel: false,
         services: Default::default(),
         show_help: false,
+        show_options: false,
         help_scroll: 0.0,
         simulate_clicks: Vec::new(),
         geocoder_url: geocode::DEFAULT_SERVICE.to_string(),
@@ -411,6 +415,10 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
             }
             "--show-help" => {
                 a.show_help = true;
+                continue;
+            }
+            "--show-options" => {
+                a.show_options = true;
                 continue;
             }
             "--services-panel" => {
@@ -617,6 +625,8 @@ struct Scene {
     /// The kinds of line the overlays were drawn with, and how many times that changed.
     lines_drawn: LineKinds,
     lines_version: u64,
+    /// What the view options dialog shows; filled from the live state before each frame.
+    options: options::Shared,
     /// The planets and the Moon as of `bodies_time`.
     bodies: Vec<planets::Body>,
     bodies_time: f64,
@@ -902,6 +912,7 @@ impl Scene {
             store: args.config_dir.as_deref().map_or_else(settings::Store::in_memory, settings::Store::open),
             lines_drawn: LineKinds::of(&args.settings),
             lines_version: 0,
+            options: Default::default(),
             bodies: Vec::new(),
             bodies_time: f64::NEG_INFINITY,
             bodies_pos: DVec3::ZERO,
@@ -915,6 +926,8 @@ impl Scene {
         scene.ui.resize(size, 1.0);
         scene.ui.add(help::icon_panel());
         scene.ui.add(help::window_panel());
+        scene.ui.add(options::icon_panel());
+        scene.ui.add(options::window_panel(scene.options.clone()));
         scene
     }
 
@@ -940,13 +953,64 @@ impl Scene {
         (self.view.cities, self.view.other_names) = (on, on);
     }
 
-    /// Notes what the user changed since the last call, and saves it. A value that only the
-    /// command line set is not a change, so it is not saved.
-    fn persist(&mut self) {
+    /// The options as they are now: `view`, with what the map and the services hold.
+    fn live(&self) -> Settings {
         let mut live = self.view.clone();
         live.view = if self.mode == Mode::Atlas { ViewKind::Map } else { ViewKind::Globe };
         live.projection = self.map.view.projection;
         live.base_service = self.services.base_id().unwrap_or_default().to_string();
+        live
+    }
+
+    /// Keeps the options dialog true to the state, whatever changed it.
+    fn sync_options(&mut self) {
+        if !self.ui.is_visible(options::WINDOW) {
+            return;
+        }
+        let model = options::Model {
+            settings: self.live(),
+            running_body: body::current().id,
+            earth: body::current().surface_data,
+            library: self.services.library_choices(),
+        };
+        if *self.options.borrow() != model {
+            *self.options.borrow_mut() = model;
+            self.ui.refresh(options::WINDOW);
+        }
+    }
+
+    /// Carries out what a click in the options dialog asked for.
+    fn options_action(&mut self, action: options::Action) {
+        use options::Action;
+        match action {
+            Action::Set(index, value) => options::set_toggle(&mut self.view, index, value),
+            Action::View(kind) => {
+                if (kind == ViewKind::Map) != (self.mode == Mode::Atlas) {
+                    self.toggle_mode();
+                }
+            }
+            Action::Projection(p) => self.map.view.set_projection(p),
+            Action::Body(id) => self.view.body = id.to_string(),
+            Action::Base(id) => self.services.choose_base(id.as_deref()),
+            Action::FrameRate(limit) => self.view.frame_rate = limit,
+        }
+    }
+
+    /// Shows or hides a dialog; one that does not fit beside the other closes it.
+    fn toggle_dialog(&mut self, id: ui::PanelId) {
+        self.ui.toggle(id);
+        self.separate_dialogs(id);
+    }
+
+    fn separate_dialogs(&mut self, opened: ui::PanelId) {
+        self.sync_options();
+        self.ui.close_overlapping(opened, &[help::WINDOW, options::WINDOW]);
+    }
+
+    /// Notes what the user changed since the last call, and saves it. A value that only the
+    /// command line set is not a change, so it is not saved.
+    fn persist(&mut self) {
+        let live = self.live();
         if live == self.view_last {
             return;
         }
@@ -1005,7 +1069,14 @@ impl Scene {
     fn release_input(&mut self, b: Button, mods: Mods) -> bool {
         let r = self.ui.release(b, self.pointer);
         if let Some(event) = r.event {
-            help::handle(&mut self.ui, event);
+            if help::handle(&mut self.ui, event) {
+                self.separate_dialogs(help::WINDOW);
+            }
+            let (_, action) = options::handle(&mut self.ui, &self.options, event);
+            self.separate_dialogs(options::WINDOW);
+            if let Some(a) = action {
+                self.options_action(a);
+            }
         }
         let bit = 1 << (b == Button::Right) as u8;
         if r.consumed || self.map_buttons & bit == 0 {
@@ -1202,7 +1273,7 @@ impl Scene {
     fn update_markers(&mut self) {
         const WINDOW: f64 = 15.0 * 86_400.0;
         let time = self.clock.time();
-        let near = if body::current().id == body::EARTH.id { self.events.marked_near(time, WINDOW) } else { Vec::new() };
+        let near = if body::current().id == body::EARTH.id && self.view.event_markers { self.events.marked_near(time, WINDOW) } else { Vec::new() };
         if self.markers_from.0 == self.events.revision && self.markers_from.1 == near {
             return;
         }
@@ -1597,6 +1668,7 @@ impl Scene {
                 pad(r.panel_rect(3, Corner::TopLeft, width, height)),
                 pad(r.panel_rect(render::UI_PANEL_BASE, Corner::TopLeft, width, height)),
                 pad(r.panel_rect(render::UI_PANEL_BASE + 1, Corner::TopLeft, width, height)),
+                pad(r.panel_rect(render::UI_PANEL_BASE + 3, Corner::TopLeft, width, height)),
             ],
         };
         let mut shown: Vec<(&vector::Label, i32, u64)> = sets
@@ -1749,6 +1821,7 @@ impl Scene {
 
     fn set_panels(&mut self, r: &mut Renderer, width: u32, height: u32, scale: usize) {
         self.ui.resize(DVec2::new(width as f64, height as f64), scale as f64);
+        self.sync_options();
         let columns = ((width as usize).saturating_sub(40) / (8 * scale)).max(20);
         // The icons sit at the bottom right, so the credits wrap in the space left of them.
         let icons = self.ui.icons_width() as usize;
@@ -2127,16 +2200,18 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     if args.services.panel {
         scene.services.toggle();
     }
+    if args.show_options {
+        scene.ui.set_visible(options::WINDOW, true);
+    }
     if args.show_help {
         scene.ui.set_visible(help::WINDOW, true);
         if let Some(r) = scene.ui.panels().iter().find(|p| p.id == help::WINDOW).map(|p| p.rect) {
             scene.ui.wheel(-args.help_scroll, DVec2::new(r.x + r.w / 2.0, r.y + r.h / 2.0));
         }
     }
-    for pos in &args.simulate_clicks {
-        scene.simulate_click(*pos);
-    }
-    scene.persist();
+    // Clicks are made once everything has loaded, so they land on what the picture shows: the
+    // credits, which dialogs sit above, depend on the tiles that arrived.
+    let mut clicks = args.simulate_clicks.iter();
 
     let started = Instant::now();
     let mut quiet_since = Instant::now();
@@ -2150,7 +2225,15 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
         if screenshot_busy(scene.loader.is_idle(), scene.waiting, scene.text.is_idle(), scene.feeds_pending, scene.nav.is_animating()) {
             quiet_since = Instant::now();
         } else if quiet_since.elapsed() > Duration::from_millis(300) {
-            break;
+            let pending: Vec<DVec2> = clicks.by_ref().copied().collect();
+            if pending.is_empty() {
+                break;
+            }
+            for pos in pending {
+                scene.simulate_click(pos);
+            }
+            scene.persist();
+            quiet_since = Instant::now();
         }
         if started.elapsed().as_secs_f64() > args.timeout {
             eprintln!("timed out with {} tiles outstanding", scene.waiting);
@@ -2662,8 +2745,12 @@ impl ApplicationHandler<UserEvent> for App {
                 } else if pressed && !event.repeat {
                     let question = matches!(&event.logical_key, winit::keyboard::Key::Character(c) if c.as_str() == "?");
                     match code {
-                        _ if question => gfx.scene.ui.toggle(help::WINDOW),
-                        KeyCode::KeyH | KeyCode::F1 if !self.mods.ctrl => gfx.scene.ui.toggle(help::WINDOW),
+                        _ if question => gfx.scene.toggle_dialog(help::WINDOW),
+                        KeyCode::KeyH | KeyCode::F1 if !self.mods.ctrl => gfx.scene.toggle_dialog(help::WINDOW),
+                        KeyCode::KeyV if !self.mods.ctrl => gfx.scene.toggle_dialog(options::WINDOW),
+                        KeyCode::Escape if gfx.scene.ui.is_visible(options::WINDOW) => {
+                            gfx.scene.ui.set_visible(options::WINDOW, false);
+                        }
                         KeyCode::Escape if gfx.scene.ui.is_visible(help::WINDOW) => {
                             gfx.scene.ui.set_visible(help::WINDOW, false);
                         }

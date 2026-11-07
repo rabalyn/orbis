@@ -13,6 +13,7 @@
 
 use crate::nav::Button;
 use glam::DVec2;
+use std::rc::Rc;
 
 pub type WidgetId = u32;
 pub type PanelId = &'static str;
@@ -166,6 +167,9 @@ impl Metrics {
     }
 }
 
+/// Places a panel and its widgets for the screen.
+pub type Layout = Rc<dyn Fn(&mut Panel, &Metrics)>;
+
 pub struct Panel {
     pub id: PanelId,
     /// On the screen.
@@ -178,14 +182,14 @@ pub struct Panel {
     pub fixed: Vec<Widget>,
     pub body: Option<Body>,
     /// Sets `rect`, the widgets and the body's size for the screen. Scroll position is kept.
-    pub layout: fn(&mut Panel, &Metrics),
+    pub layout: Layout,
     /// Counts changes of what the panel looks like.
     pub(crate) version: u64,
     pub(crate) drawn: u64,
 }
 
 impl Panel {
-    pub fn new(id: PanelId, frame: bool, layout: fn(&mut Panel, &Metrics)) -> Self {
+    pub fn new(id: PanelId, frame: bool, layout: impl Fn(&mut Panel, &Metrics) + 'static) -> Self {
         Self {
             id,
             rect: Rect::default(),
@@ -194,7 +198,7 @@ impl Panel {
             in_band: false,
             fixed: Vec::new(),
             body: None,
-            layout,
+            layout: Rc::new(layout),
             version: 1,
             drawn: 0,
         }
@@ -261,7 +265,8 @@ impl Ui {
 
     /// Adds a panel on top of the others and returns its index. Panels are drawn in order.
     pub fn add(&mut self, mut panel: Panel) -> usize {
-        (panel.layout)(&mut panel, &self.metrics);
+        let layout = panel.layout.clone();
+        layout(&mut panel, &self.metrics);
         self.panels.push(panel);
         self.panels.len() - 1
     }
@@ -300,9 +305,28 @@ impl Ui {
         self.relayout();
     }
 
+    /// Lays the panel out again, because what it shows changed behind its back.
+    pub fn refresh(&mut self, id: PanelId) {
+        let metrics = &self.metrics;
+        for p in self.panels.iter_mut().filter(|p| p.id == id) {
+            let layout = p.layout.clone();
+            layout(p, metrics);
+            if let Some(b) = &mut p.body {
+                b.clamp();
+            }
+            p.version += 1;
+        }
+    }
+
+    #[cfg(test)]
+    pub fn relayout_for_test(&mut self) {
+        self.relayout();
+    }
+
     fn relayout(&mut self) {
         for p in &mut self.panels {
-            (p.layout)(p, &self.metrics);
+            let layout = p.layout.clone();
+            layout(p, &self.metrics);
             if let Some(b) = &mut p.body {
                 b.clamp();
             }
@@ -313,7 +337,7 @@ impl Ui {
     /// Hides each of `others` that overlaps the panel `opened`, for screens too small for both.
     pub fn close_overlapping(&mut self, opened: PanelId, others: &[PanelId]) {
         let Some(open) = self.panels.iter().find(|p| p.id == opened && p.visible).map(|p| p.rect) else { return };
-        for id in others {
+        for id in others.iter().filter(|id| **id != opened) {
             let overlaps = self.panels.iter().any(|p| p.id == *id && p.visible && p.rect.intersects(&open));
             if overlaps {
                 self.set_visible(id, false);

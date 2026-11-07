@@ -93,11 +93,20 @@ impl Canvas {
 }
 
 /// The row of a checkbox or a choice: the mark in front, then the label.
-fn row(cv: &mut Canvas, r: Rect, label: &str, scale: usize, enabled: bool, hover: bool, pressed: bool, mark: impl Fn(&mut Canvas, Rect, Color)) {
+struct Row<'a> {
+    label: &'a str,
+    scale: usize,
+    enabled: bool,
+    hover: bool,
+    pressed: bool,
+}
+
+fn row(cv: &mut Canvas, r: Rect, w: Row, mark: impl Fn(&mut Canvas, Rect, Color)) {
+    let Row { label, scale, enabled, hover, pressed } = w;
     if enabled && (hover || pressed) {
         cv.fill(r, if pressed { BUTTON_PRESSED } else { BUTTON });
     }
-    let c = if enabled { tone(Tone::Normal) } else { tone(Tone::Dim) };
+    let c = if enabled { tone(Tone::Normal) } else { [110, 110, 110, 255] };
     let side = (8 * scale) as f64;
     let top = r.y + (r.h - side) / 2.0;
     mark(cv, Rect::new(r.x + 2.0 * scale as f64, top, side, side), c);
@@ -109,7 +118,7 @@ fn widget(cv: &mut Canvas, w: &Widget, origin: (f64, f64), scale: usize, hover: 
     match &w.kind {
         Kind::Checkbox { label, checked, enabled } => {
             let checked = *checked;
-            row(cv, r, label, scale, *enabled, hover, pressed, |cv, b, c| {
+            row(cv, r, Row { label, scale, enabled: *enabled, hover, pressed }, |cv, b, c| {
                 let t = scale.max(1) as f64;
                 for edge in [
                     Rect::new(b.x, b.y, b.w, t),
@@ -126,7 +135,7 @@ fn widget(cv: &mut Canvas, w: &Widget, origin: (f64, f64), scale: usize, hover: 
         }
         Kind::Choice { label, chosen, enabled } => {
             let chosen = *chosen;
-            row(cv, r, label, scale, *enabled, hover, pressed, |cv, b, c| {
+            row(cv, r, Row { label, scale, enabled: *enabled, hover, pressed }, |cv, b, c| {
                 cv.disc(b, false, c);
                 if chosen {
                     let q = b.w / 4.0;
