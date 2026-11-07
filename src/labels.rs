@@ -429,7 +429,7 @@ mod tests {
     const LON: f64 = 0.2;
 
     fn screen(distance: f64, tilt: f64) -> Screen {
-        let cam = Camera { lat: LAT, lon: LON, target_h: 0.0, distance, heading: 0.0, tilt };
+        let cam = Camera { lat: LAT, lon: LON, target_h: 0.0, distance, heading: 0.0, tilt, sky: 0.0 };
         Screen { basis: cam.basis(), size: DVec2::new(1200.0, 800.0), reserved: Vec::new() }
     }
 

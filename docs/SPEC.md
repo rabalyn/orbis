@@ -49,7 +49,9 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 An arrow key keeps its meaning while held, even if modifiers change. Moving by hand ends a
 flight. Manual flight holds altitude and only rises when the ground comes within 2 m.
 
-Limitation: tilt stops short of the horizon in this milestone. Looking into the sky comes with M5.
+Tilt orbits the view point down to 85° from straight down. Tilting further raises the head about
+the camera, which stays where it is, through the horizon up to straight up. Tile selection and labels
+follow what the screen shows, so the ground may fill only part of it.
 
 ### Data and cache
 - Tiles are fetched only when a view needs them, on background threads, nearest and coarsest first.

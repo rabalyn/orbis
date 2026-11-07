@@ -185,7 +185,7 @@ impl Nav {
             }
             DragMode::Orbit => {
                 self.cam.heading -= delta.x * 0.005;
-                self.cam.tilt += delta.y * 0.005;
+                self.cam.add_tilt(delta.y * 0.005);
             }
             DragMode::Height => {
                 self.cam.distance *= (-delta.y * 0.005).exp();
@@ -209,7 +209,7 @@ impl Nav {
     pub fn scroll(&mut self, lines: f64, pos: DVec2, mods: Mods) {
         self.end_automatic_motion();
         if mods.alt {
-            self.cam.tilt -= lines * 0.05;
+            self.cam.add_tilt(-lines * 0.05);
         } else if mods.shift {
             self.cam.look_around(lines * 0.05, 0.0);
         } else {
@@ -273,7 +273,7 @@ impl Nav {
     }
 
     pub fn whole_body(&mut self) {
-        let to = Camera { distance: WHOLE_EARTH, tilt: 0.0, ..self.cam };
+        let to = Camera { distance: WHOLE_EARTH, tilt: 0.0, sky: 0.0, ..self.cam };
         self.fly_to(to);
     }
 
@@ -283,8 +283,8 @@ impl Nav {
         let c = self.cam;
         let to = if wrap(c.heading).abs() > EPS {
             Camera { heading: 0.0, ..c }
-        } else if c.tilt > EPS {
-            Camera { tilt: 0.0, ..c }
+        } else if c.total_tilt() > EPS {
+            Camera { tilt: 0.0, sky: 0.0, ..c }
         } else if c.distance < WHOLE_EARTH * 0.99 {
             Camera { distance: WHOLE_EARTH, ..c }
         } else {
@@ -321,13 +321,14 @@ impl Nav {
         self.cam.lon = lon;
         self.cam.distance = (log_d.exp() + bump).min(MAX_DISTANCE);
         self.cam.heading = f.from.heading + wrap(f.to.heading - f.from.heading) * s;
-        self.cam.tilt = f.from.tilt + (f.to.tilt - f.from.tilt) * s;
+        self.cam.set_total_tilt(f.from.total_tilt() + (f.to.total_tilt() - f.from.total_tilt()) * s);
         if f.t >= 1.0 {
             self.cam.lat = f.to.lat;
             self.cam.lon = f.to.lon;
             self.cam.distance = f.to.distance;
             self.cam.heading = f.to.heading;
             self.cam.tilt = f.to.tilt;
+            self.cam.sky = f.to.sky;
             self.flight = None;
         } else {
             self.flight = Some(f);
@@ -354,8 +355,8 @@ impl Nav {
                     self.cam.apply_rotation(DQuat::from_axis_angle(up.cross(dir).normalize(), angle));
                 }
                 ArrowMode::Orbit => match arrow {
-                    Arrow::Up => self.cam.tilt += rate * dt * 0.5,
-                    Arrow::Down => self.cam.tilt -= rate * dt * 0.5,
+                    Arrow::Up => self.cam.add_tilt(rate * dt * 0.5),
+                    Arrow::Down => self.cam.add_tilt(-rate * dt * 0.5),
                     Arrow::Left => self.cam.heading -= rate * dt * 0.5,
                     Arrow::Right => self.cam.heading += rate * dt * 0.5,
                 },
@@ -443,7 +444,7 @@ mod tests {
     const NO_GROUND: &dyn Fn(f64, f64) -> Option<f64> = &|_, _| None;
 
     fn nav() -> Nav {
-        let cam = Camera { lat: 0.82, lon: 0.2, target_h: 0.0, distance: 200_000.0, heading: 0.3, tilt: 0.4 };
+        let cam = Camera { lat: 0.82, lon: 0.2, target_h: 0.0, distance: 200_000.0, heading: 0.3, tilt: 0.4, sky: 0.0 };
         Nav::new(cam, SIZE)
     }
 
@@ -537,13 +538,25 @@ mod tests {
     }
 
     #[test]
-    fn tilt_is_limited() {
+    fn tilt_goes_past_the_horizon_up_to_straight_up() {
         let mut n = nav();
         n.press(Button::Right, DVec2::ZERO, Mods::default());
         n.moved(DVec2::new(0.0, 5000.0));
         assert_eq!(n.cam.tilt, MAX_TILT);
+        assert!((n.cam.total_tilt() - std::f64::consts::PI).abs() < 1e-9);
+        assert!(n.cam.basis().look.dot(enu(n.cam.lat, n.cam.lon).2) > 0.99, "looks up");
         n.moved(DVec2::new(0.0, -5000.0));
-        assert_eq!(n.cam.tilt, 0.0);
+        assert_eq!((n.cam.tilt, n.cam.sky), (0.0, 0.0));
+    }
+
+    #[test]
+    fn raising_the_head_keeps_the_camera_in_place() {
+        let mut n = nav();
+        n.cam.set_total_tilt(MAX_TILT);
+        let before = n.cam.basis().pos;
+        n.cam.add_tilt(0.6);
+        assert!((n.cam.basis().pos - before).length() < 1e-6);
+        assert!(n.cam.sky > 0.59);
     }
 
     #[test]

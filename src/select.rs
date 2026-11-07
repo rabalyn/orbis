@@ -143,7 +143,7 @@ mod tests {
     use std::collections::HashSet;
 
     fn view(distance: f64, tilt: f64) -> View {
-        let cam = Camera { lat: 0.82, lon: 0.2, target_h: 0.0, distance, heading: 0.0, tilt };
+        let cam = Camera { lat: 0.82, lon: 0.2, target_h: 0.0, distance, heading: 0.0, tilt, sky: 0.0 };
         View { basis: cam.basis(), aspect: 1.5, height_px: 1000.0, max_z: |_| 16 }
     }
 

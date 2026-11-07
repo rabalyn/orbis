@@ -149,6 +149,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             distance: WHOLE_EARTH,
             heading: 0.0,
             tilt: 0.0,
+            sky: 0.0,
         },
         atlas: None,
         central_meridian: 0.0,
@@ -221,7 +222,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             "--lon" => a.cam.lon = num()?.to_radians(),
             "--distance" => a.cam.distance = num()?,
             "--heading" => a.cam.heading = num()?.to_radians(),
-            "--tilt" => a.cam.tilt = num()?.to_radians(),
+            "--tilt" => a.cam.set_total_tilt(num()?.to_radians()),
             "--time" => {
                 a.time = Some(sky_time::parse_iso8601(&value).ok_or_else(|| {
                     anyhow!("--time expects a date and time such as 2026-06-21T12:00:00Z")

@@ -8,6 +8,8 @@ pub const FOV_Y: f64 = 45.0 * PI / 180.0;
 pub const MIN_DISTANCE: f64 = 30.0;
 pub const MAX_DISTANCE: f64 = 4.0e7;
 pub const MAX_TILT: f64 = 85.0 * PI / 180.0;
+/// The most the head can be raised beyond `MAX_TILT`: straight up.
+pub const MAX_SKY: f64 = PI - MAX_TILT;
 const MAX_LAT: f64 = 89.9 * PI / 180.0;
 
 #[derive(Clone, Copy, Debug)]
@@ -21,6 +23,9 @@ pub struct Camera {
     pub heading: f64,
     /// 0 is straight down, growing towards the horizon.
     pub tilt: f64,
+    /// How far the view has been raised above `MAX_TILT` by turning the head about the
+    /// camera's own position, so it looks at the horizon and up into the sky.
+    pub sky: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -49,12 +54,32 @@ impl Camera {
         let offset = up * ct - f * st;
         let look = -offset;
         let cam_up = f * ct + up * st;
+        let right = look.cross(cam_up);
+        // Raising the head pivots about the camera, which stays where it is.
+        let (ss, cs) = self.sky.sin_cos();
         Basis {
             pos: self.target() + offset * self.distance,
-            right: look.cross(cam_up),
-            up: cam_up,
-            look,
+            right,
+            up: cam_up * cs - look * ss,
+            look: look * cs + cam_up * ss,
         }
+    }
+
+    /// Tilt including the raised head: 0 is straight down, 90 degrees the horizon.
+    pub fn total_tilt(&self) -> f64 {
+        self.tilt + self.sky
+    }
+
+    /// Sets the total tilt. The camera orbits the view point down to `MAX_TILT`; beyond that
+    /// the head rises about the camera.
+    pub fn set_total_tilt(&mut self, t: f64) {
+        let t = t.clamp(0.0, MAX_TILT + MAX_SKY);
+        self.tilt = t.min(MAX_TILT);
+        self.sky = t - self.tilt;
+    }
+
+    pub fn add_tilt(&mut self, delta: f64) {
+        self.set_total_tilt(self.total_tilt() + delta);
     }
 
     pub fn ray(&self, ndc: DVec2, aspect: f64) -> DVec3 {
@@ -106,17 +131,22 @@ impl Camera {
 
     /// Looks around from a fixed position: `yaw` to the right, `pitch` upwards.
     pub fn look_around(&mut self, yaw: f64, pitch: f64) -> bool {
+        // Turning about the camera is done with the head level; the raised part is kept.
+        let sky = std::mem::take(&mut self.sky);
         let b = self.basis();
         let (lat, lon, _) = ecef_to_geodetic(b.pos);
         let (_, _, up) = enu(lat, lon);
         let look = DQuat::from_axis_angle(b.right, pitch) * b.look;
         let look = DQuat::from_axis_angle(up, -yaw) * look;
-        self.set_pose(b.pos, look.normalize())
+        let ok = self.set_pose(b.pos, look.normalize());
+        self.sky = sky;
+        ok
     }
 
     pub fn clamp(&mut self) {
         self.distance = self.distance.clamp(MIN_DISTANCE, MAX_DISTANCE);
         self.tilt = self.tilt.clamp(0.0, MAX_TILT);
+        self.sky = self.sky.clamp(0.0, MAX_SKY);
         self.lat = self.lat.clamp(-MAX_LAT, MAX_LAT);
         self.heading = wrap(self.heading);
         self.lon = wrap(self.lon);
@@ -155,7 +185,7 @@ mod tests {
     use super::*;
 
     fn cam() -> Camera {
-        Camera { lat: 0.8, lon: 0.2, target_h: 0.0, distance: 50_000.0, heading: 0.7, tilt: 0.6 }
+        Camera { lat: 0.8, lon: 0.2, target_h: 0.0, distance: 50_000.0, heading: 0.7, tilt: 0.6, sky: 0.0 }
     }
 
     #[test]
@@ -225,6 +255,31 @@ mod tests {
         let ndc = clip / clip.w;
         assert!(ndc.x.abs() < 1e-4 && ndc.y.abs() < 1e-4);
         assert!(ndc.z > 0.0 && ndc.z < 1.0);
+    }
+
+    #[test]
+    fn raised_head_looks_up_from_the_same_place() {
+        let mut c = Camera { tilt: MAX_TILT, ..cam() };
+        let flat = c.basis();
+        c.set_total_tilt(MAX_TILT + 0.5);
+        let b = c.basis();
+        assert!((b.pos - flat.pos).length() < 1e-6);
+        let up = enu(c.lat, c.lon).2;
+        assert!(b.look.dot(up) > flat.look.dot(up));
+        assert!((b.look.length() - 1.0).abs() < 1e-12 && b.look.dot(b.up).abs() < 1e-12);
+        assert!(c.pick(DVec2::new(0.0, 0.9), 1.5).is_none(), "the sky hits no ground");
+        c.set_total_tilt(10.0);
+        assert!((c.total_tilt() - PI).abs() < 1e-12);
+    }
+
+    #[test]
+    fn look_around_keeps_the_raised_head() {
+        let mut c = Camera { tilt: MAX_TILT - 0.1, ..cam() };
+        c.set_total_tilt(MAX_TILT + 0.3);
+        let p = c.basis().pos;
+        assert!(c.look_around(0.2, 0.0));
+        assert!((c.sky - 0.3).abs() < 1e-12);
+        assert!((c.basis().pos - p).length() < 1e-3);
     }
 
     #[test]
