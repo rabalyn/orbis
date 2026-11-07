@@ -4,6 +4,7 @@ use crate::buildings::{self, BuildingMesh};
 use crate::fetcher::{FetchError, Fetcher, Wait};
 use crate::geo::{geodetic_to_ecef, radius, TileKey};
 use crate::import::Imported;
+use crate::layers::LineKinds;
 use crate::overlay::{self, OVERLAY_SIZE};
 use crate::sources;
 use crate::{blend, service_lib};
@@ -330,6 +331,7 @@ struct Shared {
     vectors: Mutex<HashMap<TileKey, Arc<VectorTile>>>,
     /// What was imported, with the count of changes that made it.
     imports: Mutex<(Arc<Vec<Arc<Imported>>>, u64)>,
+    lines: Mutex<LineKinds>,
 }
 
 impl Shared {
@@ -385,7 +387,7 @@ impl Shared {
             Err(e) => return after_failure(e, k, Outcome::OverlayRetry),
         };
         let (imports, generation) = self.imports.lock().unwrap().clone();
-        let mips = overlay::render(&tile, k, source, &imports)
+        let mips = overlay::render(&tile, k, source, &imports, *self.lines.lock().unwrap())
             .map(|rgba| build_mips(OVERLAY_SIZE, OVERLAY_SIZE, rgba));
         Outcome::Overlay(Box::new(OverlayData { key: k, source, labels: tile.labels.clone(), mips, generation }))
     }
@@ -570,6 +572,7 @@ impl Loader {
             dems: Mutex::new(HashMap::new()),
             vectors: Mutex::new(HashMap::new()),
             imports: Mutex::new((Arc::default(), 0)),
+            lines: Mutex::new(LineKinds { streets: true, trails: true, trains: true, boundaries: true }),
         });
         let (tx, results) = sync_channel(RESULT_QUEUE);
         for _ in 0..WORKERS {
@@ -583,6 +586,12 @@ impl Loader {
     /// generation they were made with, so that older ones can be told apart.
     pub fn set_imports(&self, docs: Arc<Vec<Arc<Imported>>>, generation: u64) {
         *self.shared.imports.lock().unwrap() = (docs, generation);
+    }
+
+    /// Chooses which kinds of line later overlays are drawn with. Overlays already drawn are
+    /// made again by the caller, under a new generation (see `set_imports`).
+    pub fn set_lines(&self, kinds: LineKinds) {
+        *self.shared.lines.lock().unwrap() = kinds;
     }
 
     /// Replaces the queue, so tiles the view no longer needs are not fetched. Imagery and

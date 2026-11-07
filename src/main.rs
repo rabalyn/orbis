@@ -12,6 +12,7 @@ mod geocode;
 mod help;
 mod geo;
 mod labels;
+mod layers;
 mod lan;
 mod loader;
 mod moon;
@@ -53,6 +54,7 @@ use camera::Camera;
 use fetcher::{Fetcher, Peers};
 use geo::{ecef_to_geodetic, TileKey};
 use glam::{DVec2, DVec3};
+use layers::{LineKinds, NameKinds};
 use labels::{Screen, TextKey, TextWorker, ATLAS_SIZE};
 use loader::{Loader, Outcome, VECTOR_MAX_Z};
 use nav::{Arrow, Button, Mods, Nav, WHOLE_EARTH};
@@ -612,6 +614,9 @@ struct Scene {
     view: Settings,
     view_last: Settings,
     store: settings::Store,
+    /// The kinds of line the overlays were drawn with, and how many times that changed.
+    lines_drawn: LineKinds,
+    lines_version: u64,
     /// The planets and the Moon as of `bodies_time`.
     bodies: Vec<planets::Body>,
     bodies_time: f64,
@@ -895,10 +900,13 @@ impl Scene {
             view: args.settings.clone(),
             view_last: args.settings.clone(),
             store: args.config_dir.as_deref().map_or_else(settings::Store::in_memory, settings::Store::open),
+            lines_drawn: LineKinds::of(&args.settings),
+            lines_version: 0,
             bodies: Vec::new(),
             bodies_time: f64::NEG_INFINITY,
             bodies_pos: DVec3::ZERO,
         };
+        scene.loader.set_lines(scene.lines_drawn);
         for path in &args.imports {
             scene.import_path(path, false);
         }
@@ -916,7 +924,7 @@ impl Scene {
     }
 
     fn names_on(&self) -> bool {
-        self.view.cities || self.view.other_names
+        NameKinds::of(&self.view).any()
     }
 
     /// Key R: all the lines off, or if they are all off, on.
@@ -1106,7 +1114,7 @@ impl Scene {
     }
 
     fn import_generation(&self) -> u64 {
-        self.library.generation + self.eclipse_path_version + self.markers_version
+        self.library.generation + self.eclipse_path_version + self.markers_version + self.lines_version
     }
 
     /// Starts the drawn overlays and labels over from the new contents.
@@ -1451,7 +1459,21 @@ impl Scene {
     }
 
     /// Advances the view and works out what to draw and fetch. Returns whether the picture changed.
+    /// Draws the overlays again when the kinds of line shown have changed. They come from the
+    /// decoded tiles in memory, or the disk cache: nothing is asked of a server.
+    fn sync_lines(&mut self) {
+        let kinds = LineKinds::of(&self.view);
+        if kinds == self.lines_drawn {
+            return;
+        }
+        self.lines_drawn = kinds;
+        self.lines_version += 1;
+        self.loader.set_lines(kinds);
+        self.imports_changed();
+    }
+
     fn update(&mut self, r: &mut Renderer, dt: f64, aspect_height: (f64, f64)) -> bool {
+        self.sync_lines();
         self.sync_sky(r);
         let received = self.receive(r);
         let atlas = self.mode == Mode::Atlas;
@@ -1563,6 +1585,7 @@ impl Scene {
             sets.push(self.import_labels.clone());
         }
 
+        let names = NameKinds::of(&self.view);
         let pad = |p: [f64; 4]| [p[0] - 4.0, p[1] - 4.0, p[2] + 4.0, p[3] + 4.0];
         let screen = Screen {
             basis: self.nav.cam.basis(),
@@ -1579,7 +1602,7 @@ impl Scene {
         let mut shown: Vec<(&vector::Label, i32, u64)> = sets
             .iter()
             .flat_map(|set| set.iter())
-            .filter(|label| labels::may_show(&screen, label))
+            .filter(|label| names.allows(label.style) && labels::may_show(&screen, label))
             .map(|label| {
                 let id = label_id(label);
                 let bonus = if self.label_alpha.contains_key(&id) { LABEL_STAY_BONUS } else { 0 };

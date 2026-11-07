@@ -19,6 +19,20 @@ pub enum RoadClass {
 }
 
 impl RoadClass {
+    #[cfg(test)]
+    pub const ALL: [RoadClass; 10] = [
+        Self::Path,
+        Self::Service,
+        Self::Minor,
+        Self::Tertiary,
+        Self::Secondary,
+        Self::Primary,
+        Self::Trunk,
+        Self::Motorway,
+        Self::Rail,
+        Self::Ferry,
+    ];
+
     fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "motorway" => Self::Motorway,
