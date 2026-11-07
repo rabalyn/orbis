@@ -36,6 +36,8 @@ pub struct TileSource {
     pub credit: &'static str,
     /// The most requests at once. Services rendering each image on demand get fewer.
     pub concurrency: usize,
+    /// The width of its images. A 512-pixel image holds the detail of four 256-pixel ones.
+    pub pixels: u32,
 }
 
 const JPEG: &str = "image/jpeg";
@@ -60,6 +62,7 @@ const fn detail(
         bounds,
         credit,
         concurrency,
+        pixels: 256,
     }
 }
 
@@ -74,6 +77,7 @@ pub static EOX: TileSource = TileSource {
     bounds: &[],
     credit: "",
     concurrency: 4,
+    pixels: 256,
 };
 
 pub static TERRAIN: TileSource = TileSource {
@@ -87,6 +91,7 @@ pub static TERRAIN: TileSource = TileSource {
     bounds: &[],
     credit: "",
     concurrency: 4,
+    pixels: 512,
 };
 
 pub static MAP: TileSource = TileSource {
@@ -100,6 +105,7 @@ pub static MAP: TileSource = TileSource {
     bounds: &[],
     credit: "",
     concurrency: 4,
+    pixels: 256,
 };
 
 /// Host used to look up the map service's current URL.
@@ -117,7 +123,7 @@ macro_rules! wms {
 }
 
 /// Detail imagery, best first. Smaller regions come before the larger ones around them.
-pub static DETAIL: [TileSource; 8] = [
+pub static DETAIL: [TileSource; 10] = [
     detail(
         "berlin",
         wms!("https://gdi.berlin.de/services/wms/truedop_2024", "truedop_2024"),
@@ -168,16 +174,40 @@ pub static DETAIL: [TileSource; 8] = [
         "https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=ORTHOIMAGERY.ORTHOPHOTOS&STYLE=normal&FORMAT=image/jpeg&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}",
         "ign/{z}/{x}/{y}.jpg",
         19,
-        &[[-5.2, 42.3, 6.8, 50.0], [-2.0, 50.0, 4.3, 51.1], [6.8, 47.4, 8.3, 49.1], [8.5, 41.3, 9.6, 43.1]],
+        &[
+            [-1.9, 43.35, 6.8, 50.0],
+            [-5.2, 46.0, -1.9, 50.0],
+            [-1.9, 43.0, -0.5, 43.35],
+            [-0.5, 42.65, 1.7, 43.35],
+            [1.7, 42.3, 6.8, 43.35],
+            [-2.0, 50.0, 4.3, 51.1],
+            [6.8, 47.4, 8.3, 49.1],
+            [8.5, 41.3, 9.6, 43.1],
+        ],
         "© IGN",
         4,
+    ),
+    detail(
+        "pnoa",
+        wms!("https://www.ign.es/wms-inspire/pnoa-ma", "OI.OrthoimageCoverage"),
+        "pnoa/{z}/{x}/{y}.jpg",
+        19,
+        &[
+            [-9.4, 42.15, 3.4, 43.85],
+            [-6.2, 36.0, 3.4, 42.15],
+            [-7.4, 36.9, -6.2, 40.0],
+            [1.1, 38.6, 4.4, 40.1],
+            [-18.2, 27.6, -13.4, 29.5],
+        ],
+        "PNOA CC BY 4.0 scne.es",
+        2,
     ),
     detail(
         "pdok",
         "https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg",
         "pdok/{z}/{x}/{y}.jpg",
         19,
-        &[[3.2, 50.7, 7.3, 53.6]],
+        &[[3.2, 51.2, 7.3, 53.6], [5.6, 50.7, 6.3, 51.2]],
         "PDOK Luchtfoto",
         4,
     ),
@@ -190,6 +220,40 @@ pub static DETAIL: [TileSource; 8] = [
         "USGS The National Map",
         4,
     ),
+    // Last among the detail sources: it combines national services, so anything nearer the
+    // original comes first and this one fills the places without their own entry above.
+    TileSource {
+        id: "versatiles",
+        kind: Kind::Imagery,
+        url: "https://tiles.versatiles.org/tiles/satellite/{z}/{x}/{y}",
+        cache: "versatiles/{z}/{x}/{y}.webp",
+        content_type: "image/webp",
+        min_z: DETAIL_MIN_Z,
+        // It advertises 19, but sampled tiles across Europe all ended at 17.
+        max_z: 17,
+        bounds: &[
+            [-1.9, 43.35, 8.3, 51.1],     // France
+            [-5.2, 46.0, -1.9, 49.0],     // Brittany
+            [8.5, 41.3, 9.6, 43.1],       // Corsica
+            [5.8, 45.8, 15.1, 55.1],      // Germany, Switzerland, western Austria
+            [8.0, 54.5, 15.2, 57.8],      // Denmark
+            [2.5, 49.4, 7.3, 53.6],       // Benelux
+            [12.0, 46.4, 17.2, 49.1],     // eastern Austria
+            [12.0, 48.5, 18.9, 51.1],     // Czechia
+            [16.1, 45.7, 22.9, 49.7],     // Hungary, Slovakia
+            [20.2, 43.6, 29.8, 48.3],     // Romania
+            [13.4, 42.3, 19.5, 46.6],     // Croatia
+            [18.4, 39.6, 21.1, 43.6],     // Montenegro, Albania
+            [20.9, 53.9, 28.3, 59.7],     // Baltic states
+            [-9.6, 36.9, -6.1, 42.2],     // Portugal
+            [32.2, 34.5, 34.7, 35.75],    // Cyprus
+            [14.1, 35.8, 14.6, 36.1],     // Malta
+        ],
+        credit: "VersaTiles sources https://versatiles.org/sources/",
+        // One project's server, so it gets the gentle limit of the on-demand services.
+        concurrency: 2,
+        pixels: 512,
+    },
 ];
 
 impl TileSource {
@@ -209,6 +273,17 @@ impl TileSource {
 
     pub fn cache_name(&self, k: TileKey) -> String {
         fill(self.cache, k)
+    }
+
+    /// Which of this source's images holds a tile. Its images may be coarser than the tile.
+    fn source_key(&self, k: TileKey) -> TileKey {
+        let same_detail = if self.pixels > 256 { k.z.saturating_sub(1) } else { k.z };
+        k.ancestor(same_detail.min(self.max_z))
+    }
+
+    /// The finest tile that still gets new detail from this source.
+    fn detail_z(&self) -> u8 {
+        if self.pixels > 256 { self.max_z + 1 } else { self.max_z }
     }
 
     /// A tile's URL, from this source's own template or one looked up for it.
@@ -256,9 +331,9 @@ pub fn imagery_for(k: TileKey) -> Vec<(&'static TileSource, TileKey)> {
     let mut out: Vec<_> = DETAIL
         .iter()
         .filter(|s| k.z >= s.min_z && s.covers(k))
-        .map(|s| (s, k.ancestor(k.z.min(s.max_z))))
+        .map(|s| (s, s.source_key(k)))
         .collect();
-    out.push((&EOX, k.ancestor(k.z.min(EOX.max_z))));
+    out.push((&EOX, EOX.source_key(k)));
     out
 }
 
@@ -270,7 +345,7 @@ pub fn max_tile_z(k: TileKey) -> u8 {
     DETAIL
         .iter()
         .filter(|s| s.covers(k))
-        .map(|s| s.max_z)
+        .map(TileSource::detail_z)
         .max()
         .unwrap_or(BASE_TILE_MAX_Z)
         .max(BASE_TILE_MAX_Z)
@@ -297,13 +372,15 @@ mod tests {
 
     #[test]
     fn close_views_prefer_detail_with_the_base_as_fallback() {
-        assert_eq!(ids(key_at(47.27, 11.4, 16)), ["basemap-at", "eox"]);
-        assert_eq!(ids(key_at(48.14, 11.58, 16)), ["bavaria", "eox"]);
-        assert_eq!(ids(key_at(46.02, 7.75, 16)), ["swisstopo", "eox"]);
-        assert_eq!(ids(key_at(48.86, 2.35, 16)), ["ign", "eox"]);
-        assert_eq!(ids(key_at(52.37, 4.90, 16)), ["pdok", "eox"]);
-        assert_eq!(ids(key_at(51.23, 6.78, 16)), ["nrw", "pdok", "eox"]);
-        assert_eq!(ids(key_at(52.52, 13.40, 16)), ["berlin", "eox"]);
+        assert_eq!(ids(key_at(47.27, 11.4, 16)), ["basemap-at", "versatiles", "eox"]);
+        assert_eq!(ids(key_at(48.14, 11.58, 16)), ["bavaria", "versatiles", "eox"]);
+        assert_eq!(ids(key_at(46.02, 7.75, 16)), ["swisstopo", "versatiles", "eox"]);
+        assert_eq!(ids(key_at(48.86, 2.35, 16)), ["ign", "versatiles", "eox"]);
+        assert_eq!(ids(key_at(52.37, 4.90, 16)), ["pdok", "versatiles", "eox"]);
+        assert_eq!(ids(key_at(51.23, 6.78, 16)), ["nrw", "pdok", "versatiles", "eox"]);
+        assert_eq!(ids(key_at(52.52, 13.40, 16)), ["berlin", "versatiles", "eox"]);
+        assert_eq!(ids(key_at(40.42, -3.70, 16)), ["pnoa", "eox"]);
+        assert_eq!(ids(key_at(50.11, 8.68, 16)), ["versatiles", "eox"]);
         assert_eq!(ids(key_at(35.68, 139.76, 16)), ["eox"]);
         assert_eq!(ids(key_at(40.75, -73.98, 16)), ["usgs", "eox"]);
     }
@@ -325,7 +402,43 @@ mod tests {
         ] {
             assert_eq!(ids(key_at(lat, lon, 18))[0], expected, "{name}");
         }
-        for (name, lat, lon) in [("Frankfurt", 50.11, 8.68), ("Hamburg", 53.55, 9.99), ("Cologne south", 49.9, 7.0)] {
+        for (name, lat, lon) in [
+            ("Madrid", 40.42, -3.70),
+            ("Barcelona", 41.40, 2.17),
+            ("Bilbao", 43.26, -2.93),
+            ("San Sebastian", 43.32, -1.98),
+            ("Pamplona", 42.82, -1.64),
+            ("Palma", 39.57, 2.65),
+            ("Tenerife", 28.46, -16.25),
+        ] {
+            assert_eq!(ids(key_at(lat, lon, 18)), ["pnoa", "eox"], "{name}");
+        }
+        for (name, lat, lon, expected) in [("Biarritz", 43.48, -1.56, "ign"), ("Perpignan", 42.70, 2.90, "ign"), ("Lisbon", 38.72, -9.14, "versatiles"), ("Porto", 41.15, -8.61, "versatiles")] {
+            assert_eq!(ids(key_at(lat, lon, 18))[0], expected, "{name}");
+        }
+        for (name, lat, lon) in [
+            ("Frankfurt", 50.11, 8.68),
+            ("Hamburg", 53.55, 9.99),
+            ("Dresden", 51.05, 13.74),
+            ("Brussels", 50.85, 4.35),
+            ("Copenhagen", 55.68, 12.57),
+            ("Prague", 50.08, 14.43),
+            ("Budapest", 47.50, 19.04),
+            ("Bucharest", 44.43, 26.10),
+            ("Zagreb", 45.81, 15.98),
+            ("Tallinn", 59.44, 24.75),
+            ("Riga", 56.95, 24.11),
+            ("Vilnius", 54.69, 25.28),
+            ("Tirana", 41.33, 19.82),
+            ("Podgorica", 42.44, 19.26),
+            ("Nicosia", 35.17, 33.36),
+            ("Valletta", 35.90, 14.51),
+        ] {
+            assert_eq!(ids(key_at(lat, lon, 18)), ["versatiles", "eox"], "{name}");
+        }
+        // On the Austrian border, so Austria's service is asked first and finds nothing.
+        assert_eq!(ids(key_at(48.15, 17.11, 18)), ["basemap-at", "versatiles", "eox"]);
+        for (name, lat, lon) in [("Warsaw", 52.23, 21.01), ("Rome", 41.90, 12.50), ("London", 51.50, -0.12), ("Tokyo", 35.68, 139.76)] {
             assert_eq!(ids(key_at(lat, lon, 18)), ["eox"], "{name} has no service yet");
         }
     }
@@ -339,9 +452,23 @@ mod tests {
     }
 
     #[test]
+    fn large_images_serve_the_tiles_one_level_finer() {
+        let v = by_id("versatiles").unwrap();
+        for z in [15, 16, 17, 18] {
+            let k = key_at(50.11, 8.68, z);
+            assert_eq!(v.source_key(k), k.ancestor(z - 1));
+        }
+        let k = key_at(50.11, 8.68, 19);
+        assert_eq!(v.source_key(k), k.ancestor(17));
+        assert_eq!(TileSource::url_from(v.url, TileKey::new(17, 69_760, 45_445)), "https://tiles.versatiles.org/tiles/satellite/17/69760/45445");
+    }
+
+    #[test]
     fn tiles_split_further_only_where_detail_exists() {
+        assert_eq!(max_tile_z(key_at(50.11, 8.68, 16)), 18);
         assert_eq!(max_tile_z(key_at(47.27, 11.4, 16)), 19);
         assert_eq!(max_tile_z(key_at(48.14, 11.58, 16)), 18);
+        assert_eq!(max_tile_z(key_at(40.42, -3.70, 16)), 19);
         assert_eq!(max_tile_z(key_at(35.68, 139.76, 16)), 16);
         assert_eq!(max_tile_z(key_at(40.75, -73.98, 16)), 16);
         assert_eq!(max_tile_z(key_at(35.68, 139.76, 3)), 16);

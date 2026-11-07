@@ -104,7 +104,9 @@ magnified beyond its resolution.
 | swisstopo SWISSIMAGE | Switzerland | 15 | 19 | Free under fair use | © swisstopo |
 | IGN BD ORTHO | France | 15 | 19 | Etalab Open Licence by default | © IGN |
 | PDOK Luchtfoto | Netherlands | 15 | 19 | No constraints stated | PDOK Luchtfoto |
+| PNOA | Spain | 15 | 19 | CC BY 4.0 | PNOA CC BY 4.0 scne.es |
 | USGS Imagery | USA | 15 | 16 | US public domain | USGS The National Map |
+| VersaTiles | Rest of Germany, about 15 more European countries | 15 | 18 | Open licences per country | VersaTiles sources https://versatiles.org/sources/ |
 | EOxCloudless (base) | World | 0 | 14 | CC BY-NC-SA 4.0 | See PROVENANCE.md |
 
 Terrain and map data stay on one server each, since both already vary in detail by zoom.
@@ -112,8 +114,14 @@ Credits on screen follow the sources in view.
 
 ### Limitations
 
-- Coverage is partial: most of the world stays at 10 m, including most of Germany. More
-  services fit the same table, and user-added ones belong to M8.
+- Coverage is partial: most of the world stays at 10 m, including Italy, Poland and the UK.
+  More services fit the same table, and user-added ones belong to M8.
+- VersaTiles' images are 512 pixels and end at its zoom 17, which gives zoom 18 detail. Each
+  tile uses a quarter of its parent image, so four tiles cost one download. Its metadata
+  advertises zoom 19, but sampled tiles stopped at 17; recheck if that changes.
+- VersaTiles publishes no usage terms for its public server, and it is one project's service.
+  It gets two requests at a time, is asked only where no national service answers, and is
+  worth contacting before Orbis is published.
 - Images change at national borders and between zoom 14 and 15, and differ in date and colour.
 - A tile crossing a coverage edge can show white or black where the service has no data.
 - basemap.at prints the capture year as a watermark at zooms 17 and above.

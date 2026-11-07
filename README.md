@@ -51,7 +51,7 @@ cargo run --release -- --cache-server HOST:47813
 ```
 
 Imagery is Sentinel-2 at 10 m per pixel worldwide, and aerial photos near the ground in
-Austria, Switzerland, France, the Netherlands, the USA, Bavaria, NRW and Berlin.
+the USA and much of Europe, including Germany, France, Spain, Austria and Switzerland.
 [docs/CACHING.md](docs/CACHING.md) has the details.
 
 The base imagery is free for non-commercial use only, and credits must stay visible. See

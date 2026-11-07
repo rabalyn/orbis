@@ -567,6 +567,7 @@ pub mod tests {
                 bounds: &[],
                 credit: "",
                 concurrency: 4,
+                pixels: 256,
             }))
         }
     }

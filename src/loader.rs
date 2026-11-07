@@ -87,6 +87,25 @@ pub fn is_blank(rgba: &[u8]) -> bool {
         .all(|p| close(p[0], first[0]) && close(p[1], first[1]) && close(p[2], first[2]))
 }
 
+/// Cuts a large image down to the part a tile shows, which keeps graphics memory the same as
+/// with 256-pixel sources. Returns the image with the tile's position in it, as `rect_in` does.
+fn keep_tile_part(img: image::RgbaImage, rect: (f64, f64, f64)) -> (image::RgbaImage, (f64, f64, f64)) {
+    let (u, v, size) = rect;
+    if img.width() <= 256 || size >= 1.0 {
+        return (img, rect);
+    }
+    let (w, h) = img.dimensions();
+    let part = image::imageops::crop_imm(
+        &img,
+        (u * w as f64).round() as u32,
+        (v * h as f64).round() as u32,
+        (size * w as f64).round().max(1.0) as u32,
+        (size * h as f64).round().max(1.0) as u32,
+    )
+    .to_image();
+    (part, (0.0, 0.0, 1.0))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Job {
     Tile(TileKey),
@@ -359,13 +378,16 @@ impl Shared {
                 self.fetcher.mark_missing(source, source_key);
                 continue;
             }
+            let (img, uv_rect) = keep_tile_part(img, k.rect_in(source_key));
+            if source.blank_means_missing() && is_blank(img.as_raw()) {
+                continue; // Others may still have this part, so the image stays known.
+            }
             let (w, h) = img.dimensions();
             let (dem_key, dem_rect) = terrain_source(k);
             let dem = match self.dem(dem_key) {
                 Ok(dem) => dem,
                 Err(e) => return Outcome::Retry(k, asks_to_wait(&e)),
             };
-            let uv_rect = k.rect_in(source_key);
             let (center, vertices, heights) = build_mesh(k, &dem, dem_rect, uv_rect, self.exaggeration);
             return Outcome::Ready(Box::new(TileData {
                 key: k,
@@ -582,6 +604,7 @@ mod tests {
         let cache = crate::fetcher::tests::temp_cache(tag);
         let k = TileKey::containing(47.27f64.to_radians(), 11.4f64.to_radians(), 18);
         cache.mark_missing(&sources::TERRAIN.cache_name(k.ancestor(14)));
+        cache.mark_missing(&sources::by_id("versatiles").unwrap().cache_name(k.ancestor(17)));
         (cache, k, k.ancestor(14))
     }
 
@@ -609,6 +632,22 @@ mod tests {
         assert_eq!(tile.vertices[0].uv, [rect.0 as f32, rect.1 as f32]);
         assert!(cache.is_known_missing(&at.cache_name(k)));
         assert_eq!(cache.get(&at.cache_name(k)), None, "no need to keep it");
+    }
+
+    #[test]
+    fn a_large_source_image_is_shared_between_four_tiles() {
+        let cache = crate::fetcher::tests::temp_cache("large");
+        let k = TileKey::containing(50.11f64.to_radians(), 8.68f64.to_radians(), 18);
+        cache.mark_missing(&sources::TERRAIN.cache_name(k.ancestor(14)));
+        let vt = sources::by_id("versatiles").unwrap();
+        let img = image::RgbImage::from_fn(512, 512, |x, y| image::Rgb([(x / 2) as u8, (y / 2) as u8, 9]));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        cache.put(&vt.cache_name(k.ancestor(17)), &bytes.into_inner()).unwrap();
+        let Outcome::Ready(tile) = load_with(&cache, k) else { panic!("no tile") };
+        assert_eq!(tile.credit, vt.credit);
+        assert_eq!((tile.mips[0].0, tile.mips[0].1), (256, 256));
+        assert_eq!(tile.vertices[0].uv, [0.0, 0.0], "its own part, used whole");
     }
 
     #[test]
@@ -721,4 +760,21 @@ mod tests {
         assert_eq!(v[last_grid].uv, [0.5, 0.5]);
     }
 
+
+    #[test]
+    fn large_images_are_cut_down_to_the_tiles_part() {
+        let img = image::RgbaImage::from_fn(512, 512, |x, y| image::Rgba([(x / 2) as u8, (y / 2) as u8, 0, 255]));
+        let parent = TileKey::new(17, 100, 200);
+        let (part, rect) = keep_tile_part(img.clone(), TileKey::new(18, 201, 400).rect_in(parent));
+        assert_eq!(part.dimensions(), (256, 256));
+        assert_eq!(rect, (0.0, 0.0, 1.0));
+        assert_eq!(part.get_pixel(0, 0), &image::Rgba([128, 0, 0, 255]));
+
+        // A whole image, and ordinary sources, stay as they are.
+        let (same, rect) = keep_tile_part(img, (0.0, 0.0, 1.0));
+        assert_eq!((same.width(), rect), (512, (0.0, 0.0, 1.0)));
+        let small = image::RgbaImage::new(256, 256);
+        let (same, rect) = keep_tile_part(small, (0.5, 0.25, 0.25));
+        assert_eq!((same.width(), rect), (256, (0.5, 0.25, 0.25)));
+    }
 }
