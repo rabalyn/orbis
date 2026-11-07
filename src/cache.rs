@@ -7,6 +7,9 @@ use std::time::{Duration, SystemTime};
 
 /// What was used this recently is never removed.
 const KEEP_RECENT: Duration = Duration::from_secs(6 * 3600);
+/// How long to remember that a server has no such tile.
+const MISSING_FOR: Duration = Duration::from_secs(30 * 24 * 3600);
+const MISSING_SUFFIX: &str = ".none";
 static TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
@@ -54,6 +57,46 @@ impl DiskCache {
         })
     }
 
+    pub fn remove(&self, name: &str) {
+        let _ = fs::remove_file(self.path(name));
+    }
+
+    fn missing_path(&self, name: &str) -> PathBuf {
+        let mut path = self.path(name).into_os_string();
+        path.push(MISSING_SUFFIX);
+        path.into()
+    }
+
+    /// Remembers that a server has no such tile.
+    pub fn mark_missing(&self, name: &str) {
+        let path = self.missing_path(name);
+        if let Some(dir) = path.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        if let Err(e) = fs::write(&path, b"") {
+            eprintln!("cache: could not note {name}: {e}");
+        }
+    }
+
+    /// Whether a server recently had no such tile. The note expires, as data gets added.
+    pub fn is_known_missing(&self, name: &str) -> bool {
+        fs::metadata(self.missing_path(name))
+            .and_then(|m| m.modified())
+            .is_ok_and(|noted| SystemTime::now().duration_since(noted).unwrap_or_default() < MISSING_FOR)
+    }
+
+    /// A place for this cache's own state, which size limits do not remove.
+    pub fn state_path(&self, name: &str) -> PathBuf {
+        self.root.join(format!(".{name}"))
+    }
+
+    /// How many entries the cache holds, and their size in bytes.
+    pub fn usage(&self) -> (u64, u64) {
+        let mut entries = Vec::new();
+        collect(&self.root, &mut entries);
+        (entries.len() as u64, entries.iter().map(|e| e.1).sum())
+    }
+
     /// Removes the longest-unused entries until the cache is under 90 % of `limit`.
     /// Returns the number of bytes freed.
     pub fn trim(&self, limit: u64) -> u64 {
@@ -84,6 +127,10 @@ fn collect(dir: &Path, out: &mut Vec<(PathBuf, u64, SystemTime)>) {
     let Ok(read) = fs::read_dir(dir) else { return };
     for entry in read.flatten() {
         let path = entry.path();
+        // Dot files hold state rather than cached data.
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
         let Ok(meta) = entry.metadata() else { continue };
         if meta.is_dir() {
             collect(&path, out);
@@ -125,6 +172,31 @@ mod tests {
         c.get("a.bin").unwrap();
         let m = fs::metadata(c.path("a.bin")).unwrap().modified().unwrap();
         assert!(SystemTime::now().duration_since(m).unwrap() < Duration::from_secs(60));
+        let _ = fs::remove_dir_all(&c.root);
+    }
+
+    #[test]
+    fn missing_notes_are_remembered_and_expire() {
+        let c = temp_cache("missing");
+        assert!(!c.is_known_missing("a/1.jpg"));
+        c.mark_missing("a/1.jpg");
+        assert!(c.is_known_missing("a/1.jpg"));
+        assert_eq!(c.get("a/1.jpg"), None, "a note is not a tile");
+        let note = File::options().write(true).open(c.missing_path("a/1.jpg")).unwrap();
+        note.set_modified(SystemTime::now() - Duration::from_secs(31 * 24 * 3600)).unwrap();
+        assert!(!c.is_known_missing("a/1.jpg"));
+        let _ = fs::remove_dir_all(&c.root);
+    }
+
+    #[test]
+    fn usage_counts_data_but_not_state() {
+        let c = temp_cache("usage");
+        c.put("a/1.bin", &[0; 100]).unwrap();
+        c.put("b/2.bin", &[0; 50]).unwrap();
+        fs::write(c.state_path("servers.txt"), b"state").unwrap();
+        assert_eq!(c.usage(), (2, 150));
+        assert_eq!(c.trim(10), 0, "recent data stays, and state is not even considered");
+        assert!(c.state_path("servers.txt").exists());
         let _ = fs::remove_dir_all(&c.root);
     }
 

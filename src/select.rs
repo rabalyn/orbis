@@ -15,7 +15,8 @@ pub struct View {
     pub basis: Basis,
     pub aspect: f64,
     pub height_px: f64,
-    pub max_z: u8,
+    /// How far a tile may be split, which depends on the imagery available there.
+    pub max_z: fn(TileKey) -> u8,
 }
 
 #[derive(Default, Debug)]
@@ -114,7 +115,7 @@ impl View {
             return true;
         }
         let (dist, pixels) = self.measure(k, &s);
-        if k.z < self.max_z && (k.z < 2 || pixels > REFINE_ABOVE) {
+        if k.z < (self.max_z)(k) && (k.z < 2 || pixels > REFINE_ABOVE) {
             let mark = draw.len();
             let mut covered = true;
             for c in k.children() {
@@ -143,7 +144,7 @@ mod tests {
 
     fn view(distance: f64, tilt: f64) -> View {
         let cam = Camera { lat: 0.82, lon: 0.2, target_h: 0.0, distance, heading: 0.0, tilt };
-        View { basis: cam.basis(), aspect: 1.5, height_px: 1000.0, max_z: 16 }
+        View { basis: cam.basis(), aspect: 1.5, height_px: 1000.0, max_z: |_| 16 }
     }
 
     /// Fetches everything wanted until the selection settles.

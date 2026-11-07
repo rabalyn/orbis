@@ -1,21 +1,23 @@
 //! Background tile loading: download or read from cache, decode, and build meshes.
 
 use crate::buildings::{self, BuildingMesh};
-use crate::cache::DiskCache;
+use crate::fetcher::{FetchError, Fetcher};
 use crate::geo::{geodetic_to_ecef, TileKey, A};
 use crate::overlay::{self, OVERLAY_SIZE};
+use crate::sources;
 use crate::vector::{self, Label, VectorTile};
 use bytemuck::{Pod, Zeroable};
 use glam::DVec3;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::time::SystemTime;
 
 pub const GRID: usize = 32;
-pub const IMAGERY_MAX_Z: u8 = 14;
 pub const TERRAIN_MAX_Z: u8 = 14;
-pub const TILE_MAX_Z: u8 = 16;
+pub const TILE_MAX_Z: u8 = sources::ABSOLUTE_MAX_Z;
+/// Channels may differ by this much for an image to count as blank.
+const BLANK_RANGE: u8 = 3;
 /// OpenMapTiles data ends here; closer tiles use a part of a tile at this zoom.
 pub const VECTOR_MAX_Z: u8 = 14;
 const WORKERS: usize = 8;
@@ -24,11 +26,6 @@ const WORKERS: usize = 8;
 const RESULT_QUEUE: usize = 32;
 const DEM_CACHE: usize = 64;
 const VECTOR_CACHE: usize = 64;
-/// The most requests sent to the map data service at once.
-const VECTOR_CONCURRENCY: usize = 4;
-const USER_AGENT: &str = "orbis-globe/0.1";
-const TILEJSON_URL: &str = "https://tiles.openfreemap.org/planet";
-const WEEK_SECONDS: u64 = 7 * 24 * 3600;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug)]
@@ -48,6 +45,8 @@ pub struct TileData {
     pub heights: Vec<f32>,
     /// RGBA8 mip chain, largest first.
     pub mips: Vec<(u32, u32, Vec<u8>)>,
+    /// What to credit for this tile's imagery, beyond the credits always shown.
+    pub credit: &'static str,
 }
 
 pub struct OverlayData {
@@ -63,14 +62,29 @@ pub enum Outcome {
     Ready(Box<TileData>),
     /// The server has no such tile, so asking again is pointless.
     Missing(TileKey),
-    /// Something went wrong that may pass.
-    Retry(TileKey),
+    /// Something went wrong that may pass; a server may have said when to ask again.
+    Retry(TileKey, Option<SystemTime>),
     Overlay(Box<OverlayData>),
     /// Map data could not be fetched at the moment; the tile stays usable without it.
-    OverlayRetry(TileKey),
+    OverlayRetry(TileKey, Option<SystemTime>),
     /// A tile's building mesh, or `None` when it has no buildings.
     Buildings(TileKey, Option<Box<BuildingMesh>>),
-    BuildingsRetry(TileKey),
+    BuildingsRetry(TileKey, Option<SystemTime>),
+}
+
+fn asks_to_wait(error: &FetchError) -> Option<SystemTime> {
+    match error {
+        FetchError::Paused(until) => Some(*until),
+        _ => None,
+    }
+}
+
+/// Whether an image is one flat colour, as services send for places they have no data for.
+pub fn is_blank(rgba: &[u8]) -> bool {
+    let Some(first) = rgba.get(..3) else { return true };
+    let close = |a: u8, b: u8| a.abs_diff(b) <= BLANK_RANGE;
+    rgba.chunks_exact(4)
+        .all(|p| close(p[0], first[0]) && close(p[1], first[1]) && close(p[2], first[2]))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -78,172 +92,6 @@ enum Job {
     Tile(TileKey),
     Overlay(TileKey),
     Buildings(TileKey),
-}
-
-/// Limits how many threads do something at once.
-struct Gate {
-    free: Mutex<usize>,
-    released: Condvar,
-}
-
-impl Gate {
-    fn new(n: usize) -> Self {
-        Self { free: Mutex::new(n), released: Condvar::new() }
-    }
-
-    fn enter(&self) -> GatePass<'_> {
-        let mut free = self.free.lock().unwrap();
-        while *free == 0 {
-            free = self.released.wait(free).unwrap();
-        }
-        *free -= 1;
-        GatePass(self)
-    }
-}
-
-struct GatePass<'a>(&'a Gate);
-
-impl Drop for GatePass<'_> {
-    fn drop(&mut self) {
-        *self.0.free.lock().unwrap() += 1;
-        self.0.released.notify_one();
-    }
-}
-
-/// The tile URL template from a TileJSON document.
-fn tile_template(json: &str) -> Option<String> {
-    let after = &json[json.find("\"tiles\"")?..];
-    let start = after.find("\"http")? + 1;
-    let rest = &after[start..];
-    let url = rest[..rest.find('"')?].replace("\\/", "/");
-    let usable = url.starts_with("https://") && ["{z}", "{x}", "{y}"].iter().all(|p| url.contains(p));
-    usable.then_some(url)
-}
-
-#[derive(Debug, PartialEq)]
-pub enum FetchError {
-    Missing,
-    Transient,
-}
-
-/// Downloads through the disk cache, and pauses a source that reports trouble.
-pub struct Fetcher {
-    cache: DiskCache,
-    agent: ureq::Agent,
-    holds: Mutex<HashMap<&'static str, (Instant, u64)>>,
-    map_template: Mutex<Option<String>>,
-    map_gate: Gate,
-}
-
-impl Fetcher {
-    pub fn new(cache: DiskCache) -> Self {
-        let config = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(30)))
-            .user_agent(USER_AGENT)
-            .build();
-        Self {
-            cache,
-            agent: config.into(),
-            holds: Mutex::new(HashMap::new()),
-            map_template: Mutex::new(None),
-            map_gate: Gate::new(VECTOR_CONCURRENCY),
-        }
-    }
-
-    /// The map service publishes data under a versioned URL. It is looked up at most weekly;
-    /// if that fails, an earlier answer still gets tiles while they remain online.
-    fn map_url_template(&self) -> Result<String, FetchError> {
-        let mut known = self.map_template.lock().unwrap();
-        if let Some(t) = &*known {
-            return Ok(t.clone());
-        }
-        let name = |week: u64| format!("openfreemap/tilejson-{week}.json");
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        let week = now / WEEK_SECONDS;
-        let fresh = self.get("OpenFreeMap", &name(week), TILEJSON_URL);
-        let template = fresh
-            .ok()
-            .and_then(|bytes| tile_template(&String::from_utf8_lossy(&bytes)))
-            .or_else(|| {
-                (1..=8).find_map(|back| {
-                    let bytes = self.cache.get(&name(week.saturating_sub(back)))?;
-                    tile_template(&String::from_utf8_lossy(&bytes))
-                })
-            })
-            .ok_or(FetchError::Transient)?;
-        *known = Some(template.clone());
-        Ok(template)
-    }
-
-    fn vector(&self, k: TileKey) -> Result<Vec<u8>, FetchError> {
-        let name = format!("openfreemap/{}/{}/{}.pbf", k.z, k.x, k.y);
-        if let Some(data) = self.cache.get(&name) {
-            return Ok(data);
-        }
-        let url = self
-            .map_url_template()?
-            .replace("{z}", &k.z.to_string())
-            .replace("{x}", &k.x.to_string())
-            .replace("{y}", &k.y.to_string());
-        let _pass = self.map_gate.enter();
-        self.get("OpenFreeMap", &name, &url)
-    }
-
-    fn wait_for_hold(&self, source: &'static str) {
-        let until = self.holds.lock().unwrap().get(source).map(|h| h.0);
-        if let Some(remaining) = until.and_then(|u| u.checked_duration_since(Instant::now())) {
-            std::thread::sleep(remaining);
-        }
-    }
-
-    fn hold(&self, source: &'static str) {
-        let mut holds = self.holds.lock().unwrap();
-        let seconds = holds.get(source).map_or(2, |h| (h.1 * 2).min(60));
-        holds.insert(source, (Instant::now() + Duration::from_secs(seconds), seconds));
-    }
-
-    fn get(&self, source: &'static str, name: &str, url: &str) -> Result<Vec<u8>, FetchError> {
-        if let Some(data) = self.cache.get(name) {
-            return Ok(data);
-        }
-        self.wait_for_hold(source);
-        match self.agent.get(url).call() {
-            Ok(mut response) => {
-                let data = response
-                    .body_mut()
-                    .read_to_vec()
-                    .map_err(|_| FetchError::Transient)?;
-                self.holds.lock().unwrap().remove(source);
-                if let Err(e) = self.cache.put(name, &data) {
-                    eprintln!("cache: could not store {name}: {e}");
-                }
-                Ok(data)
-            }
-            Err(ureq::Error::StatusCode(404 | 410)) => Err(FetchError::Missing),
-            Err(e) => {
-                eprintln!("{source}: {e}");
-                self.hold(source);
-                Err(FetchError::Transient)
-            }
-        }
-    }
-
-    fn imagery(&self, k: TileKey) -> Result<Vec<u8>, FetchError> {
-        let name = format!("eox-s2cloudless-2024/{}/{}/{}.jpg", k.z, k.y, k.x);
-        let url = format!(
-            "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857/default/g/{}/{}/{}.jpg",
-            k.z, k.y, k.x
-        );
-        self.get("EOX", &name, &url)
-    }
-
-    fn terrain(&self, k: TileKey) -> Result<Vec<u8>, FetchError> {
-        let name = format!("mapterhorn/{}/{}/{}.webp", k.z, k.x, k.y);
-        let url = format!("https://tiles.mapterhorn.com/{}/{}/{}.webp", k.z, k.x, k.y);
-        self.get("Mapterhorn", &name, &url)
-    }
 }
 
 /// A square elevation grid.
@@ -284,12 +132,6 @@ impl Dem {
         let bottom = at(x0, y1) * (1.0 - fx) + at(x1, y1) * fx;
         top * (1.0 - fy) + bottom * fy
     }
-}
-
-/// Which imagery tile covers `k`, and the square of it `k` occupies.
-fn imagery_source(k: TileKey) -> (TileKey, (f64, f64, f64)) {
-    let a = k.ancestor(k.z.min(IMAGERY_MAX_Z));
-    (a, k.rect_in(a))
 }
 
 /// A terrain tile holds 512 samples, so two zoom levels up still gives a 32-quad mesh
@@ -405,7 +247,7 @@ struct Queue {
 }
 
 struct Shared {
-    fetcher: Fetcher,
+    fetcher: Arc<Fetcher>,
     exaggeration: f32,
     names: Vec<String>,
     queue: Mutex<Queue>,
@@ -419,14 +261,18 @@ impl Shared {
         if let Some(v) = self.vectors.lock().unwrap().get(&k) {
             return Ok(v.clone());
         }
-        let tile = match self.fetcher.vector(k) {
+        let tile = match self.fetcher.fetch(&sources::MAP, k) {
             // Where no data exists, such as on the open ocean, there is simply nothing to draw.
             Err(FetchError::Missing) => VectorTile::default(),
             Err(e) => return Err(e),
-            Ok(bytes) => vector::decode(&bytes, k, &self.names).unwrap_or_else(|| {
-                eprintln!("map data: tile {}/{}/{} is unreadable", k.z, k.x, k.y);
-                VectorTile::default()
-            }),
+            Ok(bytes) => match vector::decode(&bytes, k, &self.names) {
+                Some(tile) => tile,
+                None => {
+                    eprintln!("map data: tile {}/{}/{} is damaged", k.z, k.x, k.y);
+                    self.fetcher.discard(&sources::MAP, k);
+                    return Err(FetchError::Transient);
+                }
+            },
         };
         let tile = Arc::new(tile);
         let mut vectors = self.vectors.lock().unwrap();
@@ -439,15 +285,17 @@ impl Shared {
     }
 
     fn load_buildings(&self, k: TileKey) -> Outcome {
-        let Ok(tile) = self.vector(k) else {
-            return Outcome::BuildingsRetry(k);
+        let tile = match self.vector(k) {
+            Ok(tile) => tile,
+            Err(e) => return Outcome::BuildingsRetry(k, asks_to_wait(&e)),
         };
         if tile.buildings.is_empty() {
             return Outcome::Buildings(k, None);
         }
         let (dem_key, rect) = terrain_source(k);
-        let Ok(dem) = self.dem(dem_key) else {
-            return Outcome::BuildingsRetry(k);
+        let dem = match self.dem(dem_key) {
+            Ok(dem) => dem,
+            Err(e) => return Outcome::BuildingsRetry(k, asks_to_wait(&e)),
         };
         let ground = |x: f64, y: f64| dem.sample(rect.0 + x * rect.2, rect.1 + y * rect.2) * self.exaggeration;
         let mesh = buildings::build_mesh(k, &tile.buildings, &ground);
@@ -456,8 +304,9 @@ impl Shared {
 
     fn load_overlay(&self, k: TileKey) -> Outcome {
         let source = k.ancestor(k.z.min(VECTOR_MAX_Z));
-        let Ok(tile) = self.vector(source) else {
-            return Outcome::OverlayRetry(k);
+        let tile = match self.vector(source) {
+            Ok(tile) => tile,
+            Err(e) => return Outcome::OverlayRetry(k, asks_to_wait(&e)),
         };
         let mips = overlay::render(&tile, k, source)
             .map(|rgba| build_mips(OVERLAY_SIZE, OVERLAY_SIZE, rgba));
@@ -468,11 +317,18 @@ impl Shared {
         if let Some(d) = self.dems.lock().unwrap().get(&k) {
             return Ok(d.clone());
         }
-        let dem = match self.fetcher.terrain(k) {
+        let dem = match self.fetcher.fetch(&sources::TERRAIN, k) {
             // Where no terrain exists, the surface is simply flat.
             Err(FetchError::Missing) => Dem::flat(),
             Err(e) => return Err(e),
-            Ok(bytes) => Dem::from_terrarium(&bytes).ok_or(FetchError::Transient)?,
+            Ok(bytes) => match Dem::from_terrarium(&bytes) {
+                Some(dem) => dem,
+                None => {
+                    eprintln!("terrain: tile {}/{}/{} is damaged", k.z, k.x, k.y);
+                    self.fetcher.discard(&sources::TERRAIN, k);
+                    return Err(FetchError::Transient);
+                }
+            },
         };
         let dem = Arc::new(dem);
         let mut dems = self.dems.lock().unwrap();
@@ -485,29 +341,42 @@ impl Shared {
     }
 
     fn load(&self, k: TileKey) -> Outcome {
-        let (img_key, uv_rect) = imagery_source(k);
-        let jpeg = match self.fetcher.imagery(img_key) {
-            Ok(b) => b,
-            Err(FetchError::Missing) => return Outcome::Missing(k),
-            Err(FetchError::Transient) => return Outcome::Retry(k),
-        };
-        let Ok(img) = image::load_from_memory(&jpeg) else {
-            return Outcome::Missing(k);
-        };
-        let img = img.to_rgba8();
-        let (w, h) = img.dimensions();
-        let (dem_key, dem_rect) = terrain_source(k);
-        let Ok(dem) = self.dem(dem_key) else {
-            return Outcome::Retry(k);
-        };
-        let (center, vertices, heights) = build_mesh(k, &dem, dem_rect, uv_rect, self.exaggeration);
-        Outcome::Ready(Box::new(TileData {
-            key: k,
-            center,
-            vertices,
-            heights,
-            mips: build_mips(w, h, img.into_raw()),
-        }))
+        // Best imagery first. While a better source is unavailable for a moment the tile
+        // waits, with a coarser one staying on screen, so nothing gets stuck on poor imagery.
+        for (source, source_key) in sources::imagery_for(k) {
+            let bytes = match self.fetcher.fetch(source, source_key) {
+                Ok(bytes) => bytes,
+                Err(FetchError::Missing) => continue,
+                Err(e) => return Outcome::Retry(k, asks_to_wait(&e)),
+            };
+            let Ok(img) = image::load_from_memory(&bytes) else {
+                eprintln!("{}: tile {}/{}/{} is damaged", source.id, source_key.z, source_key.x, source_key.y);
+                self.fetcher.discard(source, source_key);
+                return Outcome::Retry(k, None);
+            };
+            let img = img.to_rgba8();
+            if source.blank_means_missing() && is_blank(img.as_raw()) {
+                self.fetcher.mark_missing(source, source_key);
+                continue;
+            }
+            let (w, h) = img.dimensions();
+            let (dem_key, dem_rect) = terrain_source(k);
+            let dem = match self.dem(dem_key) {
+                Ok(dem) => dem,
+                Err(e) => return Outcome::Retry(k, asks_to_wait(&e)),
+            };
+            let uv_rect = k.rect_in(source_key);
+            let (center, vertices, heights) = build_mesh(k, &dem, dem_rect, uv_rect, self.exaggeration);
+            return Outcome::Ready(Box::new(TileData {
+                key: k,
+                center,
+                vertices,
+                heights,
+                mips: build_mips(w, h, img.into_raw()),
+                credit: source.credit,
+            }));
+        }
+        Outcome::Missing(k)
     }
 }
 
@@ -517,9 +386,9 @@ pub struct Loader {
 }
 
 impl Loader {
-    pub fn new(cache: DiskCache, exaggeration: f32, names: Vec<String>) -> Self {
+    pub fn new(fetcher: Arc<Fetcher>, exaggeration: f32, names: Vec<String>) -> Self {
         let shared = Arc::new(Shared {
-            fetcher: Fetcher::new(cache),
+            fetcher,
             exaggeration,
             names,
             queue: Mutex::new(Queue::default()),
@@ -595,7 +464,10 @@ fn worker(shared: &Shared, tx: &SyncSender<(Job, Outcome)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::DiskCache;
+    use crate::fetcher::Peers;
     use glam::Vec3;
+    use std::time::{Duration, Instant};
 
     fn world(center: DVec3, v: &Vertex) -> DVec3 {
         center + Vec3::from_array(v.pos).as_dvec3()
@@ -645,9 +517,6 @@ mod tests {
     #[test]
     fn sources_above_their_limits_use_a_part_of_an_ancestor() {
         let k = TileKey::new(16, 34816, 22976);
-        let (img, rect) = imagery_source(k);
-        assert_eq!(img, k.ancestor(14));
-        assert_eq!(rect.2, 0.25);
         let (dem, rect) = terrain_source(k);
         assert_eq!(dem, k.ancestor(14));
         assert_eq!(rect.2, 0.25);
@@ -682,28 +551,105 @@ mod tests {
         assert_eq!(build_mips(256, 256, vec![0; 256 * 256 * 4]).len(), 9);
     }
 
-    #[test]
-    fn cached_data_needs_no_network() {
-        let root = std::env::temp_dir().join(format!("orbis-fetch-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let cache = DiskCache::new(root.clone());
-        cache.put("x/1.bin", b"data").unwrap();
-        let f = Fetcher::new(cache);
-        let got = f.get("test", "x/1.bin", "http://invalid.invalid/none");
-        assert_eq!(got.unwrap(), b"data");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
     /// A loader whose imagery is cached but unreadable, so jobs finish fast with no network.
     fn offline_loader(tag: &str, keys: &[TileKey]) -> (Loader, std::path::PathBuf) {
         let root = std::env::temp_dir().join(format!("orbis-loader-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let cache = DiskCache::new(root.clone());
         for k in keys {
-            let name = format!("eox-s2cloudless-2024/{}/{}/{}.jpg", k.z, k.y, k.x);
-            cache.put(&name, b"not an image").unwrap();
+            cache.put(&sources::EOX.cache_name(*k), b"not an image").unwrap();
         }
-        (Loader::new(cache, 1.0, vec!["name".into()]), root)
+        let fetcher = Fetcher::new(cache, Peers::default(), true);
+        (Loader::new(Arc::new(fetcher), 1.0, vec!["name".into()]), root)
+    }
+
+    /// A small JPEG with the given pixels, so that a tile can be decoded for real.
+    fn tile_bytes(pixel: impl Fn(u32, u32) -> [u8; 3]) -> Vec<u8> {
+        let img = image::RgbImage::from_fn(16, 16, |x, y| image::Rgb(pixel(x, y)));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        bytes.into_inner()
+    }
+
+    fn load_with(cache: &DiskCache, k: TileKey) -> Outcome {
+        let fetcher = Fetcher::new(cache.clone(), Peers::default(), true);
+        let loader = Loader::new(Arc::new(fetcher), 1.0, vec!["name".into()]);
+        loader.shared.load(k)
+    }
+
+    /// A close tile over Innsbruck, with its flat terrain already known.
+    fn detail_setup(tag: &str) -> (DiskCache, TileKey, TileKey) {
+        let cache = crate::fetcher::tests::temp_cache(tag);
+        let k = TileKey::containing(47.27f64.to_radians(), 11.4f64.to_radians(), 18);
+        cache.mark_missing(&sources::TERRAIN.cache_name(k.ancestor(14)));
+        (cache, k, k.ancestor(14))
+    }
+
+    #[test]
+    fn detail_imagery_is_preferred_where_it_exists() {
+        let (cache, k, base) = detail_setup("prefer");
+        let at = sources::by_id("basemap-at").unwrap();
+        cache.put(&at.cache_name(k), &tile_bytes(|x, y| [x as u8 * 10, y as u8 * 10, 50])).unwrap();
+        cache.put(&sources::EOX.cache_name(base), &tile_bytes(|x, _| [x as u8, 9, 9])).unwrap();
+        let Outcome::Ready(tile) = load_with(&cache, k) else { panic!("no tile") };
+        assert_eq!(tile.credit, "Grundkarte: basemap.at");
+        assert_eq!(tile.vertices[0].uv, [0.0, 0.0], "its own image, used whole");
+    }
+
+    #[test]
+    fn a_blank_answer_falls_back_to_the_base_and_is_remembered() {
+        let (cache, k, base) = detail_setup("blank");
+        let at = sources::by_id("basemap-at").unwrap();
+        cache.put(&at.cache_name(k), &tile_bytes(|_, _| [255, 255, 255])).unwrap();
+        cache.put(&sources::EOX.cache_name(base), &tile_bytes(|x, y| [x as u8, y as u8, 9])).unwrap();
+        let Outcome::Ready(tile) = load_with(&cache, k) else { panic!("no tile") };
+        assert_eq!(tile.credit, "", "the base imagery's credit is always shown");
+        // The base is magnified: a part of its image, not all of it.
+        let rect = k.rect_in(base);
+        assert_eq!(tile.vertices[0].uv, [rect.0 as f32, rect.1 as f32]);
+        assert!(cache.is_known_missing(&at.cache_name(k)));
+        assert_eq!(cache.get(&at.cache_name(k)), None, "no need to keep it");
+    }
+
+    #[test]
+    fn a_plain_coloured_base_tile_stays_valid() {
+        // The base has plain oceans; only detail services use blank to mean "no data".
+        let cache = crate::fetcher::tests::temp_cache("ocean");
+        let k = TileKey::new(5, 1, 1);
+        cache.mark_missing(&sources::TERRAIN.cache_name(k.ancestor(3)));
+        cache.put(&sources::EOX.cache_name(k), &tile_bytes(|_, _| [10, 20, 60])).unwrap();
+        assert!(matches!(load_with(&cache, k), Outcome::Ready(_)));
+    }
+
+    #[test]
+    fn a_damaged_tile_is_removed_so_it_can_be_fetched_again() {
+        let (cache, k, _) = detail_setup("damaged");
+        let at = sources::by_id("basemap-at").unwrap();
+        cache.put(&at.cache_name(k), b"not an image").unwrap();
+        assert!(matches!(load_with(&cache, k), Outcome::Retry(..)));
+        assert_eq!(cache.get(&at.cache_name(k)), None);
+        assert!(!cache.is_known_missing(&at.cache_name(k)));
+    }
+
+    #[test]
+    fn nothing_anywhere_means_missing() {
+        let (cache, k, base) = detail_setup("nothing");
+        let at = sources::by_id("basemap-at").unwrap();
+        cache.mark_missing(&at.cache_name(k));
+        cache.mark_missing(&sources::EOX.cache_name(base));
+        assert!(matches!(load_with(&cache, k), Outcome::Missing(_)));
+    }
+
+    #[test]
+    fn blank_images_are_recognised() {
+        let flat = [200u8, 200, 200, 255].repeat(100);
+        assert!(is_blank(&flat));
+        let mut noisy = flat.clone();
+        noisy[40] = 201;
+        assert!(is_blank(&noisy), "compression leaves small differences");
+        noisy[41] = 100;
+        assert!(!is_blank(&noisy));
+        assert!(is_blank(&[]));
     }
 
     fn collect_for(loader: &Loader, wanted: &[TileKey], millis: u64) -> usize {
@@ -762,20 +708,9 @@ mod tests {
     }
 
     #[test]
-    fn tile_template_comes_from_tilejson() {
-        let json = r#"{"tilejson":"3.0.0","tiles":["https://t.example/v1/{z}/{x}/{y}.pbf"],"x":"http://no"}"#;
-        assert_eq!(tile_template(json).unwrap(), "https://t.example/v1/{z}/{x}/{y}.pbf");
-        let escaped = r#"{"tiles":["https:\/\/t.example\/{z}\/{x}\/{y}.pbf"]}"#;
-        assert_eq!(tile_template(escaped).unwrap(), "https://t.example/{z}/{x}/{y}.pbf");
-        assert_eq!(tile_template(r#"{"tiles":["http://t.example/{z}/{x}/{y}"]}"#), None);
-        assert_eq!(tile_template(r#"{"tiles":["https://t.example/fixed.pbf"]}"#), None);
-        assert_eq!(tile_template("not json"), None);
-    }
-
-    #[test]
     fn overlay_coordinates_stay_within_the_tile_when_imagery_is_borrowed() {
         let k = TileKey::new(16, 34817, 22977);
-        let (_, uv_rect) = imagery_source(k);
+        let uv_rect = k.rect_in(k.ancestor(14));
         let full = (0.0, 0.0, 1.0);
         let (_, v, _) = build_mesh(k, &Dem::flat(), full, uv_rect, 1.0);
         assert_eq!(v[0].st, [0.0, 0.0]);
@@ -786,40 +721,4 @@ mod tests {
         assert_eq!(v[last_grid].uv, [0.5, 0.5]);
     }
 
-    #[test]
-    fn gate_limits_how_many_enter() {
-        let gate = Arc::new(Gate::new(2));
-        let inside = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let most = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let threads: Vec<_> = (0..8)
-            .map(|_| {
-                let (gate, inside, most) = (gate.clone(), inside.clone(), most.clone());
-                std::thread::spawn(move || {
-                    use std::sync::atomic::Ordering::SeqCst;
-                    let _pass = gate.enter();
-                    let now = inside.fetch_add(1, SeqCst) + 1;
-                    most.fetch_max(now, SeqCst);
-                    std::thread::sleep(Duration::from_millis(10));
-                    inside.fetch_sub(1, SeqCst);
-                })
-            })
-            .collect();
-        for t in threads {
-            t.join().unwrap();
-        }
-        assert_eq!(most.load(std::sync::atomic::Ordering::SeqCst), 2);
-    }
-
-    #[test]
-    fn repeated_trouble_lengthens_the_pause() {
-        let f = Fetcher::new(DiskCache::new(std::env::temp_dir().join("orbis-unused")));
-        f.hold("s");
-        assert_eq!(f.holds.lock().unwrap()["s"].1, 2);
-        f.hold("s");
-        assert_eq!(f.holds.lock().unwrap()["s"].1, 4);
-        for _ in 0..10 {
-            f.hold("s");
-        }
-        assert_eq!(f.holds.lock().unwrap()["s"].1, 60);
-    }
 }

@@ -92,6 +92,11 @@ without lines and labels, and they appear once the server answers again.
 - A building crossing a tile edge can show a small step if the ground differs between its two parts.
 - Lighting is fixed; it will follow the sun with M5.
 
+## Caching, tile servers and imagery detail
+
+See [CACHING.md](CACHING.md): server timeouts, the local cache, the LAN cache server, and
+sharper imagery near the ground.
+
 ## Frame rate
 
 - The frame rate is limited to 120 fps (the default) or 90 fps, chosen with F or `--fps`.
@@ -112,6 +117,6 @@ Order and scope are open, and depend on which features are wanted.
 | M7 | Search and saved places | Geocoding, plus KML, KMZ, GeoJSON, GPX and IGC import |
 | M8 | Map service library | User-added WMS, WMTS and XYZ, with an independently built directory |
 | M9 | Events | Computed eclipses, plus earthquakes, eruptions, tsunamis and fireballs |
-| M10 | SpaceMouse, shared LAN cache | SpaceMouse through HID or `spacenavd` |
+| M10 | SpaceMouse | Through HID or `spacenavd` |
 
 Out of scope: Apple Vision Pro streaming, Quick Look and Share extensions, Sparkle updates.

@@ -1,33 +1,38 @@
 mod buildings;
 mod cache;
 mod camera;
+mod fetcher;
 mod geo;
 mod labels;
+mod lan;
 mod loader;
 mod nav;
 mod overlay;
 mod pacing;
 mod render;
 mod select;
+mod servers;
+mod sources;
 mod text;
 mod vector;
 
 use anyhow::{anyhow, bail, Context, Result};
 use cache::DiskCache;
 use camera::Camera;
+use fetcher::{Fetcher, Peers};
 use geo::TileKey;
 use glam::DVec2;
 use labels::{Screen, TextKey, TextWorker, ATLAS_SIZE};
-use loader::{Loader, Outcome, TILE_MAX_Z, VECTOR_MAX_Z};
+use loader::{Loader, Outcome, VECTOR_MAX_Z};
 use nav::{Arrow, Button, Mods, Nav, WHOLE_EARTH};
 use pacing::{FrameLimit, Pacer, RateMeter};
 use render::{hemisphere_label, Corner, LabelInstance, Renderer};
 use select::View;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -40,7 +45,10 @@ const CREDITS: &str = "EOxCloudless https://cloudless.eox.at by EOX IT Services 
 (Contains modified Copernicus Sentinel data 2024)\n\
 Terrain: © Mapterhorn https://mapterhorn.com/attribution\n\
 Map: OpenFreeMap © OpenMapTiles Data from OpenStreetMap";
-const CACHE_LIMIT: u64 = 10 * 1024 * 1024 * 1024;
+const GIB: u64 = 1024 * 1024 * 1024;
+const CACHE_LIMIT_GIB: u64 = 10;
+/// A long-running program checks its cache's size this often.
+const TRIM_EVERY: Duration = Duration::from_secs(3600);
 const UPLOADS_PER_FRAME: usize = 12;
 /// Label sets for this many vector tiles stay in memory.
 const LABEL_SETS: usize = 2000;
@@ -67,6 +75,13 @@ Usage: orbis [options]
   --fps 120|90            frame rate limit (default 120, key F switches)
   --benchmark SECONDS     turn the view in the window, print frame timings and exit
   --cache-dir PATH        tile cache location
+  --cache-limit GB        largest size of the tile cache (default 10)
+  --cache-status          print the cache size and server timeouts, then exit
+  --offline               send no requests, and use only what is cached
+  --serve-cache           run as a LAN cache server, with no window
+  --share-cache           also offer this cache on the LAN, and use others found there
+  --cache-server HOST:PORT  use this LAN cache server (repeatable)
+  --cache-port PORT       port to serve on (default 47813)
   --screenshot FILE.png   render once all tiles arrive, write the image and exit
   --size WxH              window size (default 1280x800), or screenshot size (default 1600x1000)
   --timeout SECONDS       longest wait for tiles in a screenshot (default 90)
@@ -88,6 +103,13 @@ struct Args {
     buildings: bool,
     limit: FrameLimit,
     benchmark: Option<f64>,
+    cache_limit_gib: u64,
+    cache_status: bool,
+    offline: bool,
+    serve_cache: bool,
+    share_cache: bool,
+    cache_servers: Vec<String>,
+    cache_port: u16,
 }
 
 fn locale_language() -> String {
@@ -121,6 +143,13 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
         buildings: true,
         limit: FrameLimit::Fps120,
         benchmark: None,
+        cache_limit_gib: CACHE_LIMIT_GIB,
+        cache_status: false,
+        offline: false,
+        serve_cache: false,
+        share_cache: false,
+        cache_servers: Vec::new(),
+        cache_port: lan::TCP_PORT,
     };
     while let Some(flag) = it.next() {
         match flag.as_str() {
@@ -137,6 +166,22 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
                 a.buildings = false;
                 continue;
             }
+            "--cache-status" => {
+                a.cache_status = true;
+                continue;
+            }
+            "--offline" => {
+                a.offline = true;
+                continue;
+            }
+            "--serve-cache" => {
+                a.serve_cache = true;
+                continue;
+            }
+            "--share-cache" => {
+                a.share_cache = true;
+                continue;
+            }
             _ => {}
         }
         let value = it.next().ok_or_else(|| anyhow!("{flag} needs a value"))?;
@@ -151,6 +196,27 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             "--tilt" => a.cam.tilt = num()?.to_radians(),
             "--exaggeration" => a.exaggeration = num()? as f32,
             "--timeout" => a.timeout = num()?,
+            "--cache-limit" => {
+                a.cache_limit_gib = value.parse().ok().filter(|n| *n > 0).ok_or_else(|| {
+                    anyhow!("--cache-limit expects a whole number of gigabytes")
+                })?;
+            }
+            "--cache-server" => {
+                let valid = value.rsplit_once(':').is_some_and(|(host, port)| {
+                    !host.is_empty()
+                        && host.chars().all(|c| c.is_ascii_alphanumeric() || ".-[]:".contains(c))
+                        && port.parse::<u16>().is_ok_and(|p| p != 0)
+                });
+                if !valid {
+                    bail!("--cache-server expects HOST:PORT");
+                }
+                a.cache_servers.push(value.clone());
+            }
+            "--cache-port" => {
+                a.cache_port = value.parse().ok().filter(|p| *p != 0).ok_or_else(|| {
+                    anyhow!("--cache-port expects a port number")
+                })?;
+            }
             "--fps" => {
                 a.limit = FrameLimit::parse(&value).ok_or_else(|| anyhow!("--fps expects 120 or 90"))?;
             }
@@ -213,6 +279,82 @@ struct Scene {
     building_retries: HashMap<TileKey, (Instant, u32)>,
     /// A line about the frame rate for the on-screen display, when drawing to a window.
     frame_status: Option<String>,
+    fetcher: Arc<Fetcher>,
+    /// Keeps a slow tick going for tiles waiting out a retry delay.
+    last_retry_tick: Instant,
+}
+
+/// Sets up tile fetching, including sharing on the LAN if asked for.
+fn make_fetcher(args: &Args) -> Arc<Fetcher> {
+    let cache = DiskCache::new(args.cache_dir.clone());
+    let trimmer = cache.clone();
+    let limit = args.cache_limit_gib * GIB;
+    std::thread::spawn(move || loop {
+        trimmer.trim(limit);
+        std::thread::sleep(TRIM_EVERY);
+    });
+    let peers = Peers::new(args.cache_servers.clone());
+    Arc::new(Fetcher::new(cache, peers, args.offline))
+}
+
+/// Opens the LAN port, and announces this machine there.
+fn start_sharing(fetcher: &Arc<Fetcher>, args: &Args, mode: lan::Mode) -> Result<()> {
+    let listener = std::net::TcpListener::bind(("0.0.0.0", args.cache_port))
+        .with_context(|| format!("could not open port {}", args.cache_port))?;
+    lan::serve(listener, fetcher.clone(), mode);
+    let id = lan::instance_id();
+    lan::announce(id, args.cache_port, mode);
+    // A dedicated server fetches for others and asks nobody itself.
+    let looking = (mode == lan::Mode::SharedApp).then(|| fetcher.clone());
+    lan::discover(id, Some((args.cache_port, mode)), looking);
+    Ok(())
+}
+
+/// Runs as a LAN cache server until stopped.
+fn serve_cache(args: &Args) -> Result<()> {
+    let fetcher = make_fetcher(args);
+    start_sharing(&fetcher, args, lan::Mode::Dedicated)?;
+    println!("Serving the tile cache on port {}.", args.cache_port);
+    println!("  Tiles:  http://THIS-MACHINE:{}/tiles/SOURCE/Z/X/Y", args.cache_port);
+    println!("  Status: http://THIS-MACHINE:{}/status", args.cache_port);
+    println!("  Sources: {}", sources::all().map(|s| s.id).collect::<Vec<_>>().join(", "));
+    println!("Credit the data when displaying it; see docs/PROVENANCE.md. Press Ctrl-C to stop.");
+    loop {
+        std::thread::sleep(Duration::from_secs(3600));
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const MIB: f64 = 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= GIB as f64 {
+        format!("{:.1} GB", b / GIB as f64)
+    } else {
+        format!("{:.1} MB", b / MIB)
+    }
+}
+
+/// How long until a time, in whole minutes, rounding up.
+fn minutes_until(until: SystemTime, now: SystemTime) -> u64 {
+    until.duration_since(now).map_or(0, |d| d.as_secs().div_ceil(60))
+}
+
+/// Prints what the cache holds and which servers are being left alone.
+fn cache_status(args: &Args) {
+    let cache = DiskCache::new(args.cache_dir.clone());
+    let (entries, bytes) = cache.usage();
+    println!("Cache: {}", args.cache_dir.display());
+    println!("  {entries} tiles, {} of {} GB", format_bytes(bytes), args.cache_limit_gib);
+    let servers = servers::Servers::new(Some(cache.state_path("servers.txt")));
+    let now = SystemTime::now();
+    let paused: Vec<_> = servers.report(now).into_iter().filter(|r| r.paused_until.is_some()).collect();
+    if paused.is_empty() {
+        println!("  No servers are timed out.");
+    }
+    for r in paused {
+        let until = r.paused_until.unwrap_or(now);
+        println!("  {} is timed out for {} more minutes", r.host, minutes_until(until, now));
+    }
 }
 
 fn vector_source(k: TileKey) -> TileKey {
@@ -244,20 +386,55 @@ fn label_id(label: &vector::Label) -> u64 {
     h.finish()
 }
 
-fn next_retry(retries: &mut HashMap<TileKey, (Instant, u32)>, k: TileKey) {
+/// Schedules another attempt: when a server said so, or else after a growing delay.
+fn next_retry(retries: &mut HashMap<TileKey, (Instant, u32)>, k: TileKey, until: Option<SystemTime>) {
     let n = retries.get(&k).map_or(1, |e| e.1 + 1);
-    let delay = 2u64.saturating_pow(n.min(8));
-    retries.insert(k, (Instant::now() + Duration::from_secs(delay), n));
+    let told = until.and_then(|u| u.duration_since(SystemTime::now()).ok());
+    let delay = told.unwrap_or(Duration::from_secs(2u64.saturating_pow(n.min(8))));
+    retries.insert(k, (Instant::now() + delay, n));
+}
+
+/// The credits for what is on screen: those always shown, then any aerial imagery in view.
+fn credits_for<'a>(detail: impl Iterator<Item = &'a str>) -> String {
+    let names: BTreeSet<&str> = detail.filter(|c| !c.is_empty()).collect();
+    if names.is_empty() {
+        return CREDITS.to_string();
+    }
+    let list: Vec<&str> = names.into_iter().collect();
+    format!("{CREDITS}\nAerial images: {}", list.join(", "))
+}
+
+/// The on-screen line about traffic, and a line for each server being left alone.
+fn network_status(fetcher: &Fetcher, now: SystemTime) -> Vec<String> {
+    let t = fetcher.traffic();
+    let total = t.disk_hits + t.lan_hits + t.downloads;
+    let mut lines = Vec::new();
+    if let Some(saved) = ((t.disk_hits + t.lan_hits) * 100).checked_div(total) {
+        let lan = if t.lan_hits > 0 { format!("  LAN {}", t.lan_hits) } else { String::new() };
+        lines.push(format!("downloaded {}  cached {saved}%{lan}", format_bytes(t.downloaded_bytes)));
+    }
+    for r in fetcher.server_report() {
+        if let Some(until) = r.paused_until {
+            lines.push(format!("timed out: {} {} min", r.host, minutes_until(until, now)));
+        }
+    }
+    lines
 }
 
 impl Scene {
     fn new(args: &Args, size: DVec2) -> Self {
-        let cache = DiskCache::new(args.cache_dir.clone());
-        let trimmer = cache.clone();
-        std::thread::spawn(move || trimmer.trim(CACHE_LIMIT));
+        let fetcher = make_fetcher(args);
+        if args.share_cache {
+            // The app is useful without sharing, for example if the port is taken.
+            if let Err(e) = start_sharing(&fetcher, args, lan::Mode::SharedApp) {
+                eprintln!("cache sharing is off: {e:#}");
+            }
+        }
         Self {
             nav: Nav::starting_above_ground(args.cam, size),
-            loader: Loader::new(cache, args.exaggeration, vector::name_fields(&args.lang)),
+            loader: Loader::new(fetcher.clone(), args.exaggeration, vector::name_fields(&args.lang)),
+            fetcher,
+            last_retry_tick: Instant::now(),
             retries: HashMap::new(),
             missing: Default::default(),
             draw: Vec::new(),
@@ -299,7 +476,7 @@ impl Scene {
                 Some(Outcome::Missing(k)) => {
                     self.missing.insert(k);
                 }
-                Some(Outcome::Retry(k)) => next_retry(&mut self.retries, k),
+                Some(Outcome::Retry(k, until)) => next_retry(&mut self.retries, k, until),
                 Some(Outcome::Overlay(data)) => {
                     self.overlay_retries.remove(&data.key);
                     self.label_sets.insert(data.source, data.labels.clone());
@@ -311,7 +488,7 @@ impl Scene {
                     }
                     changed = true;
                 }
-                Some(Outcome::OverlayRetry(k)) => next_retry(&mut self.overlay_retries, k),
+                Some(Outcome::OverlayRetry(k, until)) => next_retry(&mut self.overlay_retries, k, until),
                 Some(Outcome::Buildings(k, mesh)) => {
                     self.building_retries.remove(&k);
                     match mesh {
@@ -322,7 +499,7 @@ impl Scene {
                     }
                     changed = true;
                 }
-                Some(Outcome::BuildingsRetry(k)) => next_retry(&mut self.building_retries, k),
+                Some(Outcome::BuildingsRetry(k, until)) => next_retry(&mut self.building_retries, k, until),
                 None => break,
             }
         }
@@ -340,7 +517,7 @@ impl Scene {
             basis: self.nav.cam.basis(),
             aspect: aspect_height.0,
             height_px: aspect_height.1,
-            max_z: TILE_MAX_Z,
+            max_z: sources::max_tile_z,
         };
         let selection = view.select(&|k| r.has_tile(k));
         let now = Instant::now();
@@ -508,13 +685,28 @@ impl Scene {
             text.push('\n');
             text.push_str(status);
         }
+        for line in network_status(&self.fetcher, SystemTime::now()) {
+            text.push('\n');
+            text.push_str(&line);
+        }
         text
     }
 
     fn set_panels(&self, r: &mut Renderer, width: u32, scale: usize) {
         let columns = ((width as usize).saturating_sub(40) / (8 * scale)).max(20);
-        r.set_panel(0, CREDITS, columns, scale);
+        let credits = credits_for(self.draw.iter().map(|k| r.tile_credit(*k)));
+        r.set_panel(0, &credits, columns, scale);
         r.set_panel(1, &self.hud(r), columns, scale);
+    }
+
+    /// True about once a second while tiles wait out a retry delay, which is often enough to
+    /// notice one coming due without redrawing for the whole of a server's timeout.
+    fn retry_tick(&mut self, now: Instant) -> bool {
+        if self.retrying == 0 || now.duration_since(self.last_retry_tick) < Duration::from_secs(1) {
+            return false;
+        }
+        self.last_retry_tick = now;
+        true
     }
 }
 
@@ -653,6 +845,20 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
         scene.missing.len(),
         adapter.get_info().name,
     );
+    let t = scene.fetcher.traffic();
+    println!(
+        "traffic: {} downloads ({}), {} from disk, {} from LAN, {} shared downloads",
+        t.downloads,
+        format_bytes(t.downloaded_bytes),
+        t.disk_hits,
+        t.lan_hits,
+        t.shared_downloads,
+    );
+    for r in scene.fetcher.server_report() {
+        if let Some(until) = r.paused_until {
+            println!("timed out: {} for {} min", r.host, minutes_until(until, SystemTime::now()));
+        }
+    }
     Ok(())
 }
 
@@ -856,7 +1062,7 @@ impl ApplicationHandler for App {
                 }
             }
             // Refreshes the on-screen rate once drawing has stopped.
-            if g.scene.retrying > 0 || g.meter.is_stale(now) {
+            if g.scene.retry_tick(now) || g.meter.is_stale(now) {
                 g.redraw_wanted = true;
             }
             if g.redraw_wanted {
@@ -987,6 +1193,13 @@ fn main() -> Result<()> {
         println!("{USAGE}");
         return Ok(());
     };
+    if args.cache_status {
+        cache_status(&args);
+        return Ok(());
+    }
+    if args.serve_cache {
+        return serve_cache(&args);
+    }
     if let Some(path) = args.screenshot.clone() {
         return screenshot(&args, &path);
     }
@@ -1059,6 +1272,77 @@ mod tests {
         children.sort_unstable();
         assert_eq!(building_tiles(&[coarse]), children);
         assert!(building_tiles(&[TileKey::new(12, 50, 50)]).is_empty());
+    }
+
+    #[test]
+    fn cache_options() {
+        let a = parse(&[
+            "--cache-limit", "50", "--offline", "--share-cache", "--cache-port", "9000",
+            "--cache-server", "nas.local:47813", "--cache-server", "10.0.0.2:47813",
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(a.cache_limit_gib, 50);
+        assert!(a.offline && a.share_cache && !a.serve_cache);
+        assert_eq!(a.cache_port, 9000);
+        assert_eq!(a.cache_servers, ["nas.local:47813", "10.0.0.2:47813"]);
+        for bad in [
+            ["--cache-limit", "0"],
+            ["--cache-limit", "x"],
+            ["--cache-port", "0"],
+            ["--cache-server", "nas"],
+            ["--cache-server", ":1"],
+            ["--cache-server", "a/b:1"],
+            ["--cache-server", "a:99999"],
+        ] {
+            assert!(parse(&bad).is_err(), "{bad:?}");
+        }
+        // Sharing is opt-in: nothing opens a port or looks for others by default.
+        let d = parse(&[]).unwrap().unwrap();
+        assert!(!d.serve_cache && !d.share_cache && !d.offline && d.cache_servers.is_empty());
+    }
+
+    #[test]
+    fn credits_follow_what_is_on_screen() {
+        assert_eq!(credits_for([""].into_iter()), CREDITS);
+        let c = credits_for(["© swisstopo", "", "Grundkarte: basemap.at", "© swisstopo"].into_iter());
+        assert!(c.starts_with(CREDITS));
+        assert!(c.ends_with("Aerial images: Grundkarte: basemap.at, © swisstopo"), "{c}");
+    }
+
+    #[test]
+    fn a_server_timeout_sets_the_retry_time_directly() {
+        let mut retries = HashMap::new();
+        let k = TileKey::new(3, 1, 1);
+        let start = Instant::now();
+        next_retry(&mut retries, k, None);
+        assert!(retries[&k].0 < start + Duration::from_secs(5), "a short first delay");
+        next_retry(&mut retries, k, Some(SystemTime::now() + Duration::from_secs(900)));
+        assert!(retries[&k].0 > start + Duration::from_secs(890), "the server's timeout");
+    }
+
+    #[test]
+    fn traffic_shows_on_screen_with_timed_out_servers() {
+        let dir = fetcher::tests::temp_cache("hud");
+        let f = Fetcher::new(dir, Peers::default(), true);
+        let now = SystemTime::now();
+        assert!(network_status(&f, now).is_empty());
+        f.servers.failed(
+            "tiles.example.org",
+            servers::Failure::TooManyRequests { retry_after: None },
+            now,
+        );
+        let lines = network_status(&f, now);
+        assert_eq!(lines, ["timed out: tiles.example.org 15 min"]);
+    }
+
+    #[test]
+    fn sizes_and_times_read_well() {
+        assert_eq!(format_bytes(1024 * 1024 * 3 / 2), "1.5 MB");
+        assert_eq!(format_bytes(GIB * 2), "2.0 GB");
+        let now = SystemTime::now();
+        assert_eq!(minutes_until(now + Duration::from_secs(61), now), 2);
+        assert_eq!(minutes_until(now, now + Duration::from_secs(5)), 0);
     }
 
     #[test]

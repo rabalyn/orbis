@@ -37,6 +37,7 @@ struct GpuTile {
     vertices: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     overlay: Option<wgpu::BindGroup>,
+    credit: &'static str,
     heights: Vec<f32>,
     center: DVec3,
     last_used: u64,
@@ -650,6 +651,7 @@ impl Renderer {
                 vertices,
                 bind_group,
                 overlay: None,
+                credit: data.credit,
                 heights: data.heights.clone(),
                 center: data.center,
                 last_used: self.frame_no,
@@ -666,6 +668,11 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.tile_sampler) },
             ],
         })
+    }
+
+    /// What a loaded tile's imagery needs credited, beyond the credits always shown.
+    pub fn tile_credit(&self, k: TileKey) -> &'static str {
+        self.tiles.get(&k).map_or("", |t| t.credit)
     }
 
     pub fn has_buildings(&self, k: TileKey) -> bool {

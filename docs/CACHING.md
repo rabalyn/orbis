@@ -1,0 +1,119 @@
+# Caching and tile servers
+
+Goal: browsing should put as little load as possible on the public services that provide
+the data. No tile is fetched twice if that can be avoided, and a struggling server is left
+alone. Where better imagery exists, it is used as the view gets closer to the ground.
+
+## How a tile is found
+
+Each step is tried only if the one before has no answer.
+
+1. **Local disk cache**, including the memory of what a server does not have.
+2. **A download already in progress**: whoever needs the same tile waits for that result.
+3. **LAN cache servers**, if any are configured or discovered.
+4. **The public server**, unless it is timed out.
+
+## Server tracking
+
+Every public server, identified by its host name, is tracked separately.
+
+| Event | Reaction |
+|---|---|
+| 3 server errors (HTTP 5xx) or request timeouts within 60 s | **Whole server timed out for 15 minutes** |
+| HTTP 429 (too many requests) | Timed out immediately for 15 minutes |
+| `Retry-After` longer than 15 minutes | The timeout lasts that long instead |
+| Timeout ends | One trial request at a time; if it fails, immediately another 15 minutes |
+| Connection failure or no network | Short back-off of 2 to 60 s; our side may be the problem, so no 15-minute timeout |
+| HTTP 404 | Normal: remembered as "not available" |
+
+- Timeouts survive restarts, so restarting the app cannot be used to hammer a server by accident.
+- At most 4 requests run at once per server, and 2 per server for WMS services, which render every image on demand.
+- While a server is timed out, nothing is sent to it, and other servers carry on.
+- What is already cached keeps working, and coarser tiles stay on screen. A tile needs
+  imagery to appear, so with an empty cache and the global imagery server timed out, new
+  areas stay plain until it returns. Lines and labels for such a tile wait with it.
+- The on-screen display names timed-out servers and the time remaining, along with the
+  amount downloaded and how much came from cache.
+
+## Local cache
+
+- Tiles stay on disk until the size limit (10 GiB, `--cache-limit GB`) requires removing the
+  longest-unused ones. Anything used in the last 6 hours is kept.
+- **Simultaneous requests for one file become one download.** Neighbouring tiles often
+  share one coarser image or terrain file.
+- **"Not available" is remembered for 30 days**, for HTTP 404 and for blank images.
+- Damaged files are removed and fetched again rather than failing forever.
+- Nothing is pre-fetched: only what a view needs is loaded, and queued tiles that leave the view are dropped.
+- `--offline` sends no requests at all. `--cache-status` prints the cache size and server timeouts.
+
+Map data does not refresh by itself in this version: a cached tile is used until it is evicted.
+
+## LAN cache server
+
+Two ways to share, both off by default because they open a network port:
+
+| Mode | Started with | Behaviour |
+|---|---|---|
+| Dedicated server | `orbis --serve-cache` | No window. Downloads what clients ask for through the rules above, so all of the LAN's traffic to a public server goes through one tracker |
+| Shared app | `orbis --share-cache` | The normal app, also offering what it has cached to others, and using what others offer. Never downloads on behalf of another machine |
+
+- Clients find servers by UDP broadcast with `--share-cache`, or use `--cache-server HOST:PORT`
+  directly. A starting app asks who is there and waits briefly for answers before it
+  downloads anything, so servers already on the LAN get used from the first tile.
+- Servers speak plain HTTP on TCP port 47813; discovery uses UDP port 47814.
+- Standard tile URLs mean other programs can use it too, such as QGIS:
+  `http://HOST:47813/tiles/{source}/{z}/{x}/{y}`.
+- `http://HOST:47813/status` reports servers, timeouts and traffic as JSON.
+- If a server is unreachable, clients skip it for a minute and carry on directly.
+- If a dedicated server reports a public server as timed out, clients respect that too.
+
+### Responses
+
+| Status | Meaning |
+|---|---|
+| 200 | The tile |
+| 404 | The public server does not have this tile |
+| 503 + `Retry-After` | The public server is timed out or having problems |
+| 504 | A shared app does not have the tile cached |
+| 403 | The client is not on a private network |
+
+### Safety
+
+The server is meant for a trusted home or office network.
+
+- Only clients with private, link-local or loopback addresses are answered.
+- It accepts `GET` and `HEAD` only, and URLs are parsed into a known source and numbers, so
+  they can never name a file path or an arbitrary upstream URL. It is not an open proxy.
+- There is no encryption or login: anyone on the LAN can read cached tiles, or could pretend
+  to be a cache server. Tile decoders treat all input as untrusted, so the worst expected
+  result of a malicious peer is wrong map content.
+- Data licences still apply to whatever is served, including credits for what is displayed.
+
+## Imagery by level of detail
+
+Candidates for a tile are tried best first, within each source's approximate coverage box.
+A 404 or a blank image falls through to the next. The global base covers everything else,
+magnified beyond its resolution.
+
+| Source | Area | From zoom | To zoom | Licence or terms | Credit |
+|---|---|---|---|---|---|
+| Berlin TrueDOP | Berlin | 15 | 19 | DL-DE Zero 2.0 | Geoportal Berlin |
+| NRW DOP | North Rhine-Westphalia | 15 | 19 | GovData terms | Geobasis NRW |
+| Bavaria DOP40 | Bavaria | 15 | 18 | CC BY 4.0 | Bayerische Vermessungsverwaltung |
+| basemap.at | Austria | 15 | 19 | CC BY 4.0 | Grundkarte: basemap.at |
+| swisstopo SWISSIMAGE | Switzerland | 15 | 19 | Free under fair use | © swisstopo |
+| IGN BD ORTHO | France | 15 | 19 | Etalab Open Licence by default | © IGN |
+| PDOK Luchtfoto | Netherlands | 15 | 19 | No constraints stated | PDOK Luchtfoto |
+| USGS Imagery | USA | 15 | 16 | US public domain | USGS The National Map |
+| EOxCloudless (base) | World | 0 | 14 | CC BY-NC-SA 4.0 | See PROVENANCE.md |
+
+Terrain and map data stay on one server each, since both already vary in detail by zoom.
+Credits on screen follow the sources in view.
+
+### Limitations
+
+- Coverage is partial: most of the world stays at 10 m, including most of Germany. More
+  services fit the same table, and user-added ones belong to M8.
+- Images change at national borders and between zoom 14 and 15, and differ in date and colour.
+- A tile crossing a coverage edge can show white or black where the service has no data.
+- basemap.at prints the capture year as a watermark at zooms 17 and above.

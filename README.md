@@ -38,10 +38,23 @@ right-drag to turn and tilt.
 
 ## Data and cache
 
-Tiles are stored in `~/.cache/orbis/tiles`, which is limited to 10 GiB. Imagery is
-Sentinel-2 at 10 m per pixel, so close-up views look soft.
+Orbis tries hard not to burden the public services it uses. Tiles are kept in
+`~/.cache/orbis/tiles`, limited to 10 GiB, and a server that reports trouble is left alone
+for 15 minutes. Machines on a LAN can share tiles:
 
-The imagery is free for non-commercial use only, and its credit must stay visible. See
+```bash
+cargo run --release -- --serve-cache
+```
+
+```bash
+cargo run --release -- --cache-server HOST:47813
+```
+
+Imagery is Sentinel-2 at 10 m per pixel worldwide, and aerial photos near the ground in
+Austria, Switzerland, France, the Netherlands, the USA, Bavaria, NRW and Berlin.
+[docs/CACHING.md](docs/CACHING.md) has the details.
+
+The base imagery is free for non-commercial use only, and credits must stay visible. See
 [docs/PROVENANCE.md](docs/PROVENANCE.md) before publishing or using this commercially.
 
 ## Test

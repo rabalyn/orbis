@@ -38,6 +38,12 @@ The design inputs are:
 | Terrain | [Mapterhorn](https://mapterhorn.com) | Open-data sources listed on its [attribution page](https://mapterhorn.com/attribution) | `© Mapterhorn https://mapterhorn.com/attribution` |
 | Roads and labels | [OpenFreeMap](https://openfreemap.org), OpenMapTiles schema, OpenStreetMap data | Free with no key or view limit, attribution required, bulk offline downloads limited | `OpenFreeMap © OpenMapTiles Data from OpenStreetMap` |
 
+Aerial imagery for close views comes from national and regional services, listed with their
+terms in [CACHING.md](CACHING.md). Their credits appear on screen while their imagery is in
+view. Terms were read from basemap.at, the Swiss federal geoportal and cartes.gouv.fr, and from
+the capability documents of the PDOK, Bavaria, NRW and Berlin services. USGS products are
+listed as US public domain from general knowledge; its terms page could not be loaded.
+
 The credits must stay visible wherever the data is displayed, including saved images.
 Label text comes from the system's installed fonts; none are bundled.
 EOX's license page does not explicitly address its public WMTS endpoint, and Mapterhorn's
