@@ -160,7 +160,7 @@ pub struct Renderer {
     instance_capacity: usize,
     depth: Option<(wgpu::TextureView, u32, u32)>,
     tiles: HashMap<TileKey, GpuTile>,
-    panels: [Panel; 3],
+    panels: [Panel; 4],
     frame_no: u64,
 }
 
@@ -695,7 +695,7 @@ impl Renderer {
             max_cols: 0,
             scale: 1,
         };
-        let panels = [panel(), panel(), panel()];
+        let panels = [panel(), panel(), panel(), panel()];
 
         Self {
             tile_pipeline,
@@ -1228,6 +1228,7 @@ impl Renderer {
         self.place_panel(0, Corner::BottomLeft, width, height);
         self.place_panel(1, Corner::TopRight, width, height);
         self.place_panel(2, Corner::TopLeft, width, height);
+        self.place_panel(3, Corner::TopLeft, width, height);
         let depth = self.depth_view(width, height);
         let msaa = self.msaa_view(width, height);
         // With anti-aliasing the target only receives the resolved image.

@@ -17,6 +17,7 @@ mod pacing;
 mod planetary;
 mod planets;
 mod render;
+mod places;
 mod search;
 mod select;
 mod sky;
@@ -108,6 +109,10 @@ Usage: orbis [options]
                           (key Ctrl-F opens the search box in the window; Earth only for names)
   --search-panel          with --screenshot, also show the open search panel with its results
   --geocoder-url URL      the place search service (default OpenStreetMap's Nominatim)
+  --places-file PATH      where saved places are kept (default: orbis/places.json in the config folder)
+  --save-place NAME       save the view as a place before anything else (key Ctrl-S names the view in
+                          the window; K lists, flies to and deletes saved places)
+  --places-panel          with --screenshot, also show the list of saved places
   --serve-cache           run as a LAN cache server, with no window
   --share-cache           also offer this cache on the LAN, and use others found there
   --cache-server HOST:PORT  use this LAN cache server (repeatable)
@@ -155,6 +160,9 @@ struct Args {
     search: Option<String>,
     /// Show the open search panel with its results in the saved picture.
     search_panel: bool,
+    places_file: Option<PathBuf>,
+    save_place: Option<String>,
+    places_panel: bool,
     geocoder_url: String,
 }
 
@@ -207,6 +215,9 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
         cache_port: lan::TCP_PORT,
         search: None,
         search_panel: false,
+        places_file: None,
+        save_place: None,
+        places_panel: false,
         geocoder_url: geocode::DEFAULT_SERVICE.to_string(),
     };
     while let Some(flag) = it.next() {
@@ -242,6 +253,10 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             }
             "--search-panel" => {
                 a.search_panel = true;
+                continue;
+            }
+            "--places-panel" => {
+                a.places_panel = true;
                 continue;
             }
             "--serve-cache" => {
@@ -323,6 +338,8 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
                 a.lang = value.to_ascii_lowercase();
             }
             "--search" => a.search = Some(value.clone()).filter(|v| !v.trim().is_empty()),
+            "--places-file" => a.places_file = Some(value.into()),
+            "--save-place" => a.save_place = Some(value.clone()),
             "--geocoder-url" => {
                 if !value.starts_with("http://") && !value.starts_with("https://") {
                     bail!("--geocoder-url expects an http or https address");
@@ -397,6 +414,10 @@ struct Scene {
     bodies_time: f64,
     fetcher: Arc<Fetcher>,
     search: search::Search,
+    places: places::Store,
+    place_list: places::Picker,
+    /// Something to tell the user, shown until the next list is opened or Escape is pressed.
+    notice: Option<String>,
     geocoder: geocode::Geocoder,
     /// Keeps a slow tick going for tiles waiting out a retry delay.
     last_retry_tick: Instant,
@@ -559,6 +580,10 @@ impl Scene {
                 eprintln!("cache sharing is off: {e:#}");
             }
         }
+        let places = match args.places_file.clone().or_else(places::default_path) {
+            Some(path) => places::Store::load(path),
+            None => places::Store::in_memory(),
+        };
         let mut view = AtlasView::whole(args.atlas.unwrap_or(Projection::EqualEarth), args.central_meridian, (size.x, size.y));
         view.match_globe(args.cam.lat, args.cam.lon, args.cam.distance);
         Self {
@@ -567,6 +592,9 @@ impl Scene {
             map: AtlasNav::new(view),
             loader: Loader::new(fetcher.clone(), args.exaggeration, vector::name_fields(&args.lang)),
             search: search::Search::new(args.body.surface_data),
+            notice: places.notice.clone(),
+            places,
+            place_list: places::Picker::default(),
             geocoder: geocode::Geocoder::new(fetcher.clone(), args.geocoder_url.clone(), args.lang.clone()),
             fetcher,
             last_retry_tick: Instant::now(),
@@ -814,6 +842,7 @@ impl Scene {
                 pad(r.panel_rect(0, Corner::BottomLeft, width, height)),
                 pad(r.panel_rect(1, Corner::TopRight, width, height)),
                 pad(r.panel_rect(2, Corner::TopLeft, width, height)),
+                pad(r.panel_rect(3, Corner::TopLeft, width, height)),
             ],
         };
         let mut shown: Vec<(&vector::Label, i32, u64)> = sets
@@ -977,7 +1006,100 @@ impl Scene {
         }
         r.set_panel(0, &credits, columns, scale);
         r.set_panel(1, &self.hud(r), columns, scale);
-        r.set_panel(2, &self.search.panel_text(), (columns * 3 / 5).clamp(20, SEARCH_COLUMNS), scale);
+        let wide = (columns * 3 / 5).clamp(20, SEARCH_COLUMNS);
+        r.set_panel(2, &self.search.panel_text(), wide, scale);
+        r.set_panel(3, &self.side_panel_text(), wide, scale);
+    }
+
+    /// The list of saved places, or a notice, below where the search box would be.
+    fn side_panel_text(&self) -> String {
+        if self.search.is_open() {
+            return String::new();
+        }
+        if self.place_list.is_open() {
+            let rows: Vec<String> = self.places.places().iter().map(|p| self.place_row(p)).collect();
+            let mut text = self.place_list.panel_text(
+                "Saved places",
+                &rows,
+                "None yet. Ctrl-S saves the view.",
+                "Enter: fly there   Delete: remove   Up/Down: choose   K or Esc: close",
+            );
+            if let Some(n) = &self.notice {
+                text.push('\n');
+                text.push_str(n);
+            }
+            return text;
+        }
+        self.notice.clone().unwrap_or_default()
+    }
+
+    fn place_row(&self, p: &places::SavedPlace) -> String {
+        match body::by_id(&p.body) {
+            Some(b) if b.id == body::current().id => p.name.clone(),
+            Some(b) => format!("{} ({})", p.name, b.name),
+            None => format!("{} ({})", p.name, p.body),
+        }
+    }
+
+    /// Opens or closes the list of saved places.
+    fn toggle_places(&mut self) {
+        self.notice = None;
+        self.place_list.toggle();
+    }
+
+    /// Keeps the current view as a saved place. An empty name becomes the position.
+    fn save_view(&mut self, name: &str) {
+        let (lat, lon, distance, heading, tilt) = match self.mode {
+            Mode::Globe => {
+                let c = &self.nav.cam;
+                (c.lat, c.lon, c.distance, c.heading, c.tilt)
+            }
+            Mode::Atlas => {
+                let (lat, lon) = self.map.view.centre_lat_lon();
+                (lat, lon, self.map.view.distance_for_scale(), 0.0, 0.0)
+            }
+        };
+        let b = body::current();
+        let name = if name.is_empty() { places::default_name(b.name, b.id == body::EARTH.id, lat, lon) } else { name.to_string() };
+        let saved = places::SavedPlace { name: name.clone(), body: b.id.to_string(), lat, lon, distance, heading, tilt };
+        self.notice = Some(match self.places.add(saved) {
+            Ok(()) => format!("Saved place: {name}"),
+            Err(e) => e,
+        });
+    }
+
+    fn places_key(&mut self, key: places::Key) {
+        let pick = self.place_list.key(key, self.places.places().len());
+        self.notice = None;
+        match pick {
+            places::Pick::None => {}
+            places::Pick::Fly(i) => {
+                let Some(p) = self.places.places().get(i).cloned() else { return };
+                if p.body != body::current().id {
+                    let name = body::by_id(&p.body).map_or(p.body.as_str(), |b| b.name);
+                    self.notice = Some(format!("{} is on {name}. Start with --body {} to go there.", p.name, p.body));
+                    return;
+                }
+                self.fly_camera(&p);
+            }
+            places::Pick::Delete(i) => {
+                if let Err(e) = self.places.remove(i) {
+                    self.notice = Some(e);
+                }
+                self.place_list.clamp(self.places.places().len());
+            }
+        }
+    }
+
+    /// Flies to a saved view: with its heading and tilt on the globe, to its place on the map.
+    fn fly_camera(&mut self, p: &places::SavedPlace) {
+        match self.mode {
+            Mode::Globe => {
+                let c = self.nav.cam;
+                self.nav.fly_to(Camera { lat: p.lat, lon: p.lon, distance: p.distance, heading: p.heading, tilt: p.tilt, sky: 0.0, ..c });
+            }
+            Mode::Atlas => self.map.view.match_globe(p.lat, p.lon, p.distance),
+        }
     }
 
     /// Carries out what the search box decided.
@@ -986,6 +1108,7 @@ impl Scene {
             search::Action::None => {}
             search::Action::Request(query) => self.geocoder.submit(&query),
             search::Action::Fly(t) => self.fly_to(t),
+            search::Action::Save(name) => self.save_view(&name),
         }
     }
 
@@ -1130,6 +1253,14 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     let mut scene = Scene::new(args, DVec2::new(width as f64, height as f64));
     if let Some(query) = &args.search {
         scene.headless_search(query, args.search_panel, args.timeout);
+    }
+    if let Some(name) = &args.save_place {
+        scene.save_view(name);
+        eprintln!("{}", scene.notice.as_deref().unwrap_or(""));
+    }
+    if args.places_panel {
+        scene.place_list.toggle();
+        scene.notice = None;
     }
 
     let started = Instant::now();
@@ -1580,6 +1711,15 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            WindowEvent::KeyboardInput { event, .. }
+                if gfx.scene.place_list.is_open() && list_key(&event).is_some() =>
+            {
+                if event.state == ElementState::Pressed {
+                    if let Some(key) = list_key(&event) {
+                        gfx.scene.places_key(key);
+                    }
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
                 let pressed = event.state == ElementState::Pressed;
@@ -1600,7 +1740,10 @@ impl ApplicationHandler for App {
                     }
                 } else if pressed && !event.repeat {
                     match code {
-                        KeyCode::Escape => nav.stop(),
+                        KeyCode::Escape => {
+                            nav.stop();
+                            gfx.scene.notice = None;
+                        }
                         KeyCode::Digit0 if self.mods.ctrl && atlas => map.key(atlas_nav::Key::Whole),
                         KeyCode::Digit0 if self.mods.ctrl => nav.whole_body(),
                         KeyCode::KeyF if self.mods.ctrl => {
@@ -1608,6 +1751,14 @@ impl ApplicationHandler for App {
                             gfx.scene.search.open();
                             gfx.window.set_ime_allowed(true);
                         }
+                        KeyCode::KeyS if self.mods.ctrl => {
+                            nav.release_all();
+                            gfx.scene.notice = None;
+                            gfx.scene.place_list.close();
+                            gfx.scene.search.open_save();
+                            gfx.window.set_ime_allowed(true);
+                        }
+                        KeyCode::KeyK if !self.mods.ctrl => gfx.scene.toggle_places(),
                         KeyCode::KeyM if !self.mods.ctrl => gfx.scene.toggle_mode(),
                         _ if !self.mods.ctrl && sky_time::key_for(code, self.mods.shift).is_some() => {
                             if let Some(key) = sky_time::key_for(code, self.mods.shift) {
@@ -1644,6 +1795,19 @@ impl ApplicationHandler for App {
             _ => return,
         }
         gfx.redraw_wanted = true;
+    }
+}
+
+/// What a key press means to an open list of places, if anything.
+fn list_key(event: &KeyEvent) -> Option<places::Key> {
+    use winit::keyboard::Key;
+    match &event.logical_key {
+        Key::Named(NamedKey::Escape) => Some(places::Key::Escape),
+        Key::Named(NamedKey::Enter) => Some(places::Key::Enter),
+        Key::Named(NamedKey::Delete | NamedKey::Backspace) => Some(places::Key::Delete),
+        Key::Named(NamedKey::ArrowUp) => Some(places::Key::Up),
+        Key::Named(NamedKey::ArrowDown) => Some(places::Key::Down),
+        _ => None,
     }
 }
 

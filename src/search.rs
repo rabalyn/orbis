@@ -71,6 +71,8 @@ pub enum Action {
     /// Ask the geocoding service for this text.
     Request(String),
     Fly(Target),
+    /// Save the current view under this name; empty asks for a default.
+    Save(String),
 }
 
 pub struct Search {
@@ -81,12 +83,14 @@ pub struct Search {
     /// Named results were shown, so their credit is owed.
     used_service: bool,
     can_name: bool,
+    /// The box asks for a name for the view instead of searching.
+    saving: bool,
 }
 
 impl Search {
     /// `can_name` is false on bodies the service knows nothing about.
     pub fn new(can_name: bool) -> Self {
-        Self { open: false, text: String::new(), state: State::Editing, selected: 0, used_service: false, can_name }
+        Self { open: false, text: String::new(), state: State::Editing, selected: 0, used_service: false, can_name, saving: false }
     }
 
     pub fn is_open(&self) -> bool {
@@ -95,6 +99,15 @@ impl Search {
 
     pub fn open(&mut self) {
         self.open = true;
+        self.saving = false;
+    }
+
+    /// Opens the box to name the current view.
+    pub fn open_save(&mut self) {
+        self.open = true;
+        self.saving = true;
+        self.text.clear();
+        self.state = State::Editing;
     }
 
     pub fn is_searching(&self) -> bool {
@@ -139,6 +152,7 @@ impl Search {
             }
             Key::Escape => {
                 self.open = false;
+                self.saving = false;
                 Action::None
             }
             Key::Up | Key::Down => {
@@ -153,6 +167,11 @@ impl Search {
     }
 
     fn enter(&mut self) -> Action {
+        if self.saving {
+            self.open = false;
+            self.saving = false;
+            return Action::Save(self.text.trim().to_string());
+        }
         if matches!(self.state, State::Results(_)) {
             if let Some(target) = self.selected_target() {
                 self.open = false;
@@ -199,6 +218,9 @@ impl Search {
     pub fn panel_text(&self) -> String {
         if !self.open {
             return String::new();
+        }
+        if self.saving {
+            return format!("Save place as: {}_\nEnter: save (empty: name it by position)   Esc: cancel", self.text);
         }
         let mut s = format!("Search: {}_", self.text);
         let mut hint = "Enter: search   Esc: close";
@@ -683,5 +705,22 @@ mod tests {
     fn boxes_that_make_no_sense_are_dropped() {
         let t = r#"[{"lat":"1","lon":"2","display_name":"x","boundingbox":["5","1","0","3"]}]"#;
         assert_eq!(parse_nominatim(t).unwrap()[0].bbox, None);
+    }
+
+    #[test]
+    fn the_box_can_name_a_view() {
+        let mut s = Search::new(true);
+        s.open_save();
+        assert!(s.panel_text().starts_with("Save place as: _"));
+        s.key(Key::Text("My hut".into()));
+        assert_eq!(s.key(Key::Enter), Action::Save("My hut".into()));
+        assert!(!s.is_open());
+        s.open_save();
+        assert_eq!(s.key(Key::Enter), Action::Save(String::new()), "an empty name asks for the default");
+        s.open_save();
+        s.key(Key::Escape);
+        s.open();
+        s.key(Key::Text("46.5, 11.8".into()));
+        assert!(matches!(s.key(Key::Enter), Action::Fly(_)), "search works again after saving");
     }
 }

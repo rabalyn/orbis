@@ -46,6 +46,8 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | O | Show or hide stars, planets and the Moon (globe only) |
 | F | Switch the frame rate limit between 120 and 90 fps |
 | Ctrl-F | Open the search box (see Milestone 7a) |
+| Ctrl-S | Name and save the current view as a place (see Milestone 7b) |
+| K | Show or hide the list of saved places |
 | Ctrl-Q | Quit |
 
 An arrow key keeps its meaning while held, even if modifiers change. Moving by hand ends a
@@ -330,13 +332,34 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
 - The user agent names the program but gives no contact address.
 - The window's key handling was not driven by hand here; the logic is unit-tested.
 
+## Milestone 7b: saved places, file import (in progress)
+
+### Saved places
+
+- Ctrl-S opens the search box in a naming mode ("Save place as:"). Enter keeps the current view under that
+  name; an empty name becomes the position, for example `46.5000°N 11.8000°E` (prefixed with the body's name
+  away from Earth). Escape cancels.
+- A place stores the body, position, distance, heading and tilt. On the map the heading and tilt are
+  stored as zero and the distance is the one that matches the map's scale.
+- K opens a list at the top left. Up and Down choose, Enter flies there (with its heading and tilt on the
+  globe, to its position and scale on the map), Delete or Backspace removes, K or Escape closes. While the list
+  is open these keys do not move the view; all others work as usual.
+- A place on another body than the one being viewed is listed with that body's name; choosing it shows a
+  message saying which `--body` to start with.
+- The places are one JSON file, `orbis/places.json` under the user's config directory (`--places-file PATH`
+  changes it). It is written to a temporary file in the same folder, flushed and renamed over the old one.
+- A file that cannot be read (not JSON, an entry damaged, written by a newer version, too large) is renamed to
+  `places.json.bak` (or `.bak.1`, ... if that exists), the list starts empty, and a message on screen says so.
+  If it cannot be moved aside, nothing is written, so it is not overwritten.
+- `--save-place NAME` saves the view before a saved image is made and `--places-panel` draws the list.
+
 ## Later milestones
 
 Order and scope are open, and depend on which features are wanted.
 
 | # | Feature | Notes |
 |---|---|---|
-| M7b | Saved places | KML, KMZ, GeoJSON, GPX and IGC import |
+| M7b | File import | KML, KMZ, GeoJSON, GPX and IGC import (saved places are done) |
 | M8 | Map service library | User-added WMS, WMTS and XYZ, with an independently built directory |
 | M9 | Events | Computed eclipses, plus earthquakes, eruptions, tsunamis and fireballs |
 | M10 | SpaceMouse | Through HID or `spacenavd` |
