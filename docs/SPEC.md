@@ -209,8 +209,7 @@ sharper imagery near the ground.
 - The stars credit is shown while they are displayed, also in saved images.
 
 ### Limitations
-- Positions are geocentric: the Moon can be up to 1° off for an observer, and the Moon, planets and
-  stars are at infinity, so a camera far from the Earth does not see parallax.
+- The planets and stars are geocentric and at infinity (the Moon is seen from the camera on the Earth, but geocentric on other bodies), so a camera far from the Earth does not see parallax.
 - No Saturn rings in its brightness, no other planets, no constellation lines, no star names, no
   deep-sky objects, no twinkling and no light from the Moon or planets on the ground.
 - The sky ignores terrain: a mountain does not hide a planet behind it, and names of planets behind
@@ -436,14 +435,14 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
 ### Showing them
 - E lists the eclipses from one year before the clock's date to two years after, with the nearest chosen. Enter sets the clock to the greatest moment, pauses it, flies to the greatest eclipse point (for a lunar eclipse, the point below the Moon) and shows the details in a notice. `--eclipse DATE` does this for the eclipse nearest DATE and `--eclipses-panel` shows the list in a saved image.
 - The central line of a solar eclipse is drawn over the terrain like an imported line, from where the axis of the shadow first meets the Earth to where it leaves it.
-- While the clock is within an eclipse the shadow of the Moon darkens the Earth: the penumbra gradually, the umbra (or the antumbra of an annular eclipse) strongly. It follows the clock, so the shadow can be watched crossing the globe at a high clock speed. During a lunar eclipse the Moon in the sky is dimmed, and turns dark copper in the umbra.
+- While the clock is within an eclipse the shadow of the Moon darkens the Earth: the light that is left is the fraction of the Sun's disc that stays uncovered, so the penumbra darkens gradually and the umbra (or the antumbra of an annular eclipse) strongly; the sky light dims with it. It follows the clock, so the shadow can be watched crossing the globe at a high clock speed. During a lunar eclipse the Moon in the sky is dimmed, and turns dark copper in the umbra.
 - The list is shared by events of other kinds: `EventList::set_source` replaces one source's events, and choosing one flies to its place (and sets the clock if the event says so).
 
 ### Limitations
 - The list and the shadow are for the Earth only. Non-central total and annular eclipses are given the kind of the umbra but have no central line, and the penumbra's limits are not drawn.
-- The shadow's darkness follows a simple rule for how much of the Sun is covered, and ignores clouds, the atmosphere's scattering and the terrain. The shadow is a smooth function of the position and does not show shadows of the mountains.
+- The shadow's darkness is the uncovered area of the Sun's disc, and ignores clouds, the atmosphere's scattering and the terrain. The shadow is a smooth function of the position and does not show shadows of the mountains.
 - ΔT is the published prediction, some 4 seconds above the measured value for 2024; this moves a shadow by about 2 km. Beyond a few centuries from now ΔT cannot be predicted and the times grow uncertain.
-- The Moon in the sky is still the low-precision geocentric one of Milestone 5b, up to 1° off for a person on the ground, so a solar eclipse shows it beside the Sun, not over it. The key and the panel were not driven by hand here; the logic is unit-tested and the display was checked in saved images.
+- The Moon in the sky on the Earth is no longer the low-precision one: its place comes from the same long series as the shadow and is topocentric (seen from the camera, with parallax), so in a solar eclipse it covers the Sun for those in the path (checked from Dallas at 2024-04-08 18:42 UTC, where the separation is under 0.1 degrees). The covered Sun dims the day sky and the stars show in totality; the corona is a plain glow. The Moon and the planets are refreshed whenever the clock has moved by a quarter of a second or the camera by 100 m, which looks continuous at any clock speed and costs nothing while idle. The key and the panel were not driven by hand here; the logic is unit-tested and the display was checked in saved images.
 
 ## Later milestones
 

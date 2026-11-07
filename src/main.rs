@@ -44,7 +44,7 @@ use cache::DiskCache;
 use camera::Camera;
 use fetcher::{Fetcher, Peers};
 use geo::{ecef_to_geodetic, TileKey};
-use glam::DVec2;
+use glam::{DVec2, DVec3};
 use labels::{Screen, TextKey, TextWorker, ATLAS_SIZE};
 use loader::{Loader, Outcome, VECTOR_MAX_Z};
 use nav::{Arrow, Button, Mods, Nav, WHOLE_EARTH};
@@ -501,6 +501,7 @@ struct Scene {
     /// The planets and the Moon as of `bodies_time`.
     bodies: Vec<planets::Body>,
     bodies_time: f64,
+    bodies_pos: DVec3,
     fetcher: Arc<Fetcher>,
     search: search::Search,
     places: places::Store,
@@ -756,6 +757,7 @@ impl Scene {
             sky_on: args.stars,
             bodies: Vec::new(),
             bodies_time: f64::NEG_INFINITY,
+            bodies_pos: DVec3::ZERO,
         };
         for path in &args.imports {
             scene.import_path(path, false);
@@ -921,6 +923,7 @@ impl Scene {
     fn sync_sky(&mut self, r: &mut Renderer) {
         self.clock.advance(self.clock_epoch.elapsed().as_secs_f64());
         let time = self.clock.time();
+        let earth = body::current().id == body::EARTH.id;
         r.sun = (body::current().sun)(time);
         r.sun_on = self.sun_on;
         r.sky_on = self.sky_on;
@@ -928,18 +931,35 @@ impl Scene {
             r.set_stars(&sky::star_points());
         }
         r.sky_rot = (body::current().rotation)(time);
-        r.shadow = (self.sun_on && body::current().id == body::EARTH.id).then(|| eclipse::shadow_at(time)).flatten();
-        let (_, _, height) = ecef_to_geodetic(self.nav.cam.basis().pos);
-        let sun_sin = self.sun_on.then(|| self.nav.cam.basis().pos.normalize().dot(r.sun));
+        r.shadow = (self.sun_on && earth).then(|| eclipse::shadow_at(time)).flatten();
+        let pos = self.nav.cam.basis().pos;
+        let (_, _, height) = ecef_to_geodetic(pos);
+        // On the Earth the Sun and the Moon come from the long series, the Moon as seen from the
+        // camera, so that an eclipse looks right from the ground.
+        let discs = earth.then(|| ephemeris::SunMoon::at(time));
+        r.sky_discs = discs.map(|sm| sm.topocentric(pos));
+        if let Some(sm) = discs {
+            r.sun = (sm.to_earth_fixed() * sm.sun).normalize();
+        }
+        let sun_sin = self.sun_on.then(|| pos.normalize().dot(r.sun));
         // Without air, nothing hides the stars, whatever the Sun is doing.
         let air_height = if body::current().atmosphere { height } else { f64::INFINITY };
-        r.sky_limit = sky::limiting_magnitude(air_height, sun_sin);
-        // Planets move slowly: a few seconds' error is far below a pixel.
-        if (time - self.bodies_time).abs() > 10.0 {
+        let daylight = r.sky_discs.filter(|_| self.sun_on).map_or(1.0, |d| 1.0 - d.obscuration());
+        r.sky_limit = sky::limiting_magnitude(air_height, sun_sin, daylight);
+        // The planets move slowly, but the Moon is worked out again whenever the clock or the
+        // viewer has moved, so that it looks continuous at any clock speed. At real-time speed
+        // a frame is only drawn every few seconds, so this costs nothing when idle.
+        if (time - self.bodies_time).abs() > 0.25 || (pos - self.bodies_pos).length() > 100.0 {
             self.bodies = (body::current().sky_bodies)(time);
-            if body::current().id == body::EARTH.id {
-                if let Some(tint) = eclipse::moon_tint(time) {
-                    for b in self.bodies.iter_mut().filter(|b| b.name == "Moon") {
+            if earth {
+                let tint = eclipse::moon_tint(time);
+                for b in self.bodies.iter_mut().filter(|b| b.name == "Moon") {
+                    if let Some(d) = r.sky_discs {
+                        // Back to J2000, which the renderer turns Earth-fixed again.
+                        b.dir = sky::earth_fixed(time).transpose() * d.moon;
+                        b.radius = d.moon_radius;
+                    }
+                    if let Some(tint) = tint {
                         b.colour = std::array::from_fn(|i| b.colour[i] * tint[i]);
                     }
                 }
@@ -947,6 +967,7 @@ impl Scene {
             let points: Vec<_> = self.bodies.iter().map(|b| b.point()).collect();
             r.set_sky_bodies(&points);
             self.bodies_time = time;
+            self.bodies_pos = pos;
         }
         self.drawn_time = self.clock.time();
     }

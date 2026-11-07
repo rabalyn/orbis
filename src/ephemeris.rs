@@ -179,6 +179,66 @@ impl SunMoon {
     }
 }
 
+/// The Moon's mean radius in km (IAU).
+const MOON_RADIUS_KM: f64 = 1737.4;
+const SUN_RADIUS_KM: f64 = 696_000.0;
+
+/// The Sun and Moon as seen from a point near the Earth: unit vectors in the Earth-fixed frame
+/// and angular radii. The Moon's is topocentric, so it carries the parallax of up to a degree
+/// that makes it appear over or beside the Sun depending on where the viewer stands.
+#[derive(Clone, Copy, Debug)]
+pub struct Topocentric {
+    pub sun: DVec3,
+    pub sun_radius: f64,
+    pub moon: DVec3,
+    pub moon_radius: f64,
+}
+
+impl Topocentric {
+    /// Angle between the centres of the Sun and the Moon.
+    pub fn separation(&self) -> f64 {
+        self.sun.dot(self.moon).clamp(-1.0, 1.0).acos()
+    }
+
+    /// The fraction of the Sun's disc that the Moon covers.
+    pub fn obscuration(&self) -> f64 {
+        disc_overlap(self.sun_radius, self.moon_radius, self.separation())
+    }
+}
+
+/// The fraction of a disc of radius `s` covered by a disc of radius `r` whose centre is `d` away
+/// (the area of the lens between two circles).
+pub fn disc_overlap(s: f64, r: f64, d: f64) -> f64 {
+    if s <= 0.0 || d >= s + r {
+        return 0.0;
+    }
+    if d <= (r - s).abs() {
+        return if r >= s { 1.0 } else { r * r / (s * s) };
+    }
+    let ca = ((d * d + s * s - r * r) / (2.0 * d * s)).clamp(-1.0, 1.0);
+    let cb = ((d * d + r * r - s * s) / (2.0 * d * r)).clamp(-1.0, 1.0);
+    let k = (s + r - d) * (d + s - r) * (d - s + r) * (d + s + r);
+    let area = s * s * ca.acos() + r * r * cb.acos() - 0.5 * k.max(0.0).sqrt();
+    (area / (PI * s * s)).clamp(0.0, 1.0)
+}
+
+impl SunMoon {
+    /// What an observer at `ecef` (Earth-fixed, metres) sees: the offset from the Earth's centre
+    /// to the viewer is taken off both bodies' vectors.
+    pub fn topocentric(self, ecef: DVec3) -> Topocentric {
+        let to_fixed = self.to_earth_fixed();
+        let me = ecef / 1000.0;
+        let sun = to_fixed * self.sun - me;
+        let moon = to_fixed * self.moon - me;
+        Topocentric {
+            sun: sun.normalize(),
+            sun_radius: (SUN_RADIUS_KM / sun.length()).asin(),
+            moon: moon.normalize(),
+            moon_radius: (MOON_RADIUS_KM / moon.length()).asin(),
+        }
+    }
+}
+
 // Earth, VSOP87D, Meeus appendix III: amplitude (1e-8 rad or au), phase, frequency.
 #[rustfmt::skip]
 const L0: &[(f64, f64, f64)] = &[
@@ -356,5 +416,54 @@ mod tests {
         for y in [1600.0, 1700.0, 1800.0, 1860.0, 1900.0, 1920.0, 1941.0, 1961.0, 1986.0, 2005.0, 2050.0] {
             assert!((delta_t(y - 1e-9) - delta_t(y)).abs() < 2.0, "{y}");
         }
+    }
+}
+
+#[cfg(test)]
+mod topocentric_tests {
+    use super::*;
+    use crate::geo::geodetic_to_ecef;
+    use crate::sky_time::parse_iso8601;
+
+    fn separation_deg(lat: f64, lon: f64, time: &str) -> f64 {
+        let ecef = geodetic_to_ecef(lat.to_radians(), lon.to_radians(), 200.0);
+        SunMoon::at(parse_iso8601(time).unwrap()).topocentric(ecef).separation().to_degrees()
+    }
+
+    #[test]
+    fn moon_covers_the_sun_over_dallas_in_2024() {
+        let t = "2024-04-08T18:42:00Z";
+        let near = separation_deg(32.78, -96.8, t);
+        assert!(near < 0.1, "{near}");
+        // From Honolulu or London, or from Dallas at another time, the Moon is well away from the Sun.
+        assert!(separation_deg(21.3, -157.8, t) > 0.5, "Honolulu");
+        assert!(separation_deg(51.5, 0.0, t) > 0.5, "London");
+        assert!(separation_deg(32.78, -96.8, "2024-04-08T21:00:00Z") > 0.5);
+    }
+
+    #[test]
+    fn parallax_moves_the_moon_by_up_to_a_degree() {
+        // Geocentric against topocentric, for a place where the Moon is low in the sky.
+        let time = parse_iso8601("2024-04-08T18:42:00Z").unwrap();
+        let sm = SunMoon::at(time);
+        let geo = (sm.to_earth_fixed() * sm.moon).normalize();
+        let far = sm.topocentric(geodetic_to_ecef(0.0, 0.0, 0.0)).moon;
+        assert!(geo.dot(far).clamp(-1.0, 1.0).acos().to_degrees() > 0.3);
+    }
+
+    #[test]
+    fn disc_overlap_limits() {
+        assert_eq!(disc_overlap(1.0, 1.0, 2.5), 0.0);
+        assert_eq!(disc_overlap(1.0, 1.1, 0.05), 1.0);
+        assert!((disc_overlap(1.0, 0.5, 0.2) - 0.25).abs() < 1e-12);
+        let half = disc_overlap(1.0, 1.0, 1.0);
+        assert!((half - 0.391).abs() < 0.001, "{half}");
+    }
+
+    #[test]
+    fn totality_covers_the_whole_disc() {
+        let ecef = geodetic_to_ecef(32.78_f64.to_radians(), (-96.8_f64).to_radians(), 200.0);
+        let sky = SunMoon::at(parse_iso8601("2024-04-08T18:42:00Z").unwrap()).topocentric(ecef);
+        assert!(sky.obscuration() > 0.99, "{}", sky.obscuration());
     }
 }

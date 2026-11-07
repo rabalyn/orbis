@@ -12,8 +12,8 @@ struct Frame {
     sun: vec4<f32>,
     // From J2000 equatorial directions to the Earth-fixed frame.
     sky_rot: mat4x4<f32>,
-    // The faintest magnitude that can be seen from here, the body's radius in metres, and 1
-    // when the body has air.
+    // The faintest magnitude that can be seen from here, the body's radius in metres, 1 when
+    // the body has air, and the Sun's angular radius.
     sky: vec4<f32>,
     // The Moon's shadow: its axis towards the Sun (w is 1 when there is one), where the axis
     // crosses the plane through the Earth's centre, and the umbra's and penumbra's apex
@@ -21,6 +21,9 @@ struct Frame {
     eclipse_axis: vec4<f32>,
     eclipse_foot: vec4<f32>,
     eclipse_cones: vec4<f32>,
+    // The Moon seen from the camera: its Earth-fixed direction and angular radius, zero when it
+    // is not worked out. The Sun's angular radius is in `sky.w`.
+    moon: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -252,8 +255,17 @@ fn vs_sky(@builtin(vertex_index) i: u32) -> SkyOut {
     return out;
 }
 
+// The share of the Sun's light that is left while the Moon covers part of its disc.
+fn sun_daylight() -> f32 {
+    if (frame.moon.w <= 0.0 || frame.sun.w < 0.5) {
+        return 1.0;
+    }
+    let d = atan2(length(cross(frame.moon.xyz, frame.sun.xyz)), dot(frame.moon.xyz, frame.sun.xyz));
+    return 1.0 - sun_covered(frame.sky.w, frame.moon.w, d);
+}
+
 // Air seen from inside the atmosphere: daylight blue, the warm glow of a low Sun, then night.
-fn sky_inside(dir: vec3<f32>, up: vec3<f32>) -> vec3<f32> {
+fn sky_inside(dir: vec3<f32>, up: vec3<f32>, light: f32) -> vec3<f32> {
     let e = dot(dir, up);
     var s = 1.0;
     var cg = -1.0;
@@ -272,7 +284,10 @@ fn sky_inside(dir: vec3<f32>, up: vec3<f32>) -> vec3<f32> {
     let warm = vec3<f32>(1.0, 0.30, 0.07);
     let glow = warm * low * (band * (0.1 + 0.9 * pow(toward, 4.0)) + 0.8 * exp((cg - 1.0) / 0.04));
     let night = vec3<f32>(0.0015, 0.003, 0.009) + vec3<f32>(0.003, 0.005, 0.012) * band;
-    return night + day * k * k + glow * 0.8;
+    // The Sun's light, and with it the sky's, fails as the Moon covers the Sun; a trace of the
+    // horizon's glow stays in totality.
+    let dusk = vec3<f32>(0.9, 0.4, 0.2) * band * 0.015 * (1.0 - light);
+    return night + (day * k * k + glow * 0.8) * light + dusk * k;
 }
 
 @fragment
@@ -288,6 +303,7 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let along = max(0.0, -dot(o, dir));
     let height = max(length(o + dir * along) - 1.0, 0.0);
     let air = frame.sky.z;
+    let light = sun_daylight();
     let glow = exp(-height / 0.012) * air;
     var colour = vec3<f32>(0.22, 0.45, 0.95) * glow;
     if (frame.sun.w > 0.5) {
@@ -302,7 +318,7 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let altitude = (length(o) - 1.0) * frame.sky.y;
     let inside = exp(-max(altitude, 0.0) / 15000.0) * air;
     if (inside > 0.002) {
-        colour = mix(colour, sky_inside(dir, normalize(o)), inside);
+        colour = mix(colour, sky_inside(dir, normalize(o), light), inside);
     }
     if (frame.sun.w > 0.5) {
         // The Sun's disc and the bright halo around it.
@@ -311,9 +327,21 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
             let a = length(cross(dir, frame.sun.xyz));
             let low = exp(-pow(max(dot(normalize(o), frame.sun.xyz), -0.1), 2.0) / 0.02);
             let tint = mix(vec3<f32>(1.0, 0.96, 0.88), vec3<f32>(1.0, 0.5, 0.22), low);
-            let core = 1.0 - smoothstep(0.0042, 0.0052, a);
-            colour = colour + tint * (core * 6.0 + exp(-a / 0.012) * 0.35 * inside);
+            // The disc has the Sun's true size where it is known, so the Moon can cover it exactly.
+            let sr = select(0.0047, frame.sky.w, frame.sky.w > 0.0);
+            let core = 1.0 - smoothstep(0.9 * sr, sr, a);
+            colour = colour + tint * (core * 6.0 + exp(-a / 0.012) * 0.35 * inside * light);
         }
+    }
+    if (frame.moon.w > 0.0 && dot(dir, frame.moon.xyz) > 0.0) {
+        // The Moon is opaque: it hides the sun and the sky behind it, and in totality the
+        // corona shows around it.
+        let cm = length(cross(dir, frame.moon.xyz));
+        let px = 2.0 * frame.cam.w / frame.viewport.y;
+        let edge = smoothstep(frame.moon.w - 0.5 * px, frame.moon.w + 0.5 * px, cm);
+        let total = smoothstep(0.97, 1.0, 1.0 - light);
+        let corona = vec3<f32>(0.85, 0.88, 1.0) * total * 0.8 * exp(-max(cm - frame.moon.w, 0.0) / 0.008);
+        colour = colour * edge + corona * edge;
     }
     return vec4<f32>(colour, 1.0);
 }

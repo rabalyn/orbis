@@ -99,14 +99,17 @@ pub fn earth_fixed(unix: f64) -> DMat3 {
 
 /// The faintest magnitude that can be seen from a viewpoint: a dark sky shows the faintest
 /// naked-eye stars, the day sky hides all but Venus and the Moon, and above the air, nothing
-/// hides anything. `sun_sin_altitude` is the sine of the Sun's altitude there; `None` means
+/// hides anything. `daylight` is the share of the Sun's disc that is uncovered, 1 outside an eclipse. `sun_sin_altitude` is the sine of the Sun's altitude there; `None` means
 /// flat light, which is always day.
-pub fn limiting_magnitude(altitude: f64, sun_sin_altitude: Option<f64>) -> f64 {
+pub fn limiting_magnitude(altitude: f64, sun_sin_altitude: Option<f64>, daylight: f64) -> f64 {
     const DARK: f64 = 6.5;
     const DAY: f64 = -4.5;
     let s = sun_sin_altitude.unwrap_or(1.0);
     let t = ((s + 0.2) / 0.3).clamp(0.0, 1.0);
     let day = t * t * (3.0 - 2.0 * t);
+    // A covered Sun dims the sky in proportion: the sky gets 2.5 log10(1 / light) magnitudes
+    // fainter, which over the eleven magnitudes between day and night is a share of the day.
+    let day = day * (1.0 - (2.5 * (1.0 / daylight.max(1e-6)).log10() / (DARK - DAY)).clamp(0.0, 1.0));
     let air = (-altitude.max(0.0) / AIR_SCALE).exp();
     DARK + (DAY - DARK) * day * air
 }
@@ -196,12 +199,15 @@ mod tests {
 
     #[test]
     fn the_limit_follows_day_night_and_height() {
-        let night = limiting_magnitude(0.0, Some(-0.5));
-        let noon = limiting_magnitude(0.0, Some(0.9));
-        let space = limiting_magnitude(400_000.0, Some(0.9));
+        let night = limiting_magnitude(0.0, Some(-0.5), 1.0);
+        let noon = limiting_magnitude(0.0, Some(0.9), 1.0);
+        let space = limiting_magnitude(400_000.0, Some(0.9), 1.0);
         assert!(night > 6.0 && noon < -4.0 && space > 6.4);
-        let dusk = limiting_magnitude(0.0, Some(-0.1));
+        let dusk = limiting_magnitude(0.0, Some(-0.1), 1.0);
         assert!(dusk < night && dusk > noon);
-        assert!(limiting_magnitude(0.0, None) < -4.0, "flat light is day");
+        assert!(limiting_magnitude(0.0, None, 1.0) < -4.0, "flat light is day");
+        // Totality darkens the day sky to near night; a partial eclipse hardly changes it.
+        assert!(limiting_magnitude(0.0, Some(0.9), 1e-5) > 5.0);
+        assert!(limiting_magnitude(0.0, Some(0.9), 0.5) < -3.0);
     }
 }

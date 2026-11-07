@@ -45,6 +45,9 @@ struct FrameUniform {
     eclipse_axis: [f32; 4],
     eclipse_foot: [f32; 4],
     eclipse_cones: [f32; 4],
+    /// The Moon seen from the camera when it can cover the Sun: its Earth-fixed direction and
+    /// angular radius, and the Sun's angular radius in w of `sky`; radius 0 means none.
+    moon: [f32; 4],
 }
 
 /// Room for the bright planets and the Moon after the stars.
@@ -147,6 +150,8 @@ pub struct Renderer {
     pub sky_limit: f64,
     /// The Moon's shadow on the Earth, while it touches it.
     pub shadow: Option<crate::eclipse::Elements>,
+    /// The Sun and Moon as seen from the camera, for the Moon covering the Sun in the sky.
+    pub sky_discs: Option<crate::ephemeris::Topocentric>,
     sky_points: wgpu::Buffer,
     star_count: usize,
     body_count: usize,
@@ -732,6 +737,7 @@ impl Renderer {
             sky_rot: DMat3::IDENTITY,
             sky_limit: 6.5,
             shadow: None,
+            sky_discs: None,
             sky_points,
             star_count: 0,
             body_count: 0,
@@ -1212,13 +1218,14 @@ impl Renderer {
                 self.sky_limit as f32,
                 radius() as f32,
                 if crate::body::current().atmosphere { 1.0 } else { 0.0 },
-                0.0,
+                self.sky_discs.map_or(0.0, |d| d.sun_radius as f32),
             ],
             eclipse_axis: self.shadow.map_or([0.0; 4], |e| vec4(e.axis, 1.0)),
             eclipse_foot: self.shadow.map_or([0.0; 4], |e| vec4(e.foot, 0.0)),
             eclipse_cones: self.shadow.map_or([0.0; 4], |e| {
                 [e.umbra_apex as f32, e.penumbra_apex as f32, e.tan_umbra as f32, e.tan_penumbra as f32]
             }),
+            moon: self.sky_discs.map_or([0.0; 4], |d| vec4(d.moon, d.moon_radius)),
         };
         self.queue.write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
 
