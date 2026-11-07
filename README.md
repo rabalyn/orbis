@@ -33,6 +33,8 @@ F switches the frame rate limit between 120 and 90 fps, up to what the display c
 Names appear in your locale's language; `--lang de` picks another one. R, L and B show or
 hide roads, labels and buildings. Dense city views used about 2 GB of graphics memory at 1280x800; larger windows load more.
 
+The globe is lit by the Sun at the current time (shown in UTC). Space pauses the clock, - and = change its speed, comma and period step it, T returns to now, and S switches to flat, always-lit imagery. `--time 2026-06-21T12:00:00Z` starts at another time.
+
 `--help` lists all options. If your desktop reserves Alt-drag for moving windows, use
 right-drag to turn and tilt.
 

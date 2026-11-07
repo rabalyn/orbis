@@ -570,6 +570,13 @@ pub struct AtlasVertex {
     pub uv: [f32; 2],
     /// Position within the tile, for its overlay.
     pub st: [f32; 2],
+    /// Unit surface normal in the Earth-fixed frame, for sunlight.
+    pub normal: [f32; 3],
+}
+
+/// The upward normal of the ellipsoid at a latitude and longitude.
+fn surface_normal(lat: f64, lon: f64) -> [f32; 3] {
+    [(lat.cos() * lon.cos()) as f32, (lat.cos() * lon.sin()) as f32, lat.sin() as f32]
 }
 
 #[derive(Default)]
@@ -605,12 +612,14 @@ pub fn add_tile(v: &AtlasView, k: TileKey, uv_rect: (f64, f64, f64), mesh: &mut 
             for i in 0..=cols {
                 let s = piece.s.0 + (piece.s.1 - piece.s.0) * i as f64 / cols as f64;
                 let (lat, _) = k.lat_lon(s, t);
-                let xy = v.projection.forward(lat, piece.rel_lon(k, s, v.central_meridian));
+                let rel_lon = piece.rel_lon(k, s, v.central_meridian);
+                let xy = v.projection.forward(lat, rel_lon);
                 let (nx, ny) = v.ndc_of(xy);
                 mesh.vertices.push(AtlasVertex {
                     pos: [nx as f32, ny as f32],
                     uv: [(uv_rect.0 + s * uv_rect.2) as f32, (uv_rect.1 + t * uv_rect.2) as f32],
                     st: [s as f32, t as f32],
+                    normal: surface_normal(lat, rel_lon + v.central_meridian),
                 });
             }
         }
@@ -659,7 +668,7 @@ pub fn add_underlay(v: &AtlasView, imagery_limit: f64, mesh: &mut Mesh) {
             let first = mesh.vertices.len() as u32;
             for (lat, lon) in [(w[0], l0), (w[0], l1), (w[1], l0), (w[1], l1)] {
                 let (nx, ny) = v.ndc_of(v.projection.forward(lat, lon));
-                mesh.vertices.push(AtlasVertex { pos: [nx as f32, ny as f32], uv, st: [0.0, 0.0] });
+                mesh.vertices.push(AtlasVertex { pos: [nx as f32, ny as f32], uv, st: [0.0, 0.0], normal: surface_normal(lat, lon + v.central_meridian) });
             }
             mesh.quad([first, first + 1, first + 2, first + 3]);
         }

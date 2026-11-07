@@ -38,6 +38,11 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | M | Switch between the globe and the flat map, keeping place and scale |
 | P, Shift-P | On the map: next or previous projection |
 | [ and ] | On the map: move the central meridian west or east by 15°, or 1° with Shift |
+| Space | Pause or resume the clock |
+| - and = | Slow down or speed up the clock (1, 10, 60, 600 times, then hourly up to monthly per second) |
+| , and . | Step the clock back or forward by one hour, or one day with Shift |
+| T | Set the clock back to the real time, running at normal speed |
+| S | Switch between sunlight and flat, always-lit imagery |
 | F | Switch the frame rate limit between 120 and 90 fps |
 | Ctrl-Q | Quit |
 
@@ -94,7 +99,7 @@ without lines and labels, and they appear once the server answers again.
 - Buildings end along a line in the far distance, because height data exists only at one zoom level.
 - The camera does not collide with buildings, and labels show through them.
 - A building crossing a tile edge can show a small step if the ground differs between its two parts.
-- Lighting is fixed; it will follow the sun with M5.
+- Lighting follows the sun (see Milestone 5a).
 
 ## Milestone 4: atlas (done)
 
@@ -137,13 +142,43 @@ sharper imagery near the ground.
 - A window cannot be shown faster than its display refreshes: on a 60 Hz monitor it runs at 60 fps.
 - `--benchmark SECONDS` turns the view and prints frame timings, for measuring without input.
 
+## Milestone 5a: time, sun, day and night (done)
+
+### Clock
+- A simulated clock starts at the real time and is shown in UTC in the top-right display, with
+  "paused" or the speed when it is not running at normal speed.
+- It can be paused, sped up or slowed down, stepped by hours or days, and set back to now.
+- `--time ISO8601` sets the start (`2026-06-21T12:00:00Z`, with or without an offset or a
+  time; without one it is UTC); `--time-speed N` sets clock seconds per real second.
+  Saved images (`--screenshot`) show one moment, with the clock paused.
+
+### Sun and lighting
+- The Sun's place comes from the Astronomical Almanac's low-precision formulae, good to about 0.01°
+  of arc from 1950 to 2050. The subsolar point and the direction to the Sun are in the Earth-fixed frame.
+- The globe, its terrain, 3D buildings and the flat map are lit by the Sun. Day turns to night
+  over a soft terminator with twilight, reaching full night when the Sun is about 14° below the horizon.
+  Low sunlight is warm.
+- Terrain is shaded by its slope, so slopes facing away from a low Sun fall into shadow. Buildings
+  are shaded by the direction each face points. Cast shadows are not computed.
+- The night side stays dimly readable. There are no city lights.
+- The atmosphere glow is bright on the day side, warm at dusk and faint at night.
+- With S (or `--no-sun`) everything is shown flat and fully lit, so imagery can be read at night.
+- The picture is redrawn only when the Sun has moved 0.05° (about 12 s at normal speed), so an
+  idle window uses almost no CPU. Speeds of 600 times and above redraw continuously.
+
+### Limitations
+- Imagery already contains the light of the day it was taken, so lit slopes are lit twice.
+- The clock ignores leap seconds and the difference between UT and terrestrial time (under 70 s).
+- No shadows cast by terrain or buildings, no clouds, no sunrise colours in the sky from the ground.
+- Stars, planets and looking up into the sky are still to come.
+
 ## Later milestones
 
 Order and scope are open, and depend on which features are wanted.
 
 | # | Feature | Notes |
 |---|---|---|
-| M5 | Time, sun, day and night, sky | Stars, planets, looking up into the sky |
+| M5b | Sky | Stars, planets, looking up into the sky (time, sun, day and night are done) |
 | M6 | Other bodies | Moon, Mars, Mercury, Ceres, Vesta |
 | M7 | Search and saved places | Geocoding, plus KML, KMZ, GeoJSON, GPX and IGC import |
 | M8 | Map service library | User-added WMS, WMTS and XYZ, with an independently built directory |

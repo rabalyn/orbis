@@ -13,8 +13,9 @@ const COLOUR_STRENGTH: f32 = 0.6;
 const FOUNDATION: f32 = 3.0;
 /// A safeguard against a pathological tile.
 const MAX_VERTICES: usize = 1_500_000;
-/// Sunlight direction in tile coordinates (x east, y south), coming from the south-west.
-const LIGHT: [f32; 2] = [-0.6, 0.8];
+/// Walls are a little darker than roofs before sunlight is applied; the direction of
+/// the light comes from the shader.
+const WALL_SHADE: f32 = 0.85;
 /// Darkening where walls meet the ground, which helps buildings look grounded.
 const WALL_BASE_SHADE: f32 = 0.72;
 
@@ -43,18 +44,6 @@ fn base_colour(building: &Building) -> [f32; 3] {
 fn shaded(colour: [f32; 3], shade: f32) -> [u8; 4] {
     let c = colour.map(|v| (v * shade).clamp(0.0, 255.0) as u8);
     [c[0], c[1], c[2], 255]
-}
-
-/// How much light a wall gets, from the direction it faces.
-fn wall_shade(a: [f32; 2], b: [f32; 2]) -> f32 {
-    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-    let length = (dx * dx + dy * dy).sqrt();
-    if length == 0.0 {
-        return 0.7;
-    }
-    // Rings run clockwise in tile coordinates, so outward is to the left of travel.
-    let (nx, ny) = (dy / length, -dx / length);
-    0.62 + 0.3 * (nx * LIGHT[0] + ny * LIGHT[1]).max(0.0)
 }
 
 /// Whether a wall lies along the cut where a footprint was clipped at the tile's edge. The
@@ -153,8 +142,7 @@ pub fn build_mesh(
                 if on_cut(a, b) {
                     continue;
                 }
-                let shade = wall_shade(a, b);
-                let (up, down) = (shaded(colour, shade), shaded(colour, shade * WALL_BASE_SHADE));
+                let (up, down) = (shaded(colour, WALL_SHADE), shaded(colour, WALL_SHADE * WALL_BASE_SHADE));
                 let start = vertices.len() as u32;
                 vertices.push(BuildingVertex { pos: position(a, top), colour: up });
                 vertices.push(BuildingVertex { pos: position(b, top), colour: up });
@@ -287,17 +275,6 @@ mod tests {
         let cut = vec![[0.9, 0.4], [1.02, 0.4], [1.02, 0.5], [0.9, 0.5], [0.9, 0.4]];
         let mesh = build_mesh(KEY, &[building(vec![cut])], FLAT).unwrap();
         assert_eq!(mesh.vertices.len(), 4 + 3 * 4, "the east side is not walled");
-    }
-
-    #[test]
-    fn sunlit_walls_are_brighter() {
-        // A clockwise ring runs east along its north side and west along its south side.
-        let north = wall_shade([0.0, 0.0], [1.0, 0.0]);
-        let south = wall_shade([1.0, 1.0], [0.0, 1.0]);
-        let west = wall_shade([0.0, 1.0], [0.0, 0.0]);
-        let east = wall_shade([1.0, 0.0], [1.0, 1.0]);
-        assert!(south > north && west > east, "{south} {north} {west} {east}");
-        assert_eq!(wall_shade([0.5, 0.5], [0.5, 0.5]), 0.7);
     }
 
     #[test]

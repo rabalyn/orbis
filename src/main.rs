@@ -13,6 +13,7 @@ mod overlay;
 mod pacing;
 mod render;
 mod select;
+mod sky_time;
 mod servers;
 mod sources;
 mod text;
@@ -32,6 +33,7 @@ use nav::{Arrow, Button, Mods, Nav, WHOLE_EARTH};
 use pacing::{FrameLimit, Pacer, RateMeter};
 use render::{hemisphere_label, Corner, LabelInstance, Renderer};
 use select::View;
+use sky_time::{Clock, ClockKey, Sun};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
@@ -79,6 +81,9 @@ Usage: orbis [options]
   --no-roads              start with roads and boundaries hidden (key R)
   --no-labels             start with labels hidden (key L)
   --no-buildings          start with 3D buildings hidden (key B)
+  --time ISO8601          set the clock, such as 2026-06-21T12:00:00Z (default now, UTC)
+  --time-speed N          clock seconds per real second (default 1)
+  --no-sun                start with flat, always-lit imagery (key S)
   --fps 120|90            frame rate limit (default 120, key F switches)
   --benchmark SECONDS     turn the view in the window, print frame timings and exit
   --cache-dir PATH        tile cache location
@@ -111,6 +116,10 @@ struct Args {
     roads: bool,
     labels: bool,
     buildings: bool,
+    /// The clock's start, as seconds since 1970 UTC; now when not given.
+    time: Option<f64>,
+    time_speed: f64,
+    sun: bool,
     limit: FrameLimit,
     benchmark: Option<f64>,
     cache_limit_gib: u64,
@@ -153,6 +162,9 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
         roads: true,
         labels: true,
         buildings: true,
+        time: None,
+        time_speed: 1.0,
+        sun: true,
         limit: FrameLimit::Fps120,
         benchmark: None,
         cache_limit_gib: CACHE_LIMIT_GIB,
@@ -176,6 +188,10 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             }
             "--no-buildings" => {
                 a.buildings = false;
+                continue;
+            }
+            "--no-sun" => {
+                a.sun = false;
                 continue;
             }
             "--cache-status" => {
@@ -206,6 +222,12 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             "--distance" => a.cam.distance = num()?,
             "--heading" => a.cam.heading = num()?.to_radians(),
             "--tilt" => a.cam.tilt = num()?.to_radians(),
+            "--time" => {
+                a.time = Some(sky_time::parse_iso8601(&value).ok_or_else(|| {
+                    anyhow!("--time expects a date and time such as 2026-06-21T12:00:00Z")
+                })?)
+            }
+            "--time-speed" => a.time_speed = num()?,
             "--exaggeration" => a.exaggeration = num()? as f32,
             "--atlas" => {
                 a.atlas = Some(Projection::parse(&value).ok_or_else(|| {
@@ -306,6 +328,12 @@ struct Scene {
     building_retries: HashMap<TileKey, (Instant, u32)>,
     /// A line about the frame rate for the on-screen display, when drawing to a window.
     frame_status: Option<String>,
+    clock: Clock,
+    /// Real time for the clock is counted from here.
+    clock_epoch: Instant,
+    sun_on: bool,
+    /// The clock reading when the picture was last drawn.
+    drawn_time: f64,
     fetcher: Arc<Fetcher>,
     /// Keeps a slow tick going for tiles waiting out a retry delay.
     last_retry_tick: Instant,
@@ -493,7 +521,41 @@ impl Scene {
             building_empty: HashSet::new(),
             building_retries: HashMap::new(),
             frame_status: None,
+            clock: {
+                let mut clock = Clock::new(args.time.unwrap_or_else(sky_time::wall_clock_now), 0.0);
+                clock.set_rate(args.time_speed);
+                // A saved image shows one moment.
+                if args.screenshot.is_some() {
+                    clock.pause();
+                }
+                clock
+            },
+            clock_epoch: Instant::now(),
+            sun_on: args.sun,
+            drawn_time: 0.0,
         }
+    }
+
+    /// Brings the clock up to date and hands the Sun's place to the renderer.
+    fn sync_sky(&mut self, r: &mut Renderer) {
+        self.clock.advance(self.clock_epoch.elapsed().as_secs_f64());
+        r.sun = Sun::at(self.clock.time()).direction();
+        r.sun_on = self.sun_on;
+        self.drawn_time = self.clock.time();
+    }
+
+    fn sky_key(&mut self, key: ClockKey) {
+        self.clock.advance(self.clock_epoch.elapsed().as_secs_f64());
+        if key == ClockKey::ToggleSun {
+            self.sun_on = !self.sun_on;
+        }
+        self.clock.apply(key, sky_time::wall_clock_now());
+    }
+
+    /// Real seconds until the Sun has moved enough to redraw; zero when due.
+    fn sky_redraw_in(&mut self) -> Option<f64> {
+        self.clock.advance(self.clock_epoch.elapsed().as_secs_f64());
+        self.clock.redraw_in(self.drawn_time)
     }
 
     fn receive(&mut self, r: &mut Renderer) -> bool {
@@ -551,6 +613,7 @@ impl Scene {
 
     /// Advances the view and works out what to draw and fetch. Returns whether the picture changed.
     fn update(&mut self, r: &mut Renderer, dt: f64, aspect_height: (f64, f64)) -> bool {
+        self.sync_sky(r);
         let received = self.receive(r);
         let atlas = self.mode == Mode::Atlas;
         let selection = if atlas {
@@ -746,8 +809,9 @@ impl Scene {
                 )
             }
         };
+        let sky = if self.sun_on { self.clock.label() } else { format!("{}  flat light", self.clock.label()) };
         let mut text = format!(
-            "{position}\n{scale}  tiles {}/{}\n{}",
+            "{position}\n{sky}\n{scale}  tiles {}/{}\n{}",
             self.draw.len(),
             r.tile_count(),
             loading_status(self.waiting, self.retrying),
@@ -1102,7 +1166,7 @@ impl App {
         // Tiles only waiting out a retry delay are picked up by the slow tick instead.
         let scene = &gfx.scene;
         let loading = !scene.loader.is_idle() || scene.waiting > scene.retrying;
-        if scene.nav.is_animating() || loading || scene.labels_changing() || gfx.benchmark.is_some() {
+        if scene.nav.is_animating() || scene.clock.is_fast() || loading || scene.labels_changing() || gfx.benchmark.is_some() {
             gfx.redraw_wanted = true;
         }
     }
@@ -1163,6 +1227,12 @@ impl ApplicationHandler for App {
             // Refreshes the on-screen rate once drawing has stopped.
             if g.scene.retry_tick(now) || g.meter.is_stale(now) {
                 g.redraw_wanted = true;
+            }
+            // The Sun moves slowly at real speed, so it asks for a redraw only now and then.
+            match g.scene.sky_redraw_in() {
+                Some(s) if s <= 0.0 => g.redraw_wanted = true,
+                Some(s) => wake = wake.min(now + Duration::from_secs_f64(s)),
+                None => {}
             }
             if g.redraw_wanted {
                 if g.pacer.due(now) {
@@ -1295,6 +1365,11 @@ impl ApplicationHandler for App {
                         KeyCode::Digit0 if self.mods.ctrl && atlas => map.key(atlas_nav::Key::Whole),
                         KeyCode::Digit0 if self.mods.ctrl => nav.whole_body(),
                         KeyCode::KeyM if !self.mods.ctrl => gfx.scene.toggle_mode(),
+                        _ if !self.mods.ctrl && sky_time::key_for(code, self.mods.shift).is_some() => {
+                            if let Some(key) = sky_time::key_for(code, self.mods.shift) {
+                                gfx.scene.sky_key(key);
+                            }
+                        }
                         KeyCode::KeyP if !self.mods.ctrl && atlas => {
                             map.key(atlas_nav::Key::CycleProjection { back: self.mods.shift });
                         }
@@ -1489,6 +1564,14 @@ mod tests {
         assert!(parse(&["--fps", "60"]).is_err());
         assert_eq!(parse(&["--benchmark", "5"]).unwrap().unwrap().benchmark, Some(5.0));
         assert!(parse(&["--benchmark", "0"]).is_err());
+    }
+
+    #[test]
+    fn time_and_sun_flags() {
+        let a = parse(&["--time", "2026-06-21T12:00:00Z", "--time-speed", "60", "--no-sun"]).unwrap().unwrap();
+        assert_eq!((a.time, a.time_speed, a.sun), (Some(1_782_043_200.0), 60.0, false));
+        assert!(parse(&["--time", "noon"]).is_err());
+        assert!(parse(&[]).unwrap().unwrap().sun);
     }
 
     #[test]

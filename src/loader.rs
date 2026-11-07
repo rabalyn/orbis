@@ -37,6 +37,8 @@ pub struct Vertex {
     pub uv: [f32; 2],
     /// Position within this tile, for the overlay drawn just for it.
     pub st: [f32; 2],
+    /// Unit surface normal in the Earth-fixed frame, for sunlight.
+    pub normal: [f32; 3],
 }
 
 pub struct TileData {
@@ -187,29 +189,52 @@ pub fn build_mesh(
     let mut heights = Vec::with_capacity(side * side);
     let width = std::f64::consts::TAU * A / (1u64 << k.z) as f64;
     let skirt = (width * 0.02).clamp(5.0, 50_000.0);
-    let vertex = |s: f64, t: f64, h: f64| -> Vertex {
+    let position = |s: f64, t: f64, h: f64| -> DVec3 {
         let (lat, lon) = k.lat_lon(s, t);
-        let p = geodetic_to_ecef(lat, lon, h) - center;
+        geodetic_to_ecef(lat, lon, h) - center
+    };
+    let vertex = |s: f64, t: f64, h: f64, normal: DVec3| -> Vertex {
         Vertex {
-            pos: p.as_vec3().to_array(),
+            pos: position(s, t, h).as_vec3().to_array(),
             uv: [
                 (uv_rect.0 + s * uv_rect.2) as f32,
                 (uv_rect.1 + t * uv_rect.2) as f32,
             ],
             st: [s as f32, t as f32],
+            normal: normal.as_vec3().to_array(),
         }
     };
+    let at = |i: usize, j: usize| (i as f64 / GRID as f64, j as f64 / GRID as f64);
     for j in 0..side {
         for i in 0..side {
-            let (s, t) = (i as f64 / GRID as f64, j as f64 / GRID as f64);
-            let h = dem.sample(dem_rect.0 + s * dem_rect.2, dem_rect.1 + t * dem_rect.2) * exaggeration;
-            heights.push(h);
-            vertices.push(vertex(s, t, h as f64));
+            let (s, t) = at(i, j);
+            heights.push(dem.sample(dem_rect.0 + s * dem_rect.2, dem_rect.1 + t * dem_rect.2) * exaggeration);
+        }
+    }
+    // Smooth normals from the surface slope across neighbouring grid points.
+    let normals: Vec<DVec3> = (0..side * side)
+        .map(|n| {
+            let (i, j) = (n % side, n / side);
+            let p = |i: usize, j: usize| {
+                let (s, t) = at(i, j);
+                position(s, t, heights[j * side + i] as f64)
+            };
+            let along_s = p((i + 1).min(GRID), j) - p(i.saturating_sub(1), j);
+            let along_t = p(i, (j + 1).min(GRID)) - p(i, j.saturating_sub(1));
+            // t grows southwards, so s x t points down.
+            let n = along_t.cross(along_s).normalize_or_zero();
+            if n == DVec3::ZERO { (center + position(0.5, 0.5, 0.0)).normalize() } else { n }
+        })
+        .collect();
+    for j in 0..side {
+        for i in 0..side {
+            let (s, t) = at(i, j);
+            vertices.push(vertex(s, t, heights[j * side + i] as f64, normals[j * side + i]));
         }
     }
     for (i, j) in border() {
-        let (s, t) = (i as f64 / GRID as f64, j as f64 / GRID as f64);
-        vertices.push(vertex(s, t, heights[j * side + i] as f64 - skirt));
+        let (s, t) = at(i, j);
+        vertices.push(vertex(s, t, heights[j * side + i] as f64 - skirt, normals[j * side + i]));
     }
     (center, vertices, heights)
 }

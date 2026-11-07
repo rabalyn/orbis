@@ -33,6 +33,8 @@ struct FrameUniform {
     up: [f32; 4],
     look: [f32; 4],
     viewport: [f32; 4],
+    /// Direction to the Sun in the Earth-fixed frame; w is 1 with sunlight, 0 for flat light.
+    sun: [f32; 4],
 }
 
 struct GpuTile {
@@ -121,6 +123,9 @@ pub struct Renderer {
     label_count: u32,
     no_overlay: wgpu::BindGroup,
     pub roads_visible: bool,
+    /// Direction to the Sun in the Earth-fixed frame, and whether it lights the scene.
+    pub sun: DVec3,
+    pub sun_on: bool,
     frame_buffer: wgpu::Buffer,
     frame_bind: wgpu::BindGroup,
     tile_layout: wgpu::BindGroupLayout,
@@ -202,6 +207,7 @@ fn underlay_mesh() -> (Vec<Vertex>, Vec<u32>) {
                 pos: p.as_vec3().to_array(),
                 uv: [0.5, if polar && *lat < 0.0 { 0.25 } else { 0.75 }],
                 st: [0.0, 0.0],
+                normal: p.normalize().as_vec3().to_array(),
             });
         }
     }
@@ -314,7 +320,7 @@ impl Renderer {
             immediate_size: 0,
         });
 
-        let vertex_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2];
+        let vertex_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2, 4 => Float32x3];
         let instance_attrs = wgpu::vertex_attr_array![3 => Float32x3];
         let label_attrs = wgpu::vertex_attr_array![
             0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
@@ -376,7 +382,7 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
-        let atlas_attrs = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x2];
+        let atlas_attrs = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x2, 3 => Float32x3];
         let atlas_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("atlas"),
             layout: Some(&tile_pl),
@@ -651,6 +657,8 @@ impl Renderer {
             label_count: 0,
             no_overlay,
             roads_visible: true,
+            sun: DVec3::X,
+            sun_on: true,
             frame_buffer,
             frame_bind,
             tile_layout,
@@ -1079,6 +1087,7 @@ impl Renderer {
             up: vec4(basis.up, 0.0),
             look: vec4(basis.look, 0.0),
             viewport: [width as f32, height as f32, 0.0, 0.0],
+            sun: [self.sun.x as f32, self.sun.y as f32, self.sun.z as f32, if self.sun_on { 1.0 } else { 0.0 }],
         };
         self.queue.write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
 

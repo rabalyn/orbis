@@ -8,9 +8,30 @@ struct Frame {
     look: vec4<f32>,
     // Window size in pixels.
     viewport: vec4<f32>,
+    // Direction to the Sun in the Earth-fixed frame; w is 1 with sunlight and 0 for flat light.
+    sun: vec4<f32>,
 }
 
+const EARTH_RADIUS: f32 = 6378137.0;
+
 @group(0) @binding(0) var<uniform> frame: Frame;
+
+// Sunlight. `n` is the surface normal, `g` the normal of the smooth Earth below it. Day
+// and night follow `g`, with a soft twilight; slopes follow `n`.
+fn sun_light(n: vec3<f32>, g: vec3<f32>) -> vec3<f32> {
+    if (frame.sun.w < 0.5) {
+        return vec3<f32>(1.0);
+    }
+    let s = frame.sun.xyz;
+    let high = dot(g, s);
+    let direct = max(dot(n, s), 0.0) * smoothstep(-0.02, 0.08, high);
+    // Sky light fades out until the Sun is about 14 degrees below the horizon.
+    let sky = smoothstep(-0.25, 0.1, high);
+    let ambient = mix(vec3<f32>(0.045, 0.06, 0.11), vec3<f32>(0.22, 0.24, 0.28), sky);
+    // Low sunlight is warm.
+    let warm = mix(vec3<f32>(1.0, 0.62, 0.38), vec3<f32>(1.0), smoothstep(0.0, 0.35, high));
+    return ambient + 0.8 * warm * direct;
+}
 
 // Tiles
 
@@ -23,6 +44,8 @@ struct TileOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) st: vec2<f32>,
+    @location(2) normal: vec3<f32>,
+    @location(3) ground: vec3<f32>,
 }
 
 @vertex
@@ -31,11 +54,15 @@ fn vs_tile(
     @location(1) uv: vec2<f32>,
     @location(2) st: vec2<f32>,
     @location(3) origin: vec3<f32>,
+    @location(4) normal: vec3<f32>,
 ) -> TileOut {
     var out: TileOut;
-    out.clip = frame.view_proj * vec4<f32>(pos + origin, 1.0);
+    let rel = pos + origin;
+    out.clip = frame.view_proj * vec4<f32>(rel, 1.0);
     out.uv = uv;
     out.st = st;
+    out.normal = normal;
+    out.ground = normalize(rel + frame.cam.xyz * EARTH_RADIUS);
     return out;
 }
 
@@ -45,11 +72,14 @@ fn vs_atlas(
     @location(0) pos: vec2<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) st: vec2<f32>,
+    @location(3) normal: vec3<f32>,
 ) -> TileOut {
     var out: TileOut;
     out.clip = vec4<f32>(pos, 0.0, 1.0);
     out.uv = uv;
     out.st = st;
+    out.normal = normal;
+    out.ground = normal;
     return out;
 }
 
@@ -68,14 +98,17 @@ fn fs_tile(in: TileOut) -> @location(0) vec4<f32> {
     if (line.a > 0.002) {
         colour = mix(base, srgb_to_linear(clamp(line.rgb / line.a, vec3<f32>(0.0), vec3<f32>(1.0))), line.a);
     }
+    colour = colour * sun_light(normalize(in.normal), normalize(in.ground));
     return vec4<f32>(colour, 1.0);
 }
 
-// Buildings, whose colours already include their shading
+// Buildings, flat-shaded from the slope of each face
 
 struct BuildingOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) colour: vec3<f32>,
+    // Position relative to the camera.
+    @location(1) rel: vec3<f32>,
 }
 
 @vertex
@@ -85,14 +118,21 @@ fn vs_building(
     @location(2) origin: vec3<f32>,
 ) -> BuildingOut {
     var out: BuildingOut;
-    out.clip = frame.view_proj * vec4<f32>(pos + origin, 1.0);
+    out.rel = pos + origin;
+    out.clip = frame.view_proj * vec4<f32>(out.rel, 1.0);
     out.colour = srgb_to_linear(colour.rgb);
     return out;
 }
 
 @fragment
 fn fs_building(in: BuildingOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(in.colour, 1.0);
+    var n = normalize(cross(dpdx(in.rel), dpdy(in.rel)));
+    // Faces are drawn from the outside, so the normal faces the camera.
+    if (dot(n, in.rel) > 0.0) {
+        n = -n;
+    }
+    let g = normalize(in.rel + frame.cam.xyz * EARTH_RADIUS);
+    return vec4<f32>(in.colour * sun_light(n, g), 1.0);
 }
 
 // Text labels
@@ -166,7 +206,15 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let along = max(0.0, -dot(o, dir));
     let height = max(length(o + dir * along) - 1.0, 0.0);
     let glow = exp(-height / 0.012);
-    let colour = vec3<f32>(0.22, 0.45, 0.95) * glow;
+    var colour = vec3<f32>(0.22, 0.45, 0.95) * glow;
+    if (frame.sun.w > 0.5) {
+        // The glow is lit where the Sun shines on the air at the ray's closest approach.
+        let q = normalize(o + dir * along);
+        let high = dot(q, frame.sun.xyz);
+        let lit = smoothstep(-0.3, 0.25, high);
+        let dusk = exp(-high * high / 0.02);
+        colour = colour * mix(0.04, 1.0, lit) + vec3<f32>(0.9, 0.38, 0.15) * glow * dusk * 0.5;
+    }
     return vec4<f32>(colour, 1.0);
 }
 
