@@ -381,7 +381,7 @@ pub fn geojson(text: &str, name: &str) -> Result<Imported, ImportError> {
 
 // ---- XML ----
 
-enum Tok {
+pub(crate) enum Tok {
     Open(String, Vec<(String, String)>),
     Close(String),
     Text(String),
@@ -408,7 +408,7 @@ fn entity(name: &str) -> Option<char> {
 /// Streams the elements and text of an XML document to `f`, which says whether to go on.
 /// Names have their prefix removed. Entities other than the predefined and numeric ones are
 /// dropped, so nothing is expanded.
-fn walk(text: &str, mut f: impl FnMut(Tok) -> bool) -> Result<(), ImportError> {
+pub(crate) fn walk(text: &str, mut f: impl FnMut(Tok) -> bool) -> Result<(), ImportError> {
     let bad = |e: &dyn std::fmt::Display| ImportError::Malformed(e.to_string());
     let mut reader = Reader::from_str(text);
     reader.config_mut().expand_empty_elements = true;

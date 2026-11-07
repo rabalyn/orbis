@@ -425,6 +425,8 @@ fn fill(template: &str, k: TileKey) -> String {
         .replace("{z}", &k.z.to_string())
         .replace("{x}", &k.x.to_string())
         .replace("{y}", &k.y.to_string())
+        // TMS counts rows from the south.
+        .replace("{-y}", &((1u64 << k.z) - 1 - k.y as u64).to_string())
 }
 
 fn mercator_bbox(k: TileKey) -> String {
