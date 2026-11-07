@@ -453,5 +453,11 @@ Order and scope are open, and depend on which features are wanted.
 |---|---|---|
 | M9b | Events | Earthquakes, eruptions, tsunamis and fireballs, added to the list of M9a |
 | M10 | SpaceMouse | Through HID or `spacenavd` |
+| M11 | Help dialog and clickable interface | A help icon toggles a floating window in a corner that lists the keyboard shortcuts, scrollable when they don't fit. Brings the mouse-driven interface layer that M12 and M16 also use |
+| M12 | View options and saved settings | A dialog to show or hide streets, cities, trails, trains and 3D buildings, to switch map projection, and to choose what the globe shows. Every setting is saved in the application's configuration directory; during development, a committed configuration directory in the working directory takes priority |
+| M13 | Information on click | Clicking a place on the map, such as a city name, peak or sea, opens a box with relevant data from Wikipedia and Wikidata |
+| M14 | Smooth flight on double-click | Double-clicking land or a label flies there with an accelerating, smooth automatic flight |
+| M15 | Cast shadows | Terrain and buildings cast shadows calculated from their height and the Sun's position |
+| M16 | Time slider | A slider for travelling in time, moving the Sun, Moon and planets continuously, and with them shadows, day and night, and solar and lunar eclipses. Depends on M11, and on M15 for shadows. Dates beyond the range of the planet formulae (about 1800 to 2050) are limited or marked as less accurate |
 
 Out of scope: Apple Vision Pro streaming, Quick Look and Share extensions, Sparkle updates.
