@@ -22,6 +22,8 @@ mod render;
 mod import;
 mod import_draw;
 mod places;
+mod eclipse;
+mod ephemeris;
 mod search;
 mod service_ui;
 mod select;
