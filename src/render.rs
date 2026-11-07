@@ -1,0 +1,1173 @@
+//! GPU drawing with wgpu. Everything is positioned relative to the camera, so 32-bit
+//! floats stay precise at any distance from the Earth's centre.
+
+use crate::buildings::{BuildingMesh, BuildingVertex};
+use crate::camera::{Camera, FOV_Y};
+use crate::geo::{geodetic_to_ecef, TileKey, A};
+use crate::labels::{AtlasRect, Mask, Shelves, TextKey, TextWorker, ATLAS_SIZE};
+use crate::loader::{mesh_indices, TileData, Vertex, GRID, TILE_MAX_Z};
+use crate::text;
+use bytemuck::{Pod, Zeroable};
+use glam::DVec3;
+use std::collections::{HashMap, HashSet};
+use std::mem::size_of;
+use wgpu::util::{BufferInitDescriptor, DeviceExt};
+
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+const MAX_TILES: usize = 1500;
+/// Overlays are four times the size of imagery, so fewer of them stay in memory.
+const MAX_OVERLAYS: usize = 500;
+/// Building meshes kept on the GPU; city tiles take up to a few megabytes each.
+const MAX_BUILDING_TILES: usize = 300;
+/// Latitude where Web Mercator imagery ends, just inside the polar caps.
+const IMAGERY_LIMIT_DEG: f64 = 85.06;
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct FrameUniform {
+    view_proj: [[f32; 4]; 4],
+    cam: [f32; 4],
+    right: [f32; 4],
+    up: [f32; 4],
+    look: [f32; 4],
+    viewport: [f32; 4],
+}
+
+struct GpuTile {
+    vertices: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    overlay: Option<wgpu::BindGroup>,
+    heights: Vec<f32>,
+    center: DVec3,
+    last_used: u64,
+}
+
+struct GpuBuildings {
+    vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+    index_count: u32,
+    center: DVec3,
+    last_used: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug)]
+pub struct LabelInstance {
+    pub center: [f32; 2],
+    pub half: [f32; 2],
+    pub uv: [f32; 4],
+    /// Text colour and overall opacity.
+    pub fill: [f32; 4],
+    /// Outline colour, and the label's angle in radians.
+    pub halo: [f32; 4],
+}
+
+struct Panel {
+    uniform: wgpu::Buffer,
+    bind_group: Option<wgpu::BindGroup>,
+    texture: Option<wgpu::Texture>,
+    text: String,
+    width: u32,
+    height: u32,
+    max_cols: usize,
+    scale: usize,
+}
+
+#[derive(Clone, Copy)]
+pub enum Corner {
+    TopRight,
+    BottomLeft,
+}
+
+pub struct Renderer {
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    tile_pipeline: wgpu::RenderPipeline,
+    sky_pipeline: wgpu::RenderPipeline,
+    panel_pipeline: wgpu::RenderPipeline,
+    label_pipeline: wgpu::RenderPipeline,
+    building_pipeline: wgpu::RenderPipeline,
+    buildings: HashMap<TileKey, GpuBuildings>,
+    /// Which building tiles to draw this frame.
+    visible_buildings: Vec<TileKey>,
+    format: wgpu::TextureFormat,
+    samples: u32,
+    /// The multisampled colour image, when anti-aliasing is available.
+    msaa: Option<(wgpu::TextureView, u32, u32)>,
+    label_texture: wgpu::Texture,
+    label_bind: wgpu::BindGroup,
+    label_rects: HashMap<TextKey, Option<AtlasRect>>,
+    label_shelves: Shelves,
+    label_instances: wgpu::Buffer,
+    label_capacity: usize,
+    label_count: u32,
+    no_overlay: wgpu::BindGroup,
+    pub roads_visible: bool,
+    frame_buffer: wgpu::Buffer,
+    frame_bind: wgpu::BindGroup,
+    tile_layout: wgpu::BindGroupLayout,
+    panel_layout: wgpu::BindGroupLayout,
+    tile_sampler: wgpu::Sampler,
+    panel_sampler: wgpu::Sampler,
+    indices: wgpu::Buffer,
+    index_count: u32,
+    underlay_vertices: wgpu::Buffer,
+    underlay_indices: wgpu::Buffer,
+    underlay_count: u32,
+    underlay_bind: wgpu::BindGroup,
+    instances: wgpu::Buffer,
+    instance_capacity: usize,
+    depth: Option<(wgpu::TextureView, u32, u32)>,
+    tiles: HashMap<TileKey, GpuTile>,
+    panels: [Panel; 2],
+    frame_no: u64,
+}
+
+fn tile_texture_view(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    format: wgpu::TextureFormat,
+    mips: &[(u32, u32, Vec<u8>)],
+) -> wgpu::TextureView {
+    let (w, h, _) = mips[0];
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("tile"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: mips.len() as u32,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for (level, (mw, mh, data)) in mips.iter().enumerate() {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: level as u32,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(mw * 4),
+                rows_per_image: Some(*mh),
+            },
+            wgpu::Extent3d { width: *mw, height: *mh, depth_or_array_layers: 1 },
+        );
+    }
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// A plain globe that shows through where no tile is drawn. Web Mercator imagery does not
+/// reach the poles, so the caps get a plain colour: Arctic water in the north, ice over
+/// Antarctica. Between them it sits below the tiles in ocean colour.
+fn underlay_mesh() -> (Vec<Vertex>, Vec<u32>) {
+    let limit = IMAGERY_LIMIT_DEG;
+    let mut lats: Vec<f64> = vec![90.0, 87.5, limit];
+    let bands = 48;
+    for i in 1..bands {
+        lats.push(limit - 2.0 * limit * i as f64 / bands as f64);
+    }
+    lats.extend([-limit, -87.5, -90.0]);
+    let segments = 96;
+    let mut vertices = Vec::new();
+    for lat in &lats {
+        for s in 0..=segments {
+            let lon = (s as f64 / segments as f64) * std::f64::consts::TAU - std::f64::consts::PI;
+            let polar = lat.abs() >= limit;
+            // The ocean sits below the deepest terrain so that tiles always cover it.
+            let h = if polar { 0.0 } else { -12_000.0 };
+            let p = geodetic_to_ecef(lat.to_radians(), lon, h);
+            vertices.push(Vertex {
+                pos: p.as_vec3().to_array(),
+                uv: [0.5, if polar && *lat < 0.0 { 0.25 } else { 0.75 }],
+                st: [0.0, 0.0],
+            });
+        }
+    }
+    let row = segments + 1;
+    let mut indices = Vec::new();
+    for j in 0..(lats.len() as u32 - 1) {
+        for i in 0..segments {
+            let (a, b) = (j * row + i, j * row + i + 1);
+            let (c, d) = (a + row, b + row);
+            indices.extend([a, c, b, b, c, d]);
+        }
+    }
+    (vertices, indices)
+}
+
+fn underlay_mips() -> Vec<(u32, u32, Vec<u8>)> {
+    // Top half ice, bottom half ocean, picked by the mesh's v coordinate.
+    let (ice, ocean) = ([254u8, 254, 254, 255], [17u8, 31, 72, 255]);    let mut data = Vec::new();
+    for _ in 0..2 {
+        data.extend(ice);
+    }
+    for _ in 0..2 {
+        data.extend(ocean);
+    }
+    vec![(1, 4, data)]
+}
+
+/// The anti-aliasing level to use for a colour format on this GPU.
+pub fn sample_count(adapter: &wgpu::Adapter, format: wgpu::TextureFormat) -> u32 {
+    use wgpu::TextureFormatFeatureFlags as Flags;
+    let colour = adapter.get_texture_format_features(format).flags;
+    let depth = adapter.get_texture_format_features(DEPTH_FORMAT).flags;
+    let usable = colour.contains(Flags::MULTISAMPLE_X4 | Flags::MULTISAMPLE_RESOLVE)
+        && depth.contains(Flags::MULTISAMPLE_X4);
+    if usable { 4 } else { 1 }
+}
+
+impl Renderer {
+    pub fn new(device: wgpu::Device, queue: wgpu::Queue, format: wgpu::TextureFormat, samples: u32) -> Self {
+        let shader = device.create_shader_module(wgpu::include_wgsl!("globe.wgsl"));
+        let multisample = wgpu::MultisampleState { count: samples, ..Default::default() };
+
+        let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("frame"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let texture_entry = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let sampler_entry = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        };
+        let tile_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("tile"),
+            entries: &[texture_entry(0), sampler_entry(1)],
+        });
+        let panel_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("panel"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                texture_entry(1),
+                sampler_entry(2),
+            ],
+        });
+        let layout_for = |second: &wgpu::BindGroupLayout, label| {
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(label),
+                bind_group_layouts: &[Some(&frame_layout), Some(second)],
+                immediate_size: 0,
+            })
+        };
+        let tile_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("tile"),
+            bind_group_layouts: &[Some(&frame_layout), Some(&tile_layout), Some(&tile_layout)],
+            immediate_size: 0,
+        });
+        let panel_pl = layout_for(&panel_layout, "panel");
+        let label_pl = layout_for(&tile_layout, "label");
+        let sky_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("sky"),
+            bind_group_layouts: &[Some(&frame_layout)],
+            immediate_size: 0,
+        });
+
+        let vertex_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2];
+        let instance_attrs = wgpu::vertex_attr_array![3 => Float32x3];
+        let label_attrs = wgpu::vertex_attr_array![
+            0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
+        ];
+        let opaque = [Some(wgpu::ColorTargetState {
+            format,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        })];
+        let blended = [Some(wgpu::ColorTargetState {
+            format,
+            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+            write_mask: wgpu::ColorWrites::ALL,
+        })];
+        let no_depth = wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Always),
+            stencil: Default::default(),
+            bias: Default::default(),
+        };
+
+        let tile_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("tile"),
+            layout: Some(&tile_pl),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_tile"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: size_of::<Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &vertex_attrs,
+                    }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: size_of::<[f32; 3]>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &instance_attrs,
+                    }),
+                ],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                // Depth is reversed: larger values are nearer.
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample,
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_tile"),
+                compilation_options: Default::default(),
+                targets: &opaque,
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("sky"),
+            layout: Some(&sky_pl),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_sky"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(no_depth.clone()),
+            multisample,
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_sky"),
+                compilation_options: Default::default(),
+                targets: &opaque,
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let building_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("building"),
+            bind_group_layouts: &[Some(&frame_layout)],
+            immediate_size: 0,
+        });
+        let building_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4];
+        let building_instance_attrs = wgpu::vertex_attr_array![2 => Float32x3];
+        let building_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("building"),
+            layout: Some(&building_pl),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_building"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: size_of::<BuildingVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &building_attrs,
+                    }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: size_of::<[f32; 3]>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &building_instance_attrs,
+                    }),
+                ],
+            },
+            // Only outward faces, so that a camera inside a building sees out rather than
+            // a screen full of wall.
+            primitive: wgpu::PrimitiveState {
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample,
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_building"),
+                compilation_options: Default::default(),
+                targets: &opaque,
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let label_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("label"),
+            layout: Some(&label_pl),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_label"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: size_of::<LabelInstance>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &label_attrs,
+                })],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..Default::default()
+            },
+            depth_stencil: Some(no_depth.clone()),
+            multisample,
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_label"),
+                compilation_options: Default::default(),
+                targets: &blended,
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let panel_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("panel"),
+            layout: Some(&panel_pl),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_panel"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..Default::default()
+            },
+            depth_stencil: Some(no_depth),
+            multisample,
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_panel"),
+                compilation_options: Default::default(),
+                targets: &blended,
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let frame_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("frame"),
+            size: size_of::<FrameUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let frame_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("frame"),
+            layout: &frame_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: frame_buffer.as_entire_binding() }],
+        });
+        let tile_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("tile"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            anisotropy_clamp: 16,
+            ..Default::default()
+        });
+        let panel_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("panel"),
+            ..Default::default()
+        });
+
+        let indices_cpu = mesh_indices();
+        let indices = device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("tile indices"),
+            contents: bytemuck::cast_slice(&indices_cpu),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        let (under_v, under_i) = underlay_mesh();
+        let underlay_vertices = device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("underlay vertices"),
+            contents: bytemuck::cast_slice(&under_v),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let underlay_indices = device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("underlay indices"),
+            contents: bytemuck::cast_slice(&under_i),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        let texture_bind = |view: &wgpu::TextureView, sampler: &wgpu::Sampler, label| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout: &tile_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                ],
+            })
+        };
+        let under_view =
+            tile_texture_view(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, &underlay_mips());
+        let underlay_bind = texture_bind(&under_view, &tile_sampler, "underlay");
+        let empty_view = tile_texture_view(
+            &device,
+            &queue,
+            wgpu::TextureFormat::Rgba8Unorm,
+            &[(1, 1, vec![0, 0, 0, 0])],
+        );
+        let no_overlay = texture_bind(&empty_view, &tile_sampler, "no overlay");
+
+        let label_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("label atlas"),
+            size: wgpu::Extent3d { width: ATLAS_SIZE, height: ATLAS_SIZE, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rg8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let label_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("label"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let label_bind = texture_bind(&label_texture.create_view(&Default::default()), &label_sampler, "label");
+        let label_capacity = 256;
+        let label_instances = create_label_buffer(&device, label_capacity);
+
+        let instance_capacity = 1024;
+        let instances = create_instance_buffer(&device, instance_capacity);
+        let panel = || Panel {
+            uniform: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("panel"),
+                size: 16,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            bind_group: None,
+            texture: None,
+            text: String::new(),
+            width: 0,
+            height: 0,
+            max_cols: 0,
+            scale: 1,
+        };
+        let panels = [panel(), panel()];
+
+        Self {
+            tile_pipeline,
+            sky_pipeline,
+            panel_pipeline,
+            label_pipeline,
+            building_pipeline,
+            buildings: HashMap::new(),
+            visible_buildings: Vec::new(),
+            format,
+            samples,
+            msaa: None,
+            label_texture,
+            label_bind,
+            label_rects: HashMap::new(),
+            label_shelves: Shelves::new(ATLAS_SIZE),
+            label_instances,
+            label_capacity,
+            label_count: 0,
+            no_overlay,
+            roads_visible: true,
+            frame_buffer,
+            frame_bind,
+            tile_layout,
+            panel_layout,
+            tile_sampler,
+            panel_sampler,
+            index_count: indices_cpu.len() as u32,
+            indices,
+            underlay_vertices,
+            underlay_indices,
+            underlay_count: under_i.len() as u32,
+            underlay_bind,
+            instances,
+            instance_capacity,
+            depth: None,
+            tiles: HashMap::new(),
+            panels,
+            frame_no: 0,
+            device,
+            queue,
+        }
+    }
+
+    pub fn has_tile(&self, k: TileKey) -> bool {
+        self.tiles.contains_key(&k)
+    }
+
+    pub fn tile_count(&self) -> usize {
+        self.tiles.len()
+    }
+
+    pub fn insert_tile(&mut self, data: &TileData) {
+        let vertices = self.device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("tile vertices"),
+            contents: bytemuck::cast_slice(&data.vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let view = tile_texture_view(&self.device, &self.queue, wgpu::TextureFormat::Rgba8UnormSrgb, &data.mips);
+        let bind_group = self.sampled_bind(&view);
+        self.tiles.insert(
+            data.key,
+            GpuTile {
+                vertices,
+                bind_group,
+                overlay: None,
+                heights: data.heights.clone(),
+                center: data.center,
+                last_used: self.frame_no,
+            },
+        );
+    }
+
+    fn sampled_bind(&self, view: &wgpu::TextureView) -> wgpu::BindGroup {
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("tile"),
+            layout: &self.tile_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.tile_sampler) },
+            ],
+        })
+    }
+
+    pub fn has_buildings(&self, k: TileKey) -> bool {
+        self.buildings.contains_key(&k)
+    }
+
+    pub fn insert_buildings(&mut self, k: TileKey, mesh: &BuildingMesh) {
+        let vertices = self.device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("building vertices"),
+            contents: bytemuck::cast_slice(&mesh.vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let indices = self.device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("building indices"),
+            contents: bytemuck::cast_slice(&mesh.indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        self.buildings.insert(
+            k,
+            GpuBuildings {
+                vertices,
+                indices,
+                index_count: mesh.indices.len() as u32,
+                center: mesh.center,
+                last_used: self.frame_no,
+            },
+        );
+    }
+
+    /// Chooses the building tiles to draw. Ones not loaded yet are simply left out.
+    pub fn set_visible_buildings(&mut self, keys: Vec<TileKey>) {
+        self.visible_buildings = keys;
+    }
+
+    pub fn visible_building_count(&self) -> usize {
+        self.visible_buildings.iter().filter(|k| self.buildings.contains_key(k)).count()
+    }
+
+    /// Sends queued uploads to the GPU. Until this or a frame is submitted, each upload keeps
+    /// a copy in main memory, and resources dropped meanwhile are not released.
+    pub fn flush_uploads(&self) {
+        self.queue.submit([]);
+        let _ = self.device.poll(wgpu::PollType::Poll);
+    }
+
+    pub fn has_overlay(&self, k: TileKey) -> bool {
+        self.tiles.get(&k).is_some_and(|t| t.overlay.is_some())
+    }
+
+    /// Attaches an overlay to its tile. If the tile has gone meanwhile, it is asked for again
+    /// whenever the tile returns.
+    pub fn insert_overlay(&mut self, k: TileKey, mips: &[(u32, u32, Vec<u8>)]) {
+        if !self.tiles.contains_key(&k) {
+            return;
+        }
+        // Premultiplied sRGB values, which the shader decodes itself.
+        let view = tile_texture_view(&self.device, &self.queue, wgpu::TextureFormat::Rgba8Unorm, mips);
+        let bind = self.sampled_bind(&view);
+        if let Some(tile) = self.tiles.get_mut(&k) {
+            tile.overlay = Some(bind);
+        }
+    }
+
+    /// Where a text lies in the label atlas. Text not seen before is sent off to be rasterised.
+    pub fn label_rect(&mut self, key: &TextKey, worker: &mut TextWorker) -> Option<AtlasRect> {
+        if let Some(rect) = self.label_rects.get(key) {
+            return *rect;
+        }
+        self.label_rects.insert(key.clone(), None);
+        worker.request(key.clone());
+        None
+    }
+
+    /// Puts rasterised text into the atlas. A full atlas starts over; what is still on
+    /// screen simply gets requested again.
+    pub fn receive_mask(&mut self, mask: Mask) {
+        let at = self.label_shelves.alloc(mask.width, mask.height).or_else(|| {
+            self.label_rects.clear();
+            self.label_shelves.clear();
+            self.label_shelves.alloc(mask.width, mask.height)
+        });
+        let Some((x, y)) = at else { return };
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.label_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &mask.pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(mask.width * 2),
+                rows_per_image: Some(mask.height),
+            },
+            wgpu::Extent3d { width: mask.width, height: mask.height, depth_or_array_layers: 1 },
+        );
+        self.label_rects.insert(mask.key, Some(AtlasRect { x, y, w: mask.width, h: mask.height }));
+    }
+
+    pub fn set_labels(&mut self, instances: &[LabelInstance]) {
+        if instances.len() > self.label_capacity {
+            self.label_capacity = instances.len().next_power_of_two();
+            self.label_instances = create_label_buffer(&self.device, self.label_capacity);
+        }
+        self.queue.write_buffer(&self.label_instances, 0, bytemuck::cast_slice(instances));
+        self.label_count = instances.len() as u32;
+    }
+
+    /// The screen area a text panel covers, as (x0, y0, x1, y1).
+    pub fn panel_rect(&self, i: usize, corner: Corner, width: u32, height: u32) -> [f64; 4] {
+        let p = &self.panels[i];
+        let margin = 8.0;
+        let (sw, sh) = (width as f64, height as f64);
+        let (pw, ph) = (p.width as f64, p.height as f64);
+        let (x0, y0) = match corner {
+            Corner::TopRight => (sw - pw - margin, margin),
+            Corner::BottomLeft => (margin, sh - ph - margin),
+        };
+        [x0, y0, x0 + pw, y0 + ph]
+    }
+
+    /// The terrain height from the finest loaded tile covering a position.
+    pub fn ground(&self, lat: f64, lon: f64) -> Option<f64> {
+        (0..=TILE_MAX_Z).rev().find_map(|z| {
+            let k = TileKey::containing(lat, lon, z);
+            let tile = self.tiles.get(&k)?;
+            let (u, v) = (
+                crate::geo::lon_to_merc_u(lon) * (1u64 << z) as f64 - k.x as f64,
+                crate::geo::lat_to_merc_v(lat) * (1u64 << z) as f64 - k.y as f64,
+            );
+            Some(height_on_grid(&tile.heights, u, v))
+        })
+    }
+
+    fn evict(&mut self, in_use: &HashSet<TileKey>) {
+        if self.buildings.len() > MAX_BUILDING_TILES {
+            let shown: HashSet<TileKey> = self.visible_buildings.iter().copied().collect();
+            let mut old: Vec<_> = self
+                .buildings
+                .iter()
+                .filter(|(k, _)| !shown.contains(*k))
+                .map(|(k, b)| (b.last_used, *k))
+                .collect();
+            old.sort_unstable();
+            for (_, k) in old.into_iter().take(self.buildings.len() - MAX_BUILDING_TILES) {
+                self.buildings.remove(&k);
+            }
+        }
+        let overlays = self.tiles.values().filter(|t| t.overlay.is_some()).count();
+        if overlays > MAX_OVERLAYS {
+            let mut old: Vec<_> = self
+                .tiles
+                .iter()
+                .filter(|(k, t)| t.overlay.is_some() && !in_use.contains(*k))
+                .map(|(k, t)| (t.last_used, *k))
+                .collect();
+            old.sort_unstable();
+            for (_, k) in old.into_iter().take(overlays - MAX_OVERLAYS) {
+                if let Some(tile) = self.tiles.get_mut(&k) {
+                    tile.overlay = None;
+                }
+            }
+        }
+        if self.tiles.len() <= MAX_TILES {
+            return;
+        }
+        let mut old: Vec<_> = self
+            .tiles
+            .iter()
+            .filter(|(k, _)| !in_use.contains(*k))
+            .map(|(k, t)| (t.last_used, *k))
+            .collect();
+        old.sort_unstable();
+        let excess = self.tiles.len() - MAX_TILES;
+        for (_, k) in old.into_iter().take(excess) {
+            self.tiles.remove(&k);
+        }
+    }
+
+    pub fn set_panel(&mut self, i: usize, content: &str, max_cols: usize, scale: usize) {
+        let p = &self.panels[i];
+        if p.text == content && p.max_cols == max_cols && p.scale == scale {
+            return;
+        }
+        let lines = text::wrap(content, max_cols);
+        let (w, h, rgba) = text::rasterize(&lines, scale);
+        let same_size = p.width == w && p.height == h && p.texture.is_some();
+        if !same_size {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("panel"),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("panel"),
+                layout: &self.panel_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: self.panels[i].uniform.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.panel_sampler) },
+                ],
+            });
+            let p = &mut self.panels[i];
+            p.texture = Some(texture);
+            p.bind_group = Some(bind);
+        }
+        let p = &mut self.panels[i];
+        p.text = content.to_string();
+        p.width = w;
+        p.height = h;
+        p.max_cols = max_cols;
+        p.scale = scale;
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: p.texture.as_ref().unwrap(),
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &rgba,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+    }
+
+    fn place_panel(&self, i: usize, corner: Corner, width: u32, height: u32) {
+        let r = self.panel_rect(i, corner, width, height).map(|v| v as f32);
+        let (sw, sh) = (width as f32, height as f32);
+        let clip_x = |x: f32| x / sw * 2.0 - 1.0;
+        let clip_y = |y: f32| 1.0 - y / sh * 2.0;
+        let rect = [clip_x(r[0]), clip_y(r[1]), clip_x(r[2]), clip_y(r[3])];
+        self.queue.write_buffer(&self.panels[i].uniform, 0, bytemuck::cast_slice(&rect));
+    }
+
+    fn depth_view(&mut self, width: u32, height: u32) -> wgpu::TextureView {
+        if let Some((view, w, h)) = &self.depth {
+            if *w == width && *h == height {
+                return view.clone();
+            }
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("depth"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: self.samples,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        self.depth = Some((view.clone(), width, height));
+        view
+    }
+
+    /// The image to draw into when anti-aliasing, which is then resolved into the target.
+    fn msaa_view(&mut self, width: u32, height: u32) -> Option<wgpu::TextureView> {
+        if self.samples <= 1 {
+            return None;
+        }
+        if let Some((view, w, h)) = &self.msaa {
+            if *w == width && *h == height {
+                return Some(view.clone());
+            }
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("multisampled colour"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: self.samples,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        self.msaa = Some((view.clone(), width, height));
+        Some(view)
+    }
+
+    pub fn draw(
+        &mut self,
+        target: &wgpu::TextureView,
+        (width, height): (u32, u32),
+        cam: &Camera,
+        altitude: f64,
+        draw: &[TileKey],
+        before_submit: impl FnOnce(&mut wgpu::CommandEncoder),
+    ) {
+        self.frame_no += 1;
+        let aspect = width as f64 / height.max(1) as f64;
+        let basis = cam.basis();
+        let near = cam.near_plane(altitude);
+        let vec4 = |v: DVec3, w: f64| [v.x as f32, v.y as f32, v.z as f32, w as f32];
+        let uniform = FrameUniform {
+            view_proj: cam.view_proj(aspect, near).to_cols_array_2d(),
+            cam: vec4(basis.pos / A, (FOV_Y / 2.0).tan()),
+            right: vec4(basis.right, aspect),
+            up: vec4(basis.up, 0.0),
+            look: vec4(basis.look, 0.0),
+            viewport: [width as f32, height as f32, 0.0, 0.0],
+        };
+        self.queue.write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
+
+        let in_use: HashSet<TileKey> = draw.iter().copied().collect();
+        let mut origins: Vec<[f32; 3]> = Vec::with_capacity(draw.len() + 1);
+        origins.push((-basis.pos).as_vec3().to_array());
+        for k in draw {
+            let t = self.tiles.get_mut(k).expect("drawn tile is loaded");
+            t.last_used = self.frame_no;
+            origins.push((t.center - basis.pos).as_vec3().to_array());
+        }
+        // Building instances follow those of the tiles.
+        let first_building = origins.len() as u32;
+        let shown: Vec<TileKey> = self
+            .visible_buildings
+            .iter()
+            .copied()
+            .filter(|k| self.buildings.contains_key(k))
+            .collect();
+        for k in &shown {
+            if let Some(b) = self.buildings.get_mut(k) {
+                b.last_used = self.frame_no;
+                origins.push((b.center - basis.pos).as_vec3().to_array());
+            }
+        }
+        if origins.len() > self.instance_capacity {
+            self.instance_capacity = origins.len().next_power_of_two();
+            self.instances = create_instance_buffer(&self.device, self.instance_capacity);
+        }
+        self.queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(&origins));
+
+        self.place_panel(0, Corner::BottomLeft, width, height);
+        self.place_panel(1, Corner::TopRight, width, height);
+        let depth = self.depth_view(width, height);
+        let msaa = self.msaa_view(width, height);
+        // With anti-aliasing the target only receives the resolved image.
+        let (view, resolve_target, store) = match &msaa {
+            Some(m) => (m, Some(target), wgpu::StoreOp::Discard),
+            None => (target, None, wgpu::StoreOp::Store),
+        };
+
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("globe"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_bind_group(0, &self.frame_bind, &[]);
+            pass.set_pipeline(&self.sky_pipeline);
+            pass.draw(0..3, 0..1);
+
+            pass.set_pipeline(&self.tile_pipeline);
+            pass.set_vertex_buffer(1, self.instances.slice(..));
+
+            pass.set_bind_group(1, &self.underlay_bind, &[]);
+            pass.set_bind_group(2, &self.no_overlay, &[]);
+            pass.set_vertex_buffer(0, self.underlay_vertices.slice(..));
+            pass.set_index_buffer(self.underlay_indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..self.underlay_count, 0, 0..1);
+
+            pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+            for (i, k) in draw.iter().enumerate() {
+                let t = &self.tiles[k];
+                let instance = i as u32 + 1;
+                let overlay = t.overlay.as_ref().filter(|_| self.roads_visible);
+                pass.set_bind_group(1, &t.bind_group, &[]);
+                pass.set_bind_group(2, overlay.unwrap_or(&self.no_overlay), &[]);
+                pass.set_vertex_buffer(0, t.vertices.slice(..));
+                pass.draw_indexed(0..self.index_count, 0, instance..instance + 1);
+            }
+
+            if !shown.is_empty() {
+                pass.set_pipeline(&self.building_pipeline);
+                pass.set_vertex_buffer(1, self.instances.slice(..));
+                for (i, k) in shown.iter().enumerate() {
+                    let b = &self.buildings[k];
+                    let instance = first_building + i as u32;
+                    pass.set_vertex_buffer(0, b.vertices.slice(..));
+                    pass.set_index_buffer(b.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..b.index_count, 0, instance..instance + 1);
+                }
+            }
+
+            if self.label_count > 0 {
+                pass.set_pipeline(&self.label_pipeline);
+                pass.set_bind_group(1, &self.label_bind, &[]);
+                pass.set_vertex_buffer(0, self.label_instances.slice(..));
+                pass.draw(0..4, 0..self.label_count);
+            }
+
+            pass.set_pipeline(&self.panel_pipeline);
+            for p in &self.panels {
+                if let Some(bind) = &p.bind_group {
+                    pass.set_bind_group(1, bind, &[]);
+                    pass.draw(0..4, 0..1);
+                }
+            }
+        }
+        before_submit(&mut encoder);
+        self.queue.submit([encoder.finish()]);
+        self.evict(&in_use);
+    }
+}
+
+fn create_label_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("label instances"),
+        size: (capacity * size_of::<LabelInstance>()) as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("instances"),
+        size: (capacity * size_of::<[f32; 3]>()) as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+/// Bilinear lookup on a tile's mesh heights, with `u` and `v` in 0..1.
+fn height_on_grid(heights: &[f32], u: f64, v: f64) -> f64 {
+    let n = GRID as f64;
+    let (x, y) = ((u * n).clamp(0.0, n), (v * n).clamp(0.0, n));
+    let (x0, y0) = ((x as usize).min(GRID - 1), (y as usize).min(GRID - 1));
+    let (fx, fy) = (x - x0 as f64, y - y0 as f64);
+    let at = |i: usize, j: usize| heights[j * (GRID + 1) + i] as f64;
+    let top = at(x0, y0) * (1.0 - fx) + at(x0 + 1, y0) * fx;
+    let bottom = at(x0, y0 + 1) * (1.0 - fx) + at(x0 + 1, y0 + 1) * fx;
+    top * (1.0 - fy) + bottom * fy
+}
+
+/// A position as readable text.
+pub fn hemisphere_label(lat: f64, lon: f64) -> String {
+    format!(
+        "{:.4}° {}  {:.4}° {}",
+        lat.to_degrees().abs(),
+        if lat >= 0.0 { 'N' } else { 'S' },
+        lon.to_degrees().abs(),
+        if lon >= 0.0 { 'E' } else { 'W' },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_height_lookup_interpolates() {
+        let side = GRID + 1;
+        let heights: Vec<f32> = (0..side * side).map(|i| (i % side) as f32).collect();
+        assert_eq!(height_on_grid(&heights, 0.0, 0.5), 0.0);
+        assert_eq!(height_on_grid(&heights, 1.0, 0.5), GRID as f64);
+        assert!((height_on_grid(&heights, 0.5, 0.5) - GRID as f64 / 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn hemisphere_labels() {
+        assert_eq!(hemisphere_label(0.5f64.to_radians(), -1.25f64.to_radians()), "0.5000° N  1.2500° W");
+        assert_eq!(hemisphere_label(-0.5f64.to_radians(), 1.25f64.to_radians()), "0.5000° S  1.2500° E");
+    }
+
+    #[test]
+    fn underlay_covers_both_poles() {
+        let (v, i) = underlay_mesh();
+        let (mut north, mut south) = (false, false);
+        for p in &v {
+            north |= p.pos[2] > 6_356_000.0;
+            south |= p.pos[2] < -6_356_000.0;
+        }
+        assert!(north && south);
+        assert!(i.iter().all(|&n| (n as usize) < v.len()));
+        // Antarctica is ice, and the Arctic cap matches the water around it.
+        let south_pole = v.iter().min_by(|a, b| a.pos[2].total_cmp(&b.pos[2])).unwrap();
+        let north_pole = v.iter().max_by(|a, b| a.pos[2].total_cmp(&b.pos[2])).unwrap();
+        assert_eq!(south_pole.uv[1], 0.25);
+        assert_eq!(north_pole.uv[1], 0.75);
+    }
+}
