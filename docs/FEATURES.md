@@ -560,6 +560,16 @@ The second icon at the bottom right, between the clock and the question mark, an
 
 With `--config-dir DIR`, a click on an option writes `DIR/settings.json`, and another run with the same DIR shows the same state.
 
+## Recording the window
+
+`--record DIR` keeps what the window shows, to look at a fault afterwards. DIR has to be new or empty, so that no earlier recording is overwritten.
+
+- `DIR/frames/NNNNNN.png` is each drawn frame, as it was on screen but without the mouse pointer. The window only draws when something changes, so a still view gives no frames.
+- `DIR/frames.jsonl` has one JSON line per drawn frame (time, view, clock, tiles, pointer and image), and one per click, wheel turn, key, resize or change of focus. Keys pressed while the search or add box is open are noted without saying which, so that what is typed stays out of it. The lines are written as they happen, so they survive a crash.
+- `--record-limit GIB` (default 4) deletes the oldest images beyond that size, so the end of a long session is always kept. The log keeps all of it.
+
+Copying and encoding run beside the drawing. When they fall behind, a frame loses its image: its log line then has `"image": null`, or a later `lost_image` line names it. The count is printed when the window closes. Recording can't go with `--screenshot` or `--serve-cache`.
+
 ## How far this is tested
 
 The logic is covered by unit tests, which use neither the network nor a GPU, and the display is checked in saved images. Automated checks can't drive a real window, which leaves these with no automated check:

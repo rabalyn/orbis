@@ -24,6 +24,7 @@ mod overlay;
 mod pacing;
 mod planetary;
 mod planets;
+mod recorder;
 mod render;
 mod import;
 mod import_draw;
@@ -147,6 +148,9 @@ Usage: orbis [options]
   --spacemouse-sensitivity N  scale SpaceMouse speed (default 1)
   --fps 120|90            frame rate limit (default 120, key F switches)
   --benchmark SECONDS     turn the view in the window, print frame timings and exit
+  --record DIR            keep every drawn frame of the window as an image in the new folder DIR, with a log
+                          of the view, the time and the input in DIR/frames.jsonl
+  --record-limit GIB      keep only the newest images up to this size (default 4)
   --cache-dir PATH        tile cache location
   --cache-limit GB        largest size of the tile cache (default 10)
   --cache-status          print the cache size and server timeouts, then exit
@@ -245,6 +249,9 @@ struct Args {
     spacemouse: bool,
     spacemouse_sensitivity: f64,
     benchmark: Option<f64>,
+    /// `--record`: the folder for this run's frames.
+    record: Option<PathBuf>,
+    record_limit_gib: f64,
     cache_limit_gib: u64,
     cache_status: bool,
     offline: bool,
@@ -333,6 +340,8 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
         spacemouse: true,
         spacemouse_sensitivity: 1.0,
         benchmark: None,
+        record: None,
+        record_limit_gib: 4.0,
         cache_limit_gib: CACHE_LIMIT_GIB,
         cache_status: false,
         offline: false,
@@ -577,6 +586,13 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
                     bail!("--benchmark expects a positive number of seconds");
                 }
                 a.benchmark = Some(seconds);
+            }
+            "--record" => a.record = Some(value.into()),
+            "--record-limit" => {
+                a.record_limit_gib = num()?;
+                if !(a.record_limit_gib > 0.0) {
+                    bail!("--record-limit expects a positive number of GiB");
+                }
             }
             "--lang" => {
                 if !value.chars().all(|c| c.is_ascii_alphabetic()) {
@@ -2777,6 +2793,43 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
+/// What a recording notes about a drawn frame. Angles are in degrees and distances in metres,
+/// as the command line takes them, so that a frame's view can be asked for again.
+fn frame_state(scene: &Scene, size: (u32, u32), dt: f64, draw: &[TileKey]) -> serde_json::Value {
+    let cam = &scene.nav.cam;
+    let (map_lat, map_lon) = scene.map.view.centre_lat_lon();
+    serde_json::json!({
+        "dt": dt,
+        "size": [size.0, size.1],
+        "mode": format!("{:?}", scene.mode),
+        "body": body::current().name,
+        "camera": {
+            "lat": cam.lat.to_degrees(),
+            "lon": cam.lon.to_degrees(),
+            "target_h": cam.target_h,
+            "distance": cam.distance,
+            "heading": cam.heading.to_degrees(),
+            "tilt": cam.tilt.to_degrees(),
+            "sky": cam.sky.to_degrees(),
+        },
+        "altitude": scene.nav.altitude,
+        "lifted": scene.nav.lifted,
+        "map": {
+            "lat": map_lat.to_degrees(),
+            "lon": map_lon.to_degrees(),
+            "metres_per_pixel": scene.map.view.metres_per_pixel(),
+            "projection": scene.map.view.projection.name(),
+        },
+        "clock": scene.clock.label(),
+        "tiles_drawn": draw.len(),
+        "finest_z": draw.iter().map(|k| k.z).max(),
+        "tiles_waiting": scene.waiting,
+        "tiles_retrying": scene.retrying,
+        "loader_idle": scene.loader.is_idle(),
+        "notice": scene.notice,
+    })
+}
+
 struct Gfx {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -2790,6 +2843,7 @@ struct Gfx {
     redraw_wanted: bool,
     present_mode: wgpu::PresentMode,
     benchmark: Option<Benchmark>,
+    recorder: Option<recorder::Recorder>,
 }
 
 /// Turns the view steadily, so that frame timing can be measured without any input.
@@ -2846,8 +2900,18 @@ impl App {
             .find(wgpu::TextureFormat::is_srgb)
             .unwrap_or(caps.formats[0]);
         config.present_mode = pacing::present_mode(&caps.present_modes);
+        if self.args.record.is_some() {
+            if !caps.usages.contains(wgpu::TextureUsages::COPY_SRC) {
+                bail!("--record cannot read this window's surface on this graphics adapter");
+            }
+            config.usage |= wgpu::TextureUsages::COPY_SRC;
+        }
         surface.configure(&device, &config);
         let samples = render::sample_count(&adapter, config.format);
+        let recorder = match &self.args.record {
+            Some(dir) => Some(recorder::Recorder::start(dir, self.args.record_limit_gib, device.clone(), config.format)?),
+            None => None,
+        };
         let renderer = Renderer::new(device, queue, config.format, samples);
         let mut scene = Scene::new(&self.args, DVec2::new(w as f64, h as f64));
         scene.start_feeds(&self.args);
@@ -2869,6 +2933,7 @@ impl App {
             meter: RateMeter::default(),
             redraw_wanted: true,
             benchmark,
+            recorder,
         })
     }
 
@@ -2917,9 +2982,21 @@ impl App {
         let draw = gfx.scene.draw.clone();
         gfx.scene.prepare_draw(&mut gfx.renderer);
         let (cam, altitude) = (gfx.scene.nav.cam, gfx.scene.nav.altitude);
-        gfx.renderer.draw(&view, (w, h), &cam, altitude, &draw, |_| {});
+        let (number, slot) = gfx.recorder.as_mut().map_or((0, None), |rec| rec.begin(w, h));
+        gfx.renderer.draw(&view, (w, h), &cam, altitude, &draw, |encoder| {
+            if let Some(slot) = &slot {
+                slot.copy(encoder, &frame.texture);
+            }
+        });
         gfx.window.pre_present_notify();
         gfx.renderer.queue.present(frame);
+        if let Some(rec) = &mut gfx.recorder {
+            let has_image = slot.is_some();
+            if let Some(slot) = slot {
+                rec.submitted(slot);
+            }
+            rec.log_frame(number, has_image, frame_state(&gfx.scene, (w, h), dt, &draw));
+        }
 
         // Tiles only waiting out a retry delay are picked up by the slow tick instead.
         let scene = &gfx.scene;
@@ -2927,6 +3004,41 @@ impl App {
         if scene.nav.is_animating() || scene.map.is_animating() || scene.clock.is_fast() || loading || scene.labels_changing() || gfx.benchmark.is_some() {
             gfx.redraw_wanted = true;
         }
+    }
+
+    /// Notes an input in the recording, before it is acted on. What is typed into a text box
+    /// stays out of the log, and the pointer's way is kept with the frames, not move by move.
+    fn record_input(gfx: &mut Gfx, mods: Mods, event: &WindowEvent) {
+        let typing = gfx.scene.search.is_open();
+        let Some(rec) = &mut gfx.recorder else { return };
+        let mods = serde_json::json!({ "shift": mods.shift, "alt": mods.alt, "ctrl": mods.ctrl });
+        let input = match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                rec.cursor = Some((position.x, position.y));
+                return;
+            }
+            WindowEvent::CursorLeft { .. } => {
+                rec.cursor = None;
+                return;
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                serde_json::json!({ "kind": "button", "button": format!("{button:?}"), "state": format!("{state:?}"), "mods": mods, "cursor": rec.cursor })
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                serde_json::json!({ "kind": "wheel", "delta": format!("{delta:?}"), "mods": mods, "cursor": rec.cursor })
+            }
+            WindowEvent::KeyboardInput { event, .. } if typing => {
+                serde_json::json!({ "kind": "typing", "state": format!("{:?}", event.state) })
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                serde_json::json!({ "kind": "key", "key": format!("{:?}", event.physical_key), "state": format!("{:?}", event.state), "repeat": event.repeat, "mods": mods })
+            }
+            WindowEvent::Resized(size) => serde_json::json!({ "kind": "resized", "width": size.width, "height": size.height }),
+            WindowEvent::Focused(focused) => serde_json::json!({ "kind": "focused", "focused": focused }),
+            WindowEvent::CloseRequested => serde_json::json!({ "kind": "close" }),
+            _ => return,
+        };
+        rec.log_input(input);
     }
 
     /// Prints the measurements of a finished benchmark.
@@ -3057,12 +3169,17 @@ impl ApplicationHandler<UserEvent> for App {
                     wake = g.pacer.next_frame_at();
                 }
             }
+            // Frames on their way are picked up even if nothing more is drawn.
+            if g.recorder.as_mut().is_some_and(recorder::Recorder::collect) {
+                wake = wake.min(now + Duration::from_millis(5));
+            }
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         let Some(gfx) = &mut self.gfx else { return };
+        Self::record_input(gfx, self.mods, &event);
         let nav = &mut gfx.scene.nav;
         let map = &mut gfx.scene.map;
         let atlas = gfx.scene.mode == Mode::Atlas;
@@ -3386,6 +3503,9 @@ fn main() -> Result<()> {
     service_ui::Control::new(args.services.library(), body::current().surface_data)
         .choose_at_start(args.services.base.as_deref(), args.services.overlay.as_deref(), args.services.opacity)
         .map_err(|e| anyhow!(e))?;
+    if args.record.is_some() && (args.serve_cache || args.screenshot.is_some()) {
+        bail!("--record records the window, so it cannot go with --screenshot or --serve-cache");
+    }
     if args.serve_cache {
         return serve_cache(&args);
     }
@@ -3550,6 +3670,17 @@ mod tests {
         assert!(parse(&["--fps", "60"]).is_err());
         assert_eq!(parse(&["--benchmark", "5"]).unwrap().unwrap().benchmark, Some(5.0));
         assert!(parse(&["--benchmark", "0"]).is_err());
+    }
+
+    #[test]
+    fn record_options() {
+        let a = parse(&[]).unwrap().unwrap();
+        assert!(a.record.is_none());
+        let a = parse(&["--record", "run1", "--record-limit", "0.5"]).unwrap().unwrap();
+        assert_eq!(a.record, Some(PathBuf::from("run1")));
+        assert_eq!(a.record_limit_gib, 0.5);
+        assert!(parse(&["--record-limit", "0"]).is_err());
+        assert!(parse(&["--record-limit", "NaN"]).is_err());
     }
 
     #[test]
