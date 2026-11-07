@@ -29,6 +29,8 @@ mod places;
 mod eclipse;
 mod event_feeds;
 mod events;
+mod flight;
+mod pick;
 mod ephemeris;
 mod search;
 mod service_ui;
@@ -181,6 +183,9 @@ Usage: orbis [options]
   --help-scroll N         with --screenshot, scroll the help window down by N wheel notches (implies --show-help)
   --simulate-click X,Y    with --screenshot, click there (pixels from the top left) before the image is taken,
                           through the same code as a real click; repeatable, in order
+  --simulate-double-click X,Y  likewise a double click: flies there smoothly, and the image is taken at the
+                          end of the flight (a label under the point is flown to, else the ground)
+  --flight-stop-at T      with --simulate-double-click, take the image T seconds into the flight instead
   --serve-cache           run as a LAN cache server, with no window
   --share-cache           also offer this cache on the LAN, and use others found there
   --cache-server HOST:PORT  use this LAN cache server (repeatable)
@@ -244,6 +249,8 @@ struct Args {
     show_options: bool,
     help_scroll: f64,
     simulate_clicks: Vec<DVec2>,
+    simulate_doubles: Vec<DVec2>,
+    flight_stop_at: Option<f64>,
 }
 
 fn locale_language() -> String {
@@ -319,6 +326,8 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
         show_options: false,
         help_scroll: 0.0,
         simulate_clicks: Vec::new(),
+        simulate_doubles: Vec::new(),
+        flight_stop_at: None,
         geocoder_url: geocode::DEFAULT_SERVICE.to_string(),
     };
     while let Some(flag) = it.next() {
@@ -547,6 +556,12 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
                 a.help_scroll = num()?;
                 a.show_help = true;
             }
+            "--simulate-double-click" => {
+                let (x, y) = value.split_once(',').ok_or_else(|| anyhow!("--simulate-double-click expects X,Y"))?;
+                let n = |v: &str| v.trim().parse::<f64>().context("--simulate-double-click expects X,Y");
+                a.simulate_doubles.push(DVec2::new(n(x)?, n(y)?));
+            }
+            "--flight-stop-at" => a.flight_stop_at = Some(value.parse().context("--flight-stop-at expects seconds")?),
             "--simulate-click" => {
                 let (x, y) = value.split_once(',').ok_or_else(|| anyhow!("--simulate-click expects X,Y"))?;
                 let n = |v: &str| v.trim().parse::<f64>().context("--simulate-click expects X,Y");
@@ -605,6 +620,8 @@ struct Scene {
     text: TextWorker,
     /// How visible each label on screen is, as it fades in.
     label_alpha: HashMap<u64, f64>,
+    /// The labels as placed in the last frame, for finding what a click lands on.
+    placed_labels: Vec<pick::PlacedLabel>,
     labels_shown: usize,
     /// Tiles known to have no buildings.
     building_empty: HashSet<TileKey>,
@@ -892,6 +909,7 @@ impl Scene {
             label_sets: HashMap::new(),
             text: TextWorker::new(),
             label_alpha: HashMap::new(),
+            placed_labels: Vec::new(),
             labels_shown: 0,
             building_empty: HashSet::new(),
             building_retries: HashMap::new(),
@@ -1131,8 +1149,10 @@ impl Scene {
         if click.kind == clicks::ClickKind::Double {
             if self.mode == Mode::Atlas {
                 self.map.double_click(click.pos, click.mods.shift);
-            } else {
-                self.nav.double_click(click.pos, click.mods);
+            } else if let Some(target) = pick::pick(click.pos, &self.placed_labels, self.nav.ground_at(click.pos)) {
+                let (lat, lon) = target.position();
+                let distance = pick::end_distance(&target, self.nav.cam.distance, click.mods.shift);
+                self.nav.fly_smoothly(Camera { lat, lon, distance, ..self.nav.cam });
             }
         }
         self.on_map_click(click);
@@ -1141,6 +1161,15 @@ impl Scene {
     /// The hook for what a click on the map means (picking a place, flying there). It is
     /// called for single clicks after the double-click window and for double clicks.
     fn on_map_click(&mut self, _click: clicks::Click) {}
+
+    /// A double click at a point, as the window would deliver it.
+    fn simulate_double_click(&mut self, pos: DVec2) {
+        self.mouse_moved(pos);
+        for _ in 0..2 {
+            self.mouse_pressed(Button::Left, Mods::default());
+            self.mouse_released(Button::Left, Mods::default());
+        }
+    }
 
     /// A left click at a point, as the window would deliver it.
     fn simulate_click(&mut self, pos: DVec2) {
@@ -1555,6 +1584,7 @@ impl Scene {
             if self.map.view.size != (size.x, size.y) {
                 self.map.resize(size);
             }
+            self.map.tick(dt);
             atlas::select(&self.map.view, &|k| r.has_tile(k), sources::max_tile_z)
         } else {
             {
@@ -1567,8 +1597,16 @@ impl Scene {
                 height_px: aspect_height.1,
                 max_z: sources::max_tile_z,
             };
-            view.select(&|k| r.has_tile(k))
+            let mut selection = view.select(&|k| r.has_tile(k));
+            // During a flight only the tiles of the view it lands on are asked for, early; the
+            // views passed on the way are drawn from what is there, and cost no downloads.
+            if let Some(goal) = self.nav.flight_goal() {
+                let at_goal = View { basis: goal.basis(), ..view };
+                selection.wanted = at_goal.select(&|k| r.has_tile(k)).wanted;
+            }
+            selection
         };
+        let flying = self.nav.flight_goal().is_some() && !atlas;
         let now = Instant::now();
         let wanted: Vec<TileKey> = selection
             .wanted
@@ -1587,8 +1625,8 @@ impl Scene {
 
         let mut overlays = Vec::new();
         // Labels are placed on the globe only.
-        let labels_wanted = self.names_on() && !atlas;
-        if body::current().surface_data && (self.lines_on() || labels_wanted) {
+        let labels_wanted = self.names_on() && !atlas && !flying;
+        if body::current().surface_data && ((self.lines_on() && !flying) || labels_wanted) {
             for &k in &self.draw {
                 let lines_needed = !r.has_overlay(k) && !self.overlay_empty.contains(&k);
                 if !lines_needed && (!labels_wanted || self.label_sets.contains_key(&vector_source(k))) {
@@ -1606,7 +1644,7 @@ impl Scene {
             }
         }
         let mut building_jobs = Vec::new();
-        let visible = if body::current().surface_data && self.view.buildings && !atlas { building_tiles(&self.draw) } else { Vec::new() };
+        let visible = if body::current().surface_data && self.view.buildings && !atlas && !flying { building_tiles(&self.draw) } else { Vec::new() };
         for &k in &visible {
             if r.has_buildings(k) || self.building_empty.contains(&k) {
                 continue;
@@ -1641,6 +1679,7 @@ impl Scene {
         if !self.names_on() || self.mode == Mode::Atlas {
             r.set_labels(&[]);
             self.label_alpha.clear();
+            self.placed_labels.clear();
             return;
         }
         let sources: HashSet<TileKey> = self.draw.iter().map(|k| vector_source(*k)).collect();
@@ -1698,6 +1737,14 @@ impl Scene {
         let ground = |lat: f64, lon: f64| r.ground(lat, lon);
         let placed = labels::place(&screen, &candidates, &ground);
 
+        self.placed_labels = placed
+            .iter()
+            .map(|p| {
+                let rect = details[p.index].0;
+                let half = DVec2::new(rect.w as f64, rect.h as f64) / 2.0;
+                pick::PlacedLabel::new(candidates[p.index].0, p.center, half, p.angle)
+            })
+            .collect();
         let mut alpha = HashMap::with_capacity(placed.len());
         let atlas = ATLAS_SIZE as f32;
         let instances: Vec<LabelInstance> = placed
@@ -2090,6 +2137,7 @@ impl Scene {
             }
         }
         self.map.release();
+        self.map.stop();
     }
 
     /// A SpaceMouse button: the same as Ctrl-0 and Ctrl-Alt-N.
@@ -2212,6 +2260,9 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     // Clicks are made once everything has loaded, so they land on what the picture shows: the
     // credits, which dialogs sit above, depend on the tiles that arrived.
     let mut clicks = args.simulate_clicks.iter();
+    let mut doubles = args.simulate_doubles.iter();
+    // Seconds of flight played so far, while a flight is to be stopped in its middle.
+    let mut flight_clock: Option<f64> = None;
 
     let started = Instant::now();
     let mut quiet_since = Instant::now();
@@ -2222,15 +2273,27 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
         scene.place_labels(&mut r, (width, height), 1, step);
         r.flush_uploads();
         scene.poll_feeds();
-        if screenshot_busy(scene.loader.is_idle(), scene.waiting, scene.text.is_idle(), scene.feeds_pending, scene.nav.is_animating()) {
+        if let (Some(clock), Some(stop)) = (flight_clock.as_mut(), args.flight_stop_at) {
+            *clock += step;
+            if *clock >= stop {
+                scene.nav.freeze_flight();
+                flight_clock = None;
+            }
+        }
+        if screenshot_busy(scene.loader.is_idle(), scene.waiting, scene.text.is_idle(), scene.feeds_pending, scene.nav.is_animating() || scene.map.is_animating()) {
             quiet_since = Instant::now();
         } else if quiet_since.elapsed() > Duration::from_millis(300) {
             let pending: Vec<DVec2> = clicks.by_ref().copied().collect();
-            if pending.is_empty() {
+            let double: Vec<DVec2> = doubles.by_ref().copied().collect();
+            if pending.is_empty() && double.is_empty() {
                 break;
             }
             for pos in pending {
                 scene.simulate_click(pos);
+            }
+            for pos in double {
+                scene.simulate_double_click(pos);
+                flight_clock = args.flight_stop_at.map(|_| 0.0);
             }
             scene.persist();
             quiet_since = Instant::now();
@@ -2477,7 +2540,7 @@ impl App {
         // Tiles only waiting out a retry delay are picked up by the slow tick instead.
         let scene = &gfx.scene;
         let loading = !scene.loader.is_idle() || scene.waiting > scene.retrying;
-        if scene.nav.is_animating() || scene.clock.is_fast() || loading || scene.labels_changing() || gfx.benchmark.is_some() {
+        if scene.nav.is_animating() || scene.map.is_animating() || scene.clock.is_fast() || loading || scene.labels_changing() || gfx.benchmark.is_some() {
             gfx.redraw_wanted = true;
         }
     }
@@ -2756,6 +2819,7 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                         KeyCode::Escape => {
                             nav.stop();
+                            map.stop();
                             gfx.scene.notice = None;
                         }
                         KeyCode::Digit0 if self.mods.ctrl && atlas => map.key(atlas_nav::Key::Whole),

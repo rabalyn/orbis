@@ -19,7 +19,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("Shift-drag", "Climb or sink; look around from the same spot"),
             ("Scroll", "Zoom around the point under the pointer"),
             ("Alt-scroll / Shift-scroll", "Tilt / look around"),
-            ("Double-click, Shift-double-click", "Fly one level closer / farther"),
+            ("Double-click, Shift-double-click", "Fly smoothly to the point or place; one level closer / farther"),
         ],
     ),
     (

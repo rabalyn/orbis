@@ -24,7 +24,7 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | Shift-drag | Climb or sink (vertical), look around from the same spot (horizontal) |
 | Scroll | Zoom around the point under the pointer |
 | Alt-scroll / Shift-scroll | Tilt / look around |
-| Double-click, Shift-double-click | Fly one level closer or farther, centring on that point |
+| Double-click, Shift-double-click | Fly smoothly to the label or ground point under the pointer: one level closer (a place gets a distance that suits it), or with Shift one level farther |
 | Arrow keys | Fly forward, back and sideways; speed builds while held |
 | Alt-arrows | Tilt and turn around the view point |
 | Shift-arrows | Climb, sink and look around |
@@ -125,7 +125,7 @@ without lines and labels, and they appear once the server answers again.
   the whole map. Nothing is drawn outside the map's outline.
 - Mercator ends at 85.05° north and south, which is also where the imagery ends, so its map is square.
   The other projections show the polar caps in a plain colour (ice in the south, ocean in the north).
-- Drag moves the map, scroll zooms around the pointer, double-click centres and zooms in (Shift zooms out).
+- Drag moves the map, scroll zooms around the pointer, double-click flies smoothly to centre the point and zoom in (Shift zooms out).
   Dragging stops at the edge of the map and at the poles. Zooming out stops when the whole map fits.
 - Tiles are chosen for the scale on screen, about one texel per pixel, and only those in the window.
   At most 700 tiles are selected for a view.
@@ -493,7 +493,7 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
 
 ### Clicks on the map
 - A press and release on the map (not on a panel) is classified: further than 5 pixels apart, or held longer than 0.3 s, is a drag; otherwise a click. A second click within 0.4 s and 6 pixels of the first is a double click.
-- A single click is reported only once the double-click window has passed without a second click, so a double click never also gives a single one. A double click is reported at once and flies one level closer or farther, as before. Both go through one function (`Scene::on_map_click`) that does nothing yet; picking a place and flying are built on it.
+- A single click is reported only once the double-click window has passed without a second click, so a double click never also gives a single one. A double click is reported at once and starts a smooth flight (Milestone 14). Both go through one function (`Scene::on_map_click`); a single click does nothing yet, and picking a place for information is built on it.
 
 ### Help window
 - A small square with a question mark sits in the bottom right corner, always shown. Clicking it, or pressing H, ? or F1, shows or hides the window of keyboard and mouse controls. Its close button and Escape hide it (Escape does nothing else while it is open).
@@ -538,6 +538,25 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
 - Trails appear from tile zoom 15, service roads at 15, minor roads at 12, rail at 10 and ferries at 8, as before; at coarser views a switch changes nothing visible. Boundaries are drawn for country and state levels only. Park and other area names are not decoded from the map data, so "other names" has none of them. Trails and streets are told apart by the data's class only: a footway tagged as a path counts as a trail.
 - The map shows the flat map's lines and names as before: names are placed on the globe only.
 
+## Milestone 14: smooth flight on double-click (done, feel untried in a window)
+
+### Behaviour
+- A double click on the globe flies the view to what is under the pointer. A placed label under the pointer wins (the most important one where they overlap); otherwise it is the ground point. On the sky or in space nothing happens.
+- Plain ground is centred and the view comes one level closer (half the distance); with Shift it goes one level farther (double). A label is centred and the view ends at a distance that fits its kind: a country 4000 km, a sea 2000 km, a state 1200 km, a city about 12 to 37 km (bigger cities farther), a town 15 km, a village 6 km, a district 3 km, a peak 5 km, a lake 60 km, a road 20 km (on Earth; other bodies scale it). A click never takes the view farther out than it is: closer than the fit, it only centres. Shift on a label goes one level farther.
+- The path is that of van Wijk and Nuij, "Smooth and efficient zooming and panning" (IEEE InfoVis 2003) with their recommended rho of the square root of 2: over a long hop the view climbs, crosses and sinks again, so that the picture moves at a moderate speed. Speed along it is eased so the flight starts and ends at rest. It lasts 1.5 to 6 seconds, longer for a longer path. It goes the short way over the antimeridian and reaches the poles.
+- Heading and tilt stay the user's on short hops. High over a long hop the tilt eases towards straight down, so the globe does not swing, and the user's tilt returns at the end. The camera is kept above the terrain by the usual ground-following, and never inside the body. It works on every body.
+- Any drag, wheel turn, flying key, SpaceMouse movement or Escape ends the flight at once and the view stays where it is, with no jump. A double click during a flight starts a new one from the view as it is.
+- While flying, only the tiles of the view the flight lands on are requested, at once; the views passed on the way are drawn from what is already there, and names, lines and buildings are fetched after landing. A long flight costs no more downloads than arriving there directly. Frames are drawn only while the flight runs.
+- On the flat map a double click does the same pan and zoom with the same curve, in map units; there are no labels to pick.
+- Other automatic flights (search, places, Ctrl-0) keep their own, older path.
+- Headless: `--simulate-double-click X,Y` goes through the real routing, and `--flight-stop-at T` takes the image T seconds into the flight.
+
+### Limitations
+- The feel of the flight (speed, duration, the tilt easing) could only be judged from still images, not in a window.
+- Intermediate views of a long flight show what is cached; where nothing is, they show the coarsest imagery.
+- A label's distance depends only on its kind and the importance it was drawn with, not on the size of the place.
+- On the flat map a flight is a straight pan in map coordinates; near the edge of a projection it is clamped to the map.
+
 ## Later milestones
 
 Order and scope are open, and depend on which features are wanted.
@@ -545,7 +564,6 @@ Order and scope are open, and depend on which features are wanted.
 | # | Feature | Notes |
 |---|---|---|
 | M13 | Information on click | Clicking a place on the map, such as a city name, peak or sea, opens a box with relevant data from Wikipedia and Wikidata |
-| M14 | Smooth flight on double-click | Double-clicking land or a label flies there with an accelerating, smooth automatic flight |
 | M15 | Cast shadows | Terrain and buildings cast shadows calculated from their height and the Sun's position |
 | M16 | Time slider | A slider for travelling in time, moving the Sun, Moon and planets continuously, and with them shadows, day and night, and solar and lunar eclipses. Depends on M11, and on M15 for shadows. Dates beyond the range of the planet formulae (about 1800 to 2050) are limited or marked as less accurate |
 

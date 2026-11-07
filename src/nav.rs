@@ -71,6 +71,8 @@ struct Flight {
     cruise: f64,
     t: f64,
     duration: f64,
+    /// The smooth path, when the flight follows one; otherwise the older climb-and-sink.
+    curve: Option<crate::flight::Curve>,
 }
 
 pub struct Nav {
@@ -83,6 +85,8 @@ pub struct Nav {
     zoom_at: DVec2,
     arrows: Vec<HeldArrow>,
     flight: Option<Flight>,
+    /// A running flight is held where it is (for a saved image of its middle).
+    flight_frozen: bool,
     since_move: f64,
     /// Shaped SpaceMouse axes, held until the device reports new ones, and their scale.
     device: crate::spacemouse::Axes,
@@ -104,6 +108,7 @@ impl Nav {
             zoom_at: DVec2::ZERO,
             arrows: Vec::new(),
             flight: None,
+            flight_frozen: false,
             since_move: 0.0,
             device: [0.0; 6],
             device_sensitivity: 1.0,
@@ -151,7 +156,7 @@ impl Nav {
 
     /// True while something still changes without further input.
     pub fn is_animating(&self) -> bool {
-        self.flight.is_some()
+        (self.flight.is_some() && !self.flight_frozen)
             || self.glide != DVec3::ZERO
             || self.zoom_pending != 0.0
             || !self.arrows.is_empty()
@@ -230,14 +235,21 @@ impl Nav {
         self.cam.clamp();
     }
 
-    pub fn double_click(&mut self, pos: DVec2, mods: Mods) {
-        let Some(p) = self.cam.pick(self.ndc(pos), self.aspect()) else {
-            return;
-        };
+    /// The ground point under a screen position, as latitude and longitude. `None` over the sky.
+    pub fn ground_at(&self, pos: DVec2) -> Option<(f64, f64)> {
+        let p = self.cam.pick(self.ndc(pos), self.aspect())?;
         let (lat, lon, _) = ecef_to_geodetic(p);
-        let factor = if mods.shift { 2.0 } else { 0.5 };
-        let to = Camera { lat, lon, distance: self.cam.distance * factor, ..self.cam };
-        self.fly_to(to);
+        Some((lat, lon))
+    }
+
+    /// Holds a running flight where it is, as if time stood still for it.
+    pub fn freeze_flight(&mut self) {
+        self.flight_frozen = true;
+    }
+
+    /// The view a running flight is heading for.
+    pub fn flight_goal(&self) -> Option<Camera> {
+        self.flight.filter(|_| !self.flight_frozen).map(|f| f.to)
     }
 
     pub fn arrow_down(&mut self, arrow: Arrow, mods: Mods) {
@@ -339,6 +351,7 @@ impl Nav {
     pub fn fly_to(&mut self, mut to: Camera) {
         to.clamp();
         self.starting = false;
+        self.flight_frozen = false;
         self.drag = None;
         self.glide = DVec3::ZERO;
         self.zoom_pending = 0.0;
@@ -349,12 +362,31 @@ impl Nav {
         // Longer trips climb first, travel high and then sink.
         let cruise = (angle * radius() * 0.8).min(crate::body::scaled(1.5e7));
         let duration = (0.6 + angle * 1.5).min(4.0);
-        self.flight = Some(Flight { from_dir: a, arc, from, to, cruise, t: 0.0, duration });
+        self.flight = Some(Flight { from_dir: a, arc, from, to, cruise, t: 0.0, duration, curve: None });
+    }
+
+    /// Flies to a view on the smooth path of `crate::flight`: out and in again over a long
+    /// hop, turning towards straight down on the way so the body does not swing about. It
+    /// starts from wherever the view is now, also in the middle of another flight.
+    pub fn fly_smoothly(&mut self, mut to: Camera) {
+        to.clamp();
+        self.fly_to(to);
+        let Some(mut f) = self.flight else { return };
+        let angle = f.from_dir.dot(to.target().normalize()).clamp(-1.0, 1.0).acos();
+        let k = crate::flight::WIDTH_PER_DISTANCE;
+        let curve = crate::flight::Curve::new(angle * radius(), f.from.distance * k, to.distance * k);
+        f.duration = curve.duration();
+        f.curve = Some(curve);
+        self.flight = Some(f);
     }
 
     fn step_flight(&mut self, dt: f64) {
-        let Some(mut f) = self.flight else { return };
+        let Some(mut f) = self.flight.filter(|_| !self.flight_frozen) else { return };
         f.t = (f.t + dt / f.duration).min(1.0);
+        if let Some(curve) = f.curve {
+            self.step_smooth(&mut f, &curve);
+            return;
+        }
         let s = f.t * f.t * (3.0 - 2.0 * f.t);
         let dir = DQuat::IDENTITY.slerp(f.arc, s) * f.from_dir;
         let (lat, lon, _) = ecef_to_geodetic(dir * radius());
@@ -375,6 +407,36 @@ impl Nav {
             self.flight = None;
         } else {
             self.flight = Some(f);
+        }
+    }
+
+    fn step_smooth(&mut self, f: &mut Flight, curve: &crate::flight::Curve) {
+        let st = curve.at(f.t);
+        let dir = DQuat::IDENTITY.slerp(f.arc, st.along) * f.from_dir;
+        // The ground is not a sphere: the radius is blended between the two ends, so the
+        // start and the end line up with the views given.
+        let (r0, r1) = (f.from.target().length(), f.to.target().length());
+        let (lat, lon, _) = ecef_to_geodetic(dir * (r0 + (r1 - r0) * st.along));
+        self.cam.lat = lat;
+        self.cam.lon = lon;
+        let distance = st.width / crate::flight::WIDTH_PER_DISTANCE;
+        self.cam.distance = distance.min(max_distance());
+        self.cam.heading = f.from.heading + wrap(f.to.heading - f.from.heading) * st.eased;
+        // High above both ends the view turns towards straight down, and back again.
+        let rise = (distance / f.from.distance.max(f.to.distance)).ln().max(0.0) / 4f64.ln();
+        let down = rise.min(1.0).powi(2) * (3.0 - 2.0 * rise.min(1.0));
+        let tilt = f.from.total_tilt() + (f.to.total_tilt() - f.from.total_tilt()) * st.eased;
+        self.cam.set_total_tilt(tilt * (1.0 - down));
+        if f.t >= 1.0 {
+            self.cam.lat = f.to.lat;
+            self.cam.lon = f.to.lon;
+            self.cam.distance = f.to.distance;
+            self.cam.heading = f.to.heading;
+            self.cam.tilt = f.to.tilt;
+            self.cam.sky = f.to.sky;
+            self.flight = None;
+        } else {
+            self.flight = Some(*f);
         }
     }
 
@@ -655,16 +717,140 @@ mod tests {
         assert!((n.cam.distance / (d * 0.5) - 1.0).abs() < 1e-6);
     }
 
+    fn smooth_to(n: &mut Nav, lat: f64, lon: f64, distance: f64) {
+        let to = Camera { lat, lon, distance, ..n.cam };
+        n.fly_smoothly(to);
+    }
+
     #[test]
-    fn double_click_centres_and_closes_in() {
+    fn ground_under_the_pointer_is_found_and_the_sky_is_not() {
+        let n = nav();
+        let (lat, lon) = n.ground_at(DVec2::new(600.0, 400.0)).unwrap();
+        assert!((lat - n.cam.lat).abs() < 1e-6 && (lon - n.cam.lon).abs() < 1e-6);
+        let mut high = nav();
+        high.cam.distance = whole_body() * 3.0;
+        assert!(high.ground_at(DVec2::new(2.0, 2.0)).is_none());
+    }
+
+    #[test]
+    fn smooth_flight_ends_exactly_and_stops() {
         let mut n = nav();
-        let pos = DVec2::new(800.0, 300.0);
-        let p = n.cam.pick(n.ndc(pos), n.aspect()).unwrap();
+        n.cam.tilt = 0.6;
+        n.cam.heading = 0.4;
+        let tilt = n.cam.tilt;
+        smooth_to(&mut n, 0.3, 1.0, 2.0e4);
+        assert!(n.is_animating() && n.flight_goal().is_some());
+        run(&mut n, 8.0);
+        assert!(!n.is_animating() && n.flight_goal().is_none());
+        assert!((n.cam.lat - 0.3).abs() < 1e-9 && (n.cam.lon - 1.0).abs() < 1e-9);
+        assert!((n.cam.distance - 2.0e4).abs() < 1e-6);
+        assert_eq!((n.cam.tilt, n.cam.heading), (tilt, 0.4), "the user's heading and tilt come back");
+    }
+
+    #[test]
+    fn short_hops_keep_the_tilt_and_long_ones_look_down_on_the_way() {
+        let mut short = nav();
+        short.cam.distance = 1.0e4;
+        short.cam.tilt = 0.8;
+        let d = short.cam.distance;
+        let to = Camera { lat: short.cam.lat + 1.0e3 / 6.4e6, distance: d, ..short.cam };
+        short.fly_smoothly(to);
+        let mut least = 1.0f64;
+        let mut long = nav();
+        long.cam.distance = 1.0e4;
+        long.cam.tilt = 0.8;
+        smooth_to(&mut long, 0.0, 3.0, 1.0e4);
+        let mut least_long = 1.0f64;
+        for _ in 0..400 {
+            short.tick(0.02, NO_GROUND);
+            long.tick(0.02, NO_GROUND);
+            least = least.min(short.cam.tilt / 0.8);
+            least_long = least_long.min(long.cam.tilt / 0.8);
+        }
+        assert!(least > 0.9, "short {least}");
+        assert!(least_long < 0.05, "long {least_long}");
+    }
+
+    #[test]
+    fn smooth_flight_moves_without_jumps_and_stays_outside_the_body() {
+        let mut n = nav();
+        n.cam.tilt = 1.2;
+        smooth_to(&mut n, -0.5, -2.5, 3.0e3);
+        let mut last = n.cam.target();
+        let mut peak: f64 = 0.0;
+        while n.is_animating() {
+            n.tick(1.0 / 60.0, NO_GROUND);
+            let t = n.cam.target();
+            assert!((t - last).length() < 0.1 * n.cam.distance.max(1.0e5), "jump of {} m", (t - last).length());
+            last = t;
+            let pos = n.cam.basis().pos;
+            assert!(pos.length() > crate::geo::radius() * 0.999, "inside the body");
+            peak = peak.max(n.cam.distance);
+        }
+        assert!(peak > 5.0e6, "a long hop climbs, peak {peak}");
+    }
+
+    #[test]
+    fn smooth_flight_takes_the_short_way_over_the_antimeridian() {
+        let mut n = nav();
+        n.cam.lon = 3.0;
         let d = n.cam.distance;
-        n.double_click(pos, Mods::default());
-        run(&mut n, 5.0);
-        assert!((n.cam.target() - p).length() < 1.0);
-        assert!((n.cam.distance / (d * 0.5) - 1.0).abs() < 1e-6);
+        smooth_to(&mut n, 0.0, -3.0, d);
+        let mut crossed = false;
+        while n.is_animating() {
+            n.tick(0.02, NO_GROUND);
+            assert!(n.cam.lon.abs() > 2.9, "went the long way: {}", n.cam.lon);
+            crossed |= n.cam.lon < 0.0 && n.cam.lon > -std::f64::consts::PI;
+        }
+        assert!(crossed);
+    }
+
+    #[test]
+    fn smooth_flight_reaches_the_poles() {
+        let mut n = nav();
+        smooth_to(&mut n, std::f64::consts::FRAC_PI_2, 1.0, 5.0e4);
+        run(&mut n, 8.0);
+        assert!(n.cam.lat > 1.55 && n.cam.distance == 5.0e4);
+        assert!(n.cam.target().is_finite());
+    }
+
+    #[test]
+    fn a_new_flight_starts_from_where_the_view_is() {
+        let mut n = nav();
+        smooth_to(&mut n, 0.5, 2.0, 1.0e4);
+        for _ in 0..60 {
+            n.tick(0.02, NO_GROUND);
+        }
+        let here = n.cam.target();
+        smooth_to(&mut n, -0.5, 0.0, 1.0e4);
+        n.tick(0.0, NO_GROUND);
+        assert!((n.cam.target() - here).length() < 1.0, "no jump at the start");
+        n.press(Button::Left, DVec2::new(10.0, 10.0), Mods::default());
+        assert!(!n.is_animating(), "a touch ends it at once");
+        assert!((n.cam.target() - here).length() < 1.0);
+    }
+
+    #[test]
+    fn a_flight_never_dips_below_rising_ground() {
+        let mut n = nav();
+        n.cam.distance = 2.0e3;
+        n.cam.tilt = 1.3;
+        let ground: &dyn Fn(f64, f64) -> Option<f64> = &|_, _| Some(1500.0);
+        let (lat, lon) = (n.cam.lat, n.cam.lon);
+        smooth_to(&mut n, lat + 0.01, lon, 800.0);
+        for _ in 0..600 {
+            n.tick(0.02, ground);
+            let (_, _, h) = ecef_to_geodetic(n.cam.basis().pos);
+            assert!(h >= 1500.0 - 1.0, "below the ground: {h}");
+        }
+    }
+
+    #[test]
+    fn the_flight_goal_is_the_end_view() {
+        let mut n = nav();
+        smooth_to(&mut n, 0.1, 0.2, 7.0e3);
+        let g = n.flight_goal().unwrap();
+        assert_eq!((g.lat, g.lon, g.distance), (0.1, 0.2, 7.0e3));
     }
 
     #[test]
