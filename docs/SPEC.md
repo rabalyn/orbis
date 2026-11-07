@@ -29,12 +29,15 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | Alt-arrows | Tilt and turn around the view point |
 | Shift-arrows | Climb, sink and look around |
 | Ctrl-Up, Ctrl-Down | One level closer or farther |
-| Ctrl-0 | Whole Earth |
+| Ctrl-0 | Whole Earth, or the whole map on the map |
 | Ctrl-Alt-N | Straighten up, one step per press: north up, straight down, whole body, equator centred |
 | Escape | Stop a flight or a gliding movement |
 | R | Show or hide roads and boundaries |
 | L | Show or hide labels |
-| B | Show or hide 3D buildings |
+| B | Show or hide 3D buildings (globe only) |
+| M | Switch between the globe and the flat map, keeping place and scale |
+| P, Shift-P | On the map: next or previous projection |
+| [ and ] | On the map: move the central meridian west or east by 15°, or 1° with Shift |
 | F | Switch the frame rate limit between 120 and 90 fps |
 | Ctrl-Q | Quit |
 
@@ -93,6 +96,34 @@ without lines and labels, and they appear once the server answers again.
 - A building crossing a tile edge can show a small step if the ground differs between its two parts.
 - Lighting is fixed; it will follow the sun with M5.
 
+## Milestone 4: atlas (done)
+
+- M switches to a flat map of the Earth and back, or `--atlas PROJECTION` starts with it. The same
+  imagery, the same coarse-before-fine tile replacement and the same road and boundary lines are used.
+- Projections: Equal Earth, Mollweide, Hammer-Aitoff, Mercator and Plate Carrée (`equal-earth`,
+  `mollweide`, `hammer-aitoff`, `mercator`, `plate-carree`). P cycles through them.
+- The central meridian is the longitude at the middle of the map. `--central-meridian DEG` sets it, and
+  `[` and `]` move it. Tiles that cross the seam on the far side are cut there, so nothing wraps wrongly.
+- Every tile is drawn as a fine grid whose corners are projected exactly, so the picture is correct over
+  the whole map. Nothing is drawn outside the map's outline.
+- Mercator ends at 85.05° north and south, which is also where the imagery ends, so its map is square.
+  The other projections show the polar caps in a plain colour (ice in the south, ocean in the north).
+- Drag moves the map, scroll zooms around the pointer, double-click centres and zooms in (Shift zooms out).
+  Dragging stops at the edge of the map and at the poles. Zooming out stops when the whole map fits.
+- Tiles are chosen for the scale on screen, about one texel per pixel, and only those in the window.
+  At most 700 tiles are selected for a view.
+- Credits and the status panel stay. The coordinates are those of the point at the middle of the window,
+  and the status gives the projection, the central meridian and the metres per pixel at the equator.
+- Switching keeps the place and the scale; the whole-Earth globe gives the whole map.
+- `--lat`, `--lon` and `--distance` apply to the map as well: a `--distance` of the whole Earth or more shows the whole map.
+
+### Limitations
+- Labels, 3D buildings and terrain relief are not shown on the map.
+- The world is not repeated sideways: the map has one edge on each side, and dragging stops there.
+- Arrow keys do nothing on the map, and there is no glide after a drag.
+- The metres per pixel in the status are true only at the equator; other latitudes differ by projection.
+- Zooming past the finest imagery magnifies its texels, at most twofold.
+
 ## Caching, tile servers and imagery detail
 
 See [CACHING.md](CACHING.md): server timeouts, the local cache, the LAN cache server, and
@@ -112,7 +143,6 @@ Order and scope are open, and depend on which features are wanted.
 
 | # | Feature | Notes |
 |---|---|---|
-| M4 | Atlas | Equal Earth, Mollweide, Hammer-Aitoff, Mercator, Plate Carrée, with selectable central meridian |
 | M5 | Time, sun, day and night, sky | Stars, planets, looking up into the sky |
 | M6 | Other bodies | Moon, Mars, Mercury, Ceres, Vesta |
 | M7 | Search and saved places | Geocoding, plus KML, KMZ, GeoJSON, GPX and IGC import |

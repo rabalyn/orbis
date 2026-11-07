@@ -1,3 +1,5 @@
+mod atlas;
+mod atlas_nav;
 mod buildings;
 mod cache;
 mod camera;
@@ -17,6 +19,8 @@ mod text;
 mod vector;
 
 use anyhow::{anyhow, bail, Context, Result};
+use atlas::{AtlasView, Projection};
+use atlas_nav::AtlasNav;
 use cache::DiskCache;
 use camera::Camera;
 use fetcher::{Fetcher, Peers};
@@ -69,6 +73,9 @@ Usage: orbis [options]
   --tilt DEG              tilt, 0 is straight down
   --exaggeration N        terrain height factor (default 1)
   --lang CODE             language for names, such as de or en (default from the locale)
+  --atlas PROJECTION      show the flat map instead of the globe: equal-earth, mollweide,
+                          hammer-aitoff, mercator or plate-carree (key M switches, P cycles)
+  --central-meridian DEG  longitude at the middle of the map (default 0, keys [ and ])
   --no-roads              start with roads and boundaries hidden (key R)
   --no-labels             start with labels hidden (key L)
   --no-buildings          start with 3D buildings hidden (key B)
@@ -91,6 +98,9 @@ See docs/SPEC.md for the mouse and keyboard controls.";
 
 struct Args {
     cam: Camera,
+    /// The flat map's projection, when it is shown instead of the globe.
+    atlas: Option<Projection>,
+    central_meridian: f64,
     exaggeration: f32,
     cache_dir: PathBuf,
     screenshot: Option<PathBuf>,
@@ -131,6 +141,8 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             heading: 0.0,
             tilt: 0.0,
         },
+        atlas: None,
+        central_meridian: 0.0,
         exaggeration: 1.0,
         cache_dir: DiskCache::default_root(),
         screenshot: None,
@@ -195,6 +207,12 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             "--heading" => a.cam.heading = num()?.to_radians(),
             "--tilt" => a.cam.tilt = num()?.to_radians(),
             "--exaggeration" => a.exaggeration = num()? as f32,
+            "--atlas" => {
+                a.atlas = Some(Projection::parse(&value).ok_or_else(|| {
+                    anyhow!("--atlas expects equal-earth, mollweide, hammer-aitoff, mercator or plate-carree")
+                })?);
+            }
+            "--central-meridian" => a.central_meridian = atlas::wrap_lon(num()?.to_radians()),
             "--timeout" => a.timeout = num()?,
             "--cache-limit" => {
                 a.cache_limit_gib = value.parse().ok().filter(|n| *n > 0).ok_or_else(|| {
@@ -251,8 +269,17 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
 }
 
 /// Everything between input and drawing that does not depend on a window.
+/// What the window shows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Mode {
+    Globe,
+    Atlas,
+}
+
 struct Scene {
     nav: Nav,
+    mode: Mode,
+    map: AtlasNav,
     loader: Loader,
     /// When a failed tile may be tried again, and how many times it has failed.
     retries: HashMap<TileKey, (Instant, u32)>,
@@ -440,8 +467,12 @@ impl Scene {
                 eprintln!("cache sharing is off: {e:#}");
             }
         }
+        let mut view = AtlasView::whole(args.atlas.unwrap_or(Projection::EqualEarth), args.central_meridian, (size.x, size.y));
+        view.match_globe(args.cam.lat, args.cam.lon, args.cam.distance);
         Self {
             nav: Nav::starting_above_ground(args.cam, size),
+            mode: if args.atlas.is_some() { Mode::Atlas } else { Mode::Globe },
+            map: AtlasNav::new(view),
             loader: Loader::new(fetcher.clone(), args.exaggeration, vector::name_fields(&args.lang)),
             fetcher,
             last_retry_tick: Instant::now(),
@@ -521,17 +552,26 @@ impl Scene {
     /// Advances the view and works out what to draw and fetch. Returns whether the picture changed.
     fn update(&mut self, r: &mut Renderer, dt: f64, aspect_height: (f64, f64)) -> bool {
         let received = self.receive(r);
-        {
-            let ground = |lat: f64, lon: f64| r.ground(lat, lon);
-            self.nav.tick(dt, &ground);
-        }
-        let view = View {
-            basis: self.nav.cam.basis(),
-            aspect: aspect_height.0,
-            height_px: aspect_height.1,
-            max_z: sources::max_tile_z,
+        let atlas = self.mode == Mode::Atlas;
+        let selection = if atlas {
+            let size = DVec2::new((aspect_height.0 * aspect_height.1).round(), aspect_height.1);
+            if self.map.view.size != (size.x, size.y) {
+                self.map.resize(size);
+            }
+            atlas::select(&self.map.view, &|k| r.has_tile(k), sources::max_tile_z)
+        } else {
+            {
+                let ground = |lat: f64, lon: f64| r.ground(lat, lon);
+                self.nav.tick(dt, &ground);
+            }
+            let view = View {
+                basis: self.nav.cam.basis(),
+                aspect: aspect_height.0,
+                height_px: aspect_height.1,
+                max_z: sources::max_tile_z,
+            };
+            view.select(&|k| r.has_tile(k))
         };
-        let selection = view.select(&|k| r.has_tile(k));
         let now = Instant::now();
         let wanted: Vec<TileKey> = selection
             .wanted
@@ -549,10 +589,12 @@ impl Scene {
         self.draw = selection.draw;
 
         let mut overlays = Vec::new();
-        if self.roads_on || self.labels_on {
+        // Labels are placed on the globe only.
+        let labels_wanted = self.labels_on && !atlas;
+        if self.roads_on || labels_wanted {
             for &k in &self.draw {
                 let lines_needed = !r.has_overlay(k) && !self.overlay_empty.contains(&k);
-                if !lines_needed && self.label_sets.contains_key(&vector_source(k)) {
+                if !lines_needed && (!labels_wanted || self.label_sets.contains_key(&vector_source(k))) {
                     continue;
                 }
                 self.waiting += 1;
@@ -567,7 +609,7 @@ impl Scene {
             }
         }
         let mut building_jobs = Vec::new();
-        let visible = if self.buildings_on { building_tiles(&self.draw) } else { Vec::new() };
+        let visible = if self.buildings_on && !atlas { building_tiles(&self.draw) } else { Vec::new() };
         for &k in &visible {
             if r.has_buildings(k) || self.building_empty.contains(&k) {
                 continue;
@@ -599,7 +641,7 @@ impl Scene {
             }
         }
         self.labels_shown = 0;
-        if !self.labels_on {
+        if !self.labels_on || self.mode == Mode::Atlas {
             r.set_labels(&[]);
             self.label_alpha.clear();
             return;
@@ -686,10 +728,26 @@ impl Scene {
 
     fn hud(&self, r: &Renderer) -> String {
         let cam = &self.nav.cam;
+        let view = &self.map.view;
+        let (position, scale) = match self.mode {
+            Mode::Globe => (hemisphere_label(cam.lat, cam.lon), format!("altitude {}", format_distance(self.nav.altitude))),
+            Mode::Atlas => {
+                let (lat, lon) = view.centre_lat_lon();
+                let meridian = view.central_meridian.to_degrees();
+                (
+                    hemisphere_label(lat, lon),
+                    format!(
+                        "{}, meridian {:.0}° {}  {} per pixel at the equator",
+                        view.projection.name(),
+                        meridian.abs(),
+                        if meridian >= 0.0 { 'E' } else { 'W' },
+                        format_distance(view.metres_per_pixel()),
+                    ),
+                )
+            }
+        };
         let mut text = format!(
-            "{}\naltitude {}  tiles {}/{}\n{}",
-            hemisphere_label(cam.lat, cam.lon),
-            format_distance(self.nav.altitude),
+            "{position}\n{scale}  tiles {}/{}\n{}",
             self.draw.len(),
             r.tile_count(),
             loading_status(self.waiting, self.retrying),
@@ -710,6 +768,32 @@ impl Scene {
         let credits = credits_for(self.draw.iter().map(|k| r.tile_credit(*k)));
         r.set_panel(0, &credits, columns, scale);
         r.set_panel(1, &self.hud(r), columns, scale);
+    }
+
+    /// Switches between the globe and the flat map, keeping the place and the scale.
+    fn toggle_mode(&mut self) {
+        let view = &mut self.map.view;
+        match self.mode {
+            Mode::Globe => {
+                view.match_globe(self.nav.cam.lat, self.nav.cam.lon, self.nav.cam.distance);
+                self.mode = Mode::Atlas;
+            }
+            Mode::Atlas => {
+                let (lat, lon) = view.centre_lat_lon();
+                let cam = &mut self.nav.cam;
+                (cam.lat, cam.lon, cam.heading, cam.tilt) = (lat, lon, 0.0, 0.0);
+                cam.distance = view.distance_for_scale();
+                cam.clamp();
+                self.nav.stop();
+                self.mode = Mode::Globe;
+            }
+        }
+        self.map.release();
+    }
+
+    /// Hands the renderer the flat map's meshes, or tells it to draw the globe.
+    fn prepare_draw(&self, r: &mut Renderer) {
+        r.set_atlas((self.mode == Mode::Atlas).then_some((&self.map.view, self.draw.as_slice())));
     }
 
     /// True about once a second while tiles wait out a retry delay, which is often enough to
@@ -820,6 +904,7 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
         mapped_at_creation: false,
     });
     let draw = scene.draw.clone();
+    scene.prepare_draw(&mut r);
     let gpu_started = Instant::now();
     r.draw(&view, (width, height), &scene.nav.cam, scene.nav.altitude, &draw, |encoder| {
         encoder.copy_texture_to_buffer(
@@ -1008,6 +1093,7 @@ impl App {
         };
         let view = frame.texture.create_view(&Default::default());
         let draw = gfx.scene.draw.clone();
+        gfx.scene.prepare_draw(&mut gfx.renderer);
         let (cam, altitude) = (gfx.scene.nav.cam, gfx.scene.nav.altitude);
         gfx.renderer.draw(&view, (w, h), &cam, altitude, &draw, |_| {});
         gfx.window.pre_present_notify();
@@ -1093,6 +1179,8 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         let Some(gfx) = &mut self.gfx else { return };
         let nav = &mut gfx.scene.nav;
+        let map = &mut gfx.scene.map;
+        let atlas = gfx.scene.mode == Mode::Atlas;
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => {
@@ -1107,14 +1195,21 @@ impl ApplicationHandler for App {
                     nav.size = DVec2::new(size.width as f64, size.height as f64);
                 }
             }
-            WindowEvent::Focused(false) => nav.release_all(),
+            WindowEvent::Focused(false) => {
+                nav.release_all();
+                map.release();
+            }
             WindowEvent::ModifiersChanged(m) => {
                 let s = m.state();
                 self.mods = Mods { shift: s.shift_key(), alt: s.alt_key(), ctrl: s.control_key() };
             }
             WindowEvent::CursorMoved { position: PhysicalPosition { x, y }, .. } => {
                 self.pointer = DVec2::new(x, y);
-                nav.moved(self.pointer);
+                if atlas {
+                    map.moved(self.pointer);
+                } else {
+                    nav.moved(self.pointer);
+                }
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let b = match button {
@@ -1124,13 +1219,23 @@ impl ApplicationHandler for App {
                 };
                 match state {
                     ElementState::Pressed => {
-                        nav.press(b, self.pointer, self.mods);
+                        if atlas {
+                            if b == Button::Left {
+                                map.press(self.pointer);
+                            }
+                        } else {
+                            nav.press(b, self.pointer, self.mods);
+                        }
                         if b == Button::Left {
                             self.pressed_at = Some((Instant::now(), self.pointer));
                         }
                     }
                     ElementState::Released => {
-                        nav.release();
+                        if atlas {
+                            map.release();
+                        } else {
+                            nav.release();
+                        }
                         let was_click = b == Button::Left
                             && self.pressed_at.is_some_and(|p| {
                                 p.0.elapsed() < Duration::from_millis(300)
@@ -1142,7 +1247,11 @@ impl ApplicationHandler for App {
                                     && c.1.distance(self.pointer) < 6.0
                             });
                             if again {
-                                nav.double_click(self.pointer, self.mods);
+                                if atlas {
+                                    map.double_click(self.pointer, self.mods.shift);
+                                } else {
+                                    nav.double_click(self.pointer, self.mods);
+                                }
                                 self.last_click = None;
                             } else {
                                 self.last_click = Some((Instant::now(), self.pointer));
@@ -1156,7 +1265,11 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, y) => y as f64,
                     MouseScrollDelta::PixelDelta(p) => p.y / 40.0,
                 };
-                nav.scroll(lines, self.pointer, self.mods);
+                if atlas {
+                    map.scroll(lines, self.pointer);
+                } else {
+                    nav.scroll(lines, self.pointer, self.mods);
+                }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
@@ -1168,7 +1281,9 @@ impl ApplicationHandler for App {
                     KeyCode::ArrowRight => Some(Arrow::Right),
                     _ => None,
                 };
-                if let Some(a) = arrow {
+                if arrow.is_some() && atlas {
+                    // The map is moved by dragging.
+                } else if let Some(a) = arrow {
                     if !pressed {
                         nav.arrow_up(a);
                     } else if !event.repeat {
@@ -1177,7 +1292,16 @@ impl ApplicationHandler for App {
                 } else if pressed && !event.repeat {
                     match code {
                         KeyCode::Escape => nav.stop(),
+                        KeyCode::Digit0 if self.mods.ctrl && atlas => map.key(atlas_nav::Key::Whole),
                         KeyCode::Digit0 if self.mods.ctrl => nav.whole_body(),
+                        KeyCode::KeyM if !self.mods.ctrl => gfx.scene.toggle_mode(),
+                        KeyCode::KeyP if !self.mods.ctrl && atlas => {
+                            map.key(atlas_nav::Key::CycleProjection { back: self.mods.shift });
+                        }
+                        KeyCode::BracketLeft | KeyCode::BracketRight if atlas => {
+                            let east = code == KeyCode::BracketRight;
+                            map.key(atlas_nav::Key::ShiftMeridian { east, fine: self.mods.shift });
+                        }
                         KeyCode::KeyN if self.mods.ctrl && self.mods.alt => nav.straighten(),
                         KeyCode::KeyQ if self.mods.ctrl => event_loop.exit(),
                         KeyCode::KeyR if !self.mods.ctrl => {
@@ -1365,6 +1489,16 @@ mod tests {
         assert!(parse(&["--fps", "60"]).is_err());
         assert_eq!(parse(&["--benchmark", "5"]).unwrap().unwrap().benchmark, Some(5.0));
         assert!(parse(&["--benchmark", "0"]).is_err());
+    }
+
+    #[test]
+    fn atlas_options() {
+        let a = parse(&["--atlas", "mollweide", "--central-meridian", "190"]).unwrap().unwrap();
+        assert_eq!(a.atlas, Some(Projection::Mollweide));
+        assert!((a.central_meridian.to_degrees() + 170.0).abs() < 1e-9);
+        assert_eq!(parse(&[]).unwrap().unwrap().atlas, None);
+        assert!(parse(&["--atlas", "robinson"]).is_err());
+        assert!(parse(&["--central-meridian", "x"]).is_err());
     }
 
     #[test]

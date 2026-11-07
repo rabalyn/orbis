@@ -39,6 +39,20 @@ fn vs_tile(
     return out;
 }
 
+// The flat map: vertices are already in clip space, so tiles share the fragment stage.
+@vertex
+fn vs_atlas(
+    @location(0) pos: vec2<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) st: vec2<f32>,
+) -> TileOut {
+    var out: TileOut;
+    out.clip = vec4<f32>(pos, 0.0, 1.0);
+    out.uv = uv;
+    out.st = st;
+    return out;
+}
+
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let low = c / 12.92;
     let high = pow((c + 0.055) / 1.055, vec3<f32>(2.4));

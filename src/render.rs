@@ -1,6 +1,7 @@
 //! GPU drawing with wgpu. Everything is positioned relative to the camera, so 32-bit
 //! floats stay precise at any distance from the Earth's centre.
 
+use crate::atlas::{self, AtlasVertex, AtlasView, Mesh};
 use crate::buildings::{BuildingMesh, BuildingVertex};
 use crate::camera::{Camera, FOV_Y};
 use crate::geo::{geodetic_to_ecef, TileKey, A};
@@ -11,6 +12,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::DVec3;
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
+use std::ops::Range;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -37,10 +39,22 @@ struct GpuTile {
     vertices: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     overlay: Option<wgpu::BindGroup>,
+    /// Where the tile's imagery lies in its texture: (u0, v0, size).
+    uv_rect: (f64, f64, f64),
     credit: &'static str,
     heights: Vec<f32>,
     center: DVec3,
     last_used: u64,
+}
+
+/// The flat map as meshes in clip space: the underlay first, then each tile.
+struct AtlasDraw {
+    vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+    vertex_capacity: u64,
+    index_capacity: u64,
+    underlay: Range<u32>,
+    tiles: Vec<(TileKey, Range<u32>)>,
 }
 
 struct GpuBuildings {
@@ -84,6 +98,9 @@ pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     tile_pipeline: wgpu::RenderPipeline,
+    atlas_pipeline: wgpu::RenderPipeline,
+    /// Set while the flat map is shown instead of the globe.
+    atlas: Option<AtlasDraw>,
     sky_pipeline: wgpu::RenderPipeline,
     panel_pipeline: wgpu::RenderPipeline,
     label_pipeline: wgpu::RenderPipeline,
@@ -359,6 +376,32 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        let atlas_attrs = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x2];
+        let atlas_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("atlas"),
+            layout: Some(&tile_pl),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_atlas"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: size_of::<AtlasVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &atlas_attrs,
+                })],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(no_depth.clone()),
+            multisample,
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_tile"),
+                compilation_options: Default::default(),
+                targets: &opaque,
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("sky"),
             layout: Some(&sky_pl),
@@ -588,6 +631,8 @@ impl Renderer {
 
         Self {
             tile_pipeline,
+            atlas_pipeline,
+            atlas: None,
             sky_pipeline,
             panel_pipeline,
             label_pipeline,
@@ -629,6 +674,52 @@ impl Renderer {
         }
     }
 
+    /// Switches to the flat map and builds its meshes, or back to the globe with `None`.
+    pub fn set_atlas(&mut self, atlas: Option<(&AtlasView, &[TileKey])>) {
+        let Some((view, draw)) = atlas else {
+            self.atlas = None;
+            return;
+        };
+        let mut mesh = Mesh::default();
+        atlas::add_underlay(view, IMAGERY_LIMIT_DEG.to_radians(), &mut mesh);
+        let underlay = 0..mesh.indices.len() as u32;
+        let mut tiles = Vec::with_capacity(draw.len());
+        for k in draw {
+            let Some(t) = self.tiles.get(k) else { continue };
+            let from = mesh.indices.len() as u32;
+            atlas::add_tile(view, *k, t.uv_rect, &mut mesh);
+            tiles.push((*k, from..mesh.indices.len() as u32));
+        }
+        let (vbytes, ibytes) = (
+            bytemuck::cast_slice::<_, u8>(&mesh.vertices),
+            bytemuck::cast_slice::<_, u8>(&mesh.indices),
+        );
+        let device = &self.device;
+        let (mut vertices, mut indices, mut vertex_capacity, mut index_capacity) = match self.atlas.take() {
+            Some(a) => (Some(a.vertices), Some(a.indices), a.vertex_capacity, a.index_capacity),
+            None => (None, None, 0, 0),
+        };
+        let grow = |buffer: &mut Option<wgpu::Buffer>, capacity: &mut u64, needed: u64, usage| {
+            if buffer.is_none() || needed > *capacity {
+                *capacity = needed.next_power_of_two().max(1 << 16);
+                *buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("atlas"),
+                    size: *capacity,
+                    usage: usage | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+            }
+        };
+        grow(&mut vertices, &mut vertex_capacity, vbytes.len() as u64, wgpu::BufferUsages::VERTEX);
+        grow(&mut indices, &mut index_capacity, ibytes.len() as u64, wgpu::BufferUsages::INDEX);
+        let (vertices, indices) = (vertices.expect("grown"), indices.expect("grown"));
+        if !vbytes.is_empty() {
+            self.queue.write_buffer(&vertices, 0, vbytes);
+            self.queue.write_buffer(&indices, 0, ibytes);
+        }
+        self.atlas = Some(AtlasDraw { vertices, indices, vertex_capacity, index_capacity, underlay, tiles });
+    }
+
     pub fn has_tile(&self, k: TileKey) -> bool {
         self.tiles.contains_key(&k)
     }
@@ -645,12 +736,19 @@ impl Renderer {
         });
         let view = tile_texture_view(&self.device, &self.queue, wgpu::TextureFormat::Rgba8UnormSrgb, &data.mips);
         let bind_group = self.sampled_bind(&view);
+        // The first and last grid vertices are the corners of the imagery's part.
+        let (first, last) = (data.vertices.first(), data.vertices.get((GRID + 1) * (GRID + 1) - 1));
+        let uv_rect = match (first, last) {
+            (Some(a), Some(b)) => (a.uv[0] as f64, a.uv[1] as f64, (b.uv[0] - a.uv[0]) as f64),
+            _ => (0.0, 0.0, 1.0),
+        };
         self.tiles.insert(
             data.key,
             GpuTile {
                 vertices,
                 bind_group,
                 overlay: None,
+                uv_rect,
                 credit: data.credit,
                 heights: data.heights.clone(),
                 center: data.center,
@@ -1045,27 +1143,43 @@ impl Renderer {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.frame_bind, &[]);
-            pass.set_pipeline(&self.sky_pipeline);
-            pass.draw(0..3, 0..1);
+            if let Some(a) = &self.atlas {
+                pass.set_pipeline(&self.atlas_pipeline);
+                pass.set_vertex_buffer(0, a.vertices.slice(..));
+                pass.set_index_buffer(a.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_bind_group(1, &self.underlay_bind, &[]);
+                pass.set_bind_group(2, &self.no_overlay, &[]);
+                pass.draw_indexed(a.underlay.clone(), 0, 0..1);
+                for (k, range) in &a.tiles {
+                    let Some(t) = self.tiles.get(k) else { continue };
+                    let overlay = t.overlay.as_ref().filter(|_| self.roads_visible);
+                    pass.set_bind_group(1, &t.bind_group, &[]);
+                    pass.set_bind_group(2, overlay.unwrap_or(&self.no_overlay), &[]);
+                    pass.draw_indexed(range.clone(), 0, 0..1);
+                }
+            } else {
+                pass.set_pipeline(&self.sky_pipeline);
+                pass.draw(0..3, 0..1);
 
-            pass.set_pipeline(&self.tile_pipeline);
-            pass.set_vertex_buffer(1, self.instances.slice(..));
+                pass.set_pipeline(&self.tile_pipeline);
+                pass.set_vertex_buffer(1, self.instances.slice(..));
 
-            pass.set_bind_group(1, &self.underlay_bind, &[]);
-            pass.set_bind_group(2, &self.no_overlay, &[]);
-            pass.set_vertex_buffer(0, self.underlay_vertices.slice(..));
-            pass.set_index_buffer(self.underlay_indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..self.underlay_count, 0, 0..1);
+                pass.set_bind_group(1, &self.underlay_bind, &[]);
+                pass.set_bind_group(2, &self.no_overlay, &[]);
+                pass.set_vertex_buffer(0, self.underlay_vertices.slice(..));
+                pass.set_index_buffer(self.underlay_indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.underlay_count, 0, 0..1);
 
-            pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-            for (i, k) in draw.iter().enumerate() {
-                let t = &self.tiles[k];
-                let instance = i as u32 + 1;
-                let overlay = t.overlay.as_ref().filter(|_| self.roads_visible);
-                pass.set_bind_group(1, &t.bind_group, &[]);
-                pass.set_bind_group(2, overlay.unwrap_or(&self.no_overlay), &[]);
-                pass.set_vertex_buffer(0, t.vertices.slice(..));
-                pass.draw_indexed(0..self.index_count, 0, instance..instance + 1);
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                for (i, k) in draw.iter().enumerate() {
+                    let t = &self.tiles[k];
+                    let instance = i as u32 + 1;
+                    let overlay = t.overlay.as_ref().filter(|_| self.roads_visible);
+                    pass.set_bind_group(1, &t.bind_group, &[]);
+                    pass.set_bind_group(2, overlay.unwrap_or(&self.no_overlay), &[]);
+                    pass.set_vertex_buffer(0, t.vertices.slice(..));
+                    pass.draw_indexed(0..self.index_count, 0, instance..instance + 1);
+                }
             }
 
             if !shown.is_empty() {
