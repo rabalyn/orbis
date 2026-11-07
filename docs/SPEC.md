@@ -49,7 +49,7 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | Ctrl-S | Name and save the current view as a place (see Milestone 7b) |
 | K | Show or hide the list of saved places |
 | I | Show or hide the list of imported items |
-| E | Show or hide the list of eclipses around the clock's date (see Milestone 9a). In it: Enter sets the clock to the greatest moment, pauses it and flies to the greatest point |
+| E | Show or hide the list of eclipses around the clock's date (see Milestone 9a). In it: Enter sets the clock to the greatest moment, pauses it and flies to the greatest point, and 1 to 5 show or hide quakes, eruptions, tsunamis, fireballs and eclipses (see Milestone 9b) |
 | G | Show or hide the list of map services (see Milestone 8). In it: Enter uses the chosen service as the base layer (again: back to the usual imagery), O as the overlay, + and - change the overlay's opacity, A opens the box to add a service, Delete removes one |
 | Ctrl-Q | Quit |
 
@@ -444,13 +444,28 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
 - ΔT is the published prediction, some 4 seconds above the measured value for 2024; this moves a shadow by about 2 km. Beyond a few centuries from now ΔT cannot be predicted and the times grow uncertain.
 - The Moon in the sky on the Earth is no longer the low-precision one: its place comes from the same long series as the shadow and is topocentric (seen from the camera, with parallax), so in a solar eclipse it covers the Sun for those in the path (checked from Dallas at 2024-04-08 18:42 UTC, where the separation is under 0.1 degrees). The covered Sun dims the day sky and the stars show in totality; the corona is a plain glow. The Moon and the planets are refreshed whenever the clock has moved by a quarter of a second or the camera by 100 m, which looks continuous at any clock speed and costs nothing while idle. The key and the panel were not driven by hand here; the logic is unit-tested and the display was checked in saved images.
 
+## Milestone 9b: event feeds (done)
+
+### Behaviour
+- Opening the events panel (E) asks four public feeds for events around the clock's date: earthquakes (USGS), significant eruptions and tsunamis (NOAA NCEI) and fireballs (NASA/JPL CNEOS). Nothing is requested at start-up, unless `--event-feed quakes|eruptions|tsunamis|fireballs` asks for one feed. Sources, terms and credits are in PROVENANCE.md.
+- Answers are kept on disk: ten minutes for the live earthquake feed, a day for the others. `--offline` uses whatever is stored, of any age; a stale answer is also used when a service cannot be reached. A feed that cannot be reached, or whose answer cannot be read, shows one plain line in the panel and the rest keeps working.
+- The panel lists events within 90 days of the clock, with the eclipses, by date, kind, magnitude and place. Keys 1 to 5 show or hide earthquakes, eruptions, tsunamis, fireballs and eclipses. Enter sets the clock to the event, pauses it and flies there, and the notice tells more.
+- Events within 15 days of the clock's date are marked on the globe, with a size by magnitude (volcanic explosivity, radiated energy for fireballs) and a colour by kind. The markers follow the clock, and a hidden kind has none. The credit of a feed is shown while its markers are, also in saved images.
+- Quakes of magnitude 4.5 and above are used for dates in the last 20 days, and magnitude 5 and above for other dates (at most 500).
+- `--events-panel` (with `--screenshot`) opens the panel and asks all four feeds; `--event-feed NAME` asks one.
+
+### Limitations
+- Events are fetched for the clock's date when the panel is opened or the flag is given; moving the clock far away and not opening the panel again shows no new events. Earthquakes below magnitude 4.5 (5 for past dates) are not listed.
+- The eruptions database holds significant eruptions only and gives dates with no time, so the clock is set to the start of the day. Tsunami and eruption dates before 1800 are ignored.
+- Markers are drawn in the tile overlay like imported points, so they are on the Earth only and have no labels or click. Only the panel's choice shows an event's details.
+- The panel and keys were not driven by hand here; the parsers, the filters and the cache logic are unit-tested and the display was checked in saved images.
+
 ## Later milestones
 
 Order and scope are open, and depend on which features are wanted.
 
 | # | Feature | Notes |
 |---|---|---|
-| M9b | Events | Earthquakes, eruptions, tsunamis and fireballs, added to the list of M9a |
 | M10 | SpaceMouse | Through HID or `spacenavd` |
 | M11 | Help dialog and clickable interface | A help icon toggles a floating window in a corner that lists the keyboard shortcuts, scrollable when they don't fit. Brings the mouse-driven interface layer that M12 and M16 also use |
 | M12 | View options and saved settings | A dialog to show or hide streets, cities, trails, trains and 3D buildings, to switch map projection, and to choose what the globe shows. Every setting is saved in the application's configuration directory; during development, a committed configuration directory in the working directory takes priority |

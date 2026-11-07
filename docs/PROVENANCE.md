@@ -150,3 +150,19 @@ Considered and left out:
 | Esri, Mapbox, Google, Bing, Stadia and similar commercial tiles | Not evaluated: commercial services that generally need keys or accounts, which Orbis does not handle |
 
 The credit of an added service is shown while its tiles are on screen, also in saved images.
+
+### Event feeds (earthquakes, eruptions, tsunamis, fireballs)
+Evaluated from each publisher's own pages on 2026-11-07, with one real request to each address to see the format. Nothing is
+bundled; answers are cached on disk (10 minutes for the live earthquake feed, a day for the others) and fetched only when the
+user opens the events panel (key E) or gives `--event-feed`.
+
+| Feed | Address and format | Terms read | Credit shown |
+|---|---|---|---|
+| USGS earthquakes | `earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_month.geojson` for dates in the last 20 days, and the FDSN query `fdsnws/event/1/query?format=geojson&minmagnitude=5...` for other dates (GeoJSON, updated every minute) | The feed page states no rate limit or attribution rule (it points to a lifecycle policy page that returned 404). usgs.gov's copyright page: USGS-produced data are in the U.S. public domain, and credit "U.S. Geological Survey" is asked for | `Earthquakes: U.S. Geological Survey` |
+| NOAA NCEI eruptions | Hazard Service API `www.ngdc.noaa.gov/hazel/hazard-service/api/v1/volcanoes?minYear=..&maxYear=..` (JSON, `items`, the Significant Volcanic Eruptions database) | No API page with limits or terms could be loaded. The NCEI record of a sibling dataset says access is unrestricted, free, with a no-liability disclaimer and a request to cite the DOI; no licence is named. The volcano database's own DOI was not confirmed, so none is cited | `Eruptions: NOAA NCEI, Global Significant Volcanic Eruptions Database` |
+| NOAA NCEI tsunamis | `.../api/v1/tsunamis/events?minYear=..&maxYear=..` (JSON, `items`) | As above; the tsunami database page (`ngdc.noaa.gov/hazard/tsu_db.shtml`) asks to cite doi:10.7289/V5PN93H7 | `Tsunamis: NOAA NCEI/WDS Global Historical Tsunami Database (doi:10.7289/V5PN93H7)` |
+| NASA/JPL CNEOS fireballs | `ssd-api.jpl.nasa.gov/fireball.api?req-loc=true&date-min=..&date-max=..&limit=300` (JSON, `fields` and `data`) | The API page (ssd-api.jpl.nasa.gov/doc/fireball.html) states no usage limit or terms; its signature names the source as "NASA/JPL Fireball Data API" | `Fireballs: NASA/JPL Center for Near Earth Object Studies (CNEOS)` |
+
+Requests are one per feed, at least 1.2 s apart, with the program's user agent and the usual pauses. Because no limits are
+published for the NOAA and NASA services, the program stays well below any plausible one. The eruptions database is of significant
+eruptions only (a dozen or so a year), and tsunami events come year by year, so the panel keeps those within 90 days of the clock.

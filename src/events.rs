@@ -9,7 +9,43 @@ use crate::sky_time::format_utc;
 pub enum Kind {
     SolarEclipse,
     LunarEclipse,
+    Earthquake,
+    Eruption,
+    Tsunami,
+    Fireball,
 }
+
+impl Kind {
+    /// The filter this kind belongs to: 0 earthquakes, 1 eruptions, 2 tsunamis, 3 fireballs,
+    /// 4 eclipses (the number keys 1 to 5 in the panel).
+    pub fn filter(self) -> usize {
+        match self {
+            Kind::Earthquake => 0,
+            Kind::Eruption => 1,
+            Kind::Tsunami => 2,
+            Kind::Fireball => 3,
+            Kind::SolarEclipse | Kind::LunarEclipse => 4,
+        }
+    }
+
+    /// Whether events of this kind are drawn as markers on the globe.
+    pub fn marked(self) -> bool {
+        self.filter() < 4
+    }
+
+    /// The marker's colour.
+    pub fn colour(self) -> [u8; 4] {
+        match self {
+            Kind::Earthquake => [255, 150, 40, 235],
+            Kind::Eruption => [235, 50, 50, 235],
+            Kind::Tsunami => [60, 190, 255, 235],
+            Kind::Fireball => [255, 240, 120, 235],
+            _ => [255, 255, 255, 235],
+        }
+    }
+}
+
+pub const FILTER_NAMES: [&str; 5] = ["quakes", "eruptions", "tsunamis", "fireballs", "eclipses"];
 
 #[derive(Clone, Debug)]
 pub struct Event {
@@ -28,6 +64,8 @@ pub struct Event {
     pub detail: String,
     /// What the notice says when the event is shown.
     pub note: String,
+    /// Radius in pixels of the marker drawn on the globe, by the size of the event; 0 for none.
+    pub marker: f32,
 }
 
 impl Event {
@@ -67,6 +105,7 @@ impl Event {
                     title: name.to_string(),
                     detail,
                     note,
+                    marker: 0.0,
                 }
             }
             Eclipse::Lunar(l) => {
@@ -102,17 +141,23 @@ impl Event {
                     title: name.to_string(),
                     detail,
                     note,
+                    marker: 0.0,
                 }
             }
         }
     }
 }
 
-/// The events of all sources in time order, with the panel's choice.
+/// The events of all sources in time order, with the panel's choice and which kinds are shown.
 #[derive(Default)]
 pub struct EventList {
     pub picker: Picker,
     events: Vec<Event>,
+    hidden: [bool; 5],
+    /// Indices into `events` of the rows shown.
+    visible: Vec<usize>,
+    /// Counts changes, so that what is drawn from the list knows to start over.
+    pub revision: u64,
 }
 
 impl EventList {
@@ -121,30 +166,72 @@ impl EventList {
         self.events.retain(|e| e.source != source);
         self.events.extend(events);
         self.events.sort_by(|a, b| a.time.total_cmp(&b.time));
-        self.picker.clamp(self.events.len());
+        self.refresh();
+    }
+
+    fn refresh(&mut self) {
+        self.visible = (0..self.events.len()).filter(|&i| !self.hidden[self.events[i].kind.filter()]).collect();
+        self.revision += 1;
+        self.picker.clamp(self.visible.len());
+    }
+
+    /// Shows or hides one filter's events (see `Kind::filter`); returns whether it is shown now.
+    pub fn toggle_filter(&mut self, filter: usize) -> bool {
+        if filter < self.hidden.len() {
+            self.hidden[filter] = !self.hidden[filter];
+            self.refresh();
+        }
+        !self.hidden.get(filter).copied().unwrap_or(true)
+    }
+
+    pub fn shown(&self, filter: usize) -> bool {
+        !self.hidden.get(filter).copied().unwrap_or(true)
     }
 
     pub fn len(&self) -> usize {
-        self.events.len()
+        self.visible.len()
     }
 
     pub fn get(&self, i: usize) -> Option<&Event> {
-        self.events.get(i)
+        self.visible.get(i).map(|&j| &self.events[j])
+    }
+
+    /// The events to mark on the globe for a clock at `time`: shown ones with a marker that
+    /// are at most `half` seconds away, as indices for `marked`.
+    pub fn marked_near(&self, time: f64, half: f64) -> Vec<usize> {
+        self.visible.iter().copied().filter(|&j| self.events[j].kind.marked() && (self.events[j].time - time).abs() <= half).collect()
+    }
+
+    pub fn marked(&self, j: usize) -> &Event {
+        &self.events[j]
     }
 
     /// The row of the event nearest in time to `time`.
     pub fn nearest_to(&self, time: f64) -> Option<usize> {
-        (0..self.events.len()).min_by(|&a, &b| (self.events[a].time - time).abs().total_cmp(&(self.events[b].time - time).abs()))
+        (0..self.len()).min_by(|&a, &b| (self.visible_time(a) - time).abs().total_cmp(&(self.visible_time(b) - time).abs()))
+    }
+
+    fn visible_time(&self, i: usize) -> f64 {
+        self.events[self.visible[i]].time
     }
 
     pub fn panel_text(&self, title: &str) -> String {
-        self.picker.panel_text(
+        let mut filters = String::new();
+        for (i, name) in FILTER_NAMES.iter().enumerate() {
+            filters.push_str(&format!("{}{} {}  ", i + 1, if self.shown(i) { "+" } else { "-" }, name));
+        }
+        let mut text = self.picker.panel_text(
             title,
-            self.events.len(),
-            |i| self.events[i].row(),
+            self.len(),
+            |i| self.get(i).map_or_else(String::new, Event::row),
             "Nothing listed for these dates.",
-            "Enter: show it   Up/Down: choose   E or Esc: close",
-        )
+            "Enter: show   Up/Down: choose   1-5: kinds   E: close",
+        );
+        if !text.is_empty() {
+            text.push('\n');
+            text.push_str(filters.trim_end());
+        }
+        text
     }
 }
 
@@ -153,7 +240,7 @@ mod tests {
     use super::*;
 
     fn event(source: &'static str, time: f64) -> Event {
-        Event { source, kind: Kind::SolarEclipse, time, lat: 0.0, lon: 0.0, distance: 1.0, set_clock: true, title: "T".into(), detail: String::new(), note: String::new() }
+        Event { source, kind: Kind::SolarEclipse, time, lat: 0.0, lon: 0.0, distance: 1.0, set_clock: true, title: "T".into(), detail: String::new(), note: String::new(), marker: 0.0 }
     }
 
     #[test]
@@ -165,6 +252,26 @@ mod tests {
         list.set_source("a", vec![event("a", 5.0)]);
         assert_eq!((0..list.len()).map(|i| list.get(i).unwrap().time).collect::<Vec<_>>(), [5.0, 20.0]);
         assert_eq!(list.nearest_to(18.0), Some(1));
+    }
+
+    #[test]
+    fn filters_hide_kinds_and_markers_follow_the_clock() {
+        let mut list = EventList::default();
+        let mut quake = event("quakes", 100.0);
+        quake.kind = Kind::Earthquake;
+        quake.marker = 5.0;
+        list.set_source("quakes", vec![quake.clone(), Event { time: 9000.0, ..quake }]);
+        list.set_source("eclipse", vec![event("eclipse", 150.0)]);
+        assert_eq!(list.len(), 3);
+        assert_eq!(list.marked_near(120.0, 100.0).len(), 1, "eclipses and far events are not marked");
+        let before = list.revision;
+        assert!(!list.toggle_filter(4));
+        assert_eq!(list.len(), 2);
+        assert!(list.revision > before);
+        assert!(!list.toggle_filter(0));
+        assert_eq!(list.len(), 0);
+        assert!(list.marked_near(120.0, 100.0).is_empty());
+        assert!(list.toggle_filter(0));
     }
 
     #[test]

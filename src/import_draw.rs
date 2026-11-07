@@ -2,7 +2,7 @@
 //! the terrain like the roads do. Works on Web Mercator tiles, which is what Earth uses.
 
 use crate::geo::{lat_to_merc_v, lon_to_merc_u, TileKey};
-use crate::import::{Imported, Item, Pos, Shape};
+use crate::import::{Imported, Item, Mark, Pos, Shape};
 use crate::overlay::OVERLAY_SIZE;
 use std::sync::Arc;
 use tiny_skia::{Color, FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, Transform};
@@ -208,19 +208,33 @@ fn draw_area(pixmap: &mut Pixmap, rings: &[Vec<(f64, f64)>]) {
     pixmap.stroke_path(&path, &paint(AREA_EDGE), &stroke(width), Transform::identity(), None);
 }
 
-fn draw_dot(pixmap: &mut Pixmap, (x, y): (f64, f64)) {
+fn draw_dot(pixmap: &mut Pixmap, (x, y): (f64, f64), mark: Option<Mark>) {
     let size = OVERLAY_SIZE as f64 + MARGIN;
     if x < -MARGIN || y < -MARGIN || x > size || y > size {
         return;
     }
     let mut path = PathBuilder::new();
-    path.push_circle(x as f32, y as f32, 4.5 * TEXELS_PER_PIXEL);
+    let (outer, inner, ring, fill) = match mark {
+        // A sized marker is a translucent disc with a dark ring and a bright centre.
+        Some(m) => (m.radius * TEXELS_PER_PIXEL, m.radius * 0.55 * TEXELS_PER_PIXEL, [20, 20, 30, 230], [m.colour[0], m.colour[1], m.colour[2], m.colour[3]]),
+        None => (4.5 * TEXELS_PER_PIXEL, 2.8 * TEXELS_PER_PIXEL, DOT_RING, DOT),
+    };
+    path.push_circle(x as f32, y as f32, outer);
     let Some(path) = path.finish() else { return };
-    pixmap.fill_path(&path, &paint(DOT_RING), FillRule::Winding, Transform::identity(), None);
-    let mut inner = PathBuilder::new();
-    inner.push_circle(x as f32, y as f32, 2.8 * TEXELS_PER_PIXEL);
-    if let Some(inner) = inner.finish() {
-        pixmap.fill_path(&inner, &paint(DOT), FillRule::Winding, Transform::identity(), None);
+    pixmap.fill_path(&path, &paint(ring), FillRule::Winding, Transform::identity(), None);
+    let mut body = PathBuilder::new();
+    body.push_circle(x as f32, y as f32, if mark.is_some() { (outer - 1.2 * TEXELS_PER_PIXEL).max(1.0) } else { 0.0 });
+    if mark.is_some() {
+        if let Some(body) = body.finish() {
+            let mut p = paint(fill);
+            p.set_color(Color::from_rgba8(fill[0], fill[1], fill[2], fill[3] / 2));
+            pixmap.fill_path(&body, &p, FillRule::Winding, Transform::identity(), None);
+        }
+    }
+    let mut centre = PathBuilder::new();
+    centre.push_circle(x as f32, y as f32, inner);
+    if let Some(centre) = centre.finish() {
+        pixmap.fill_path(&centre, &paint(fill), FillRule::Winding, Transform::identity(), None);
     }
 }
 
@@ -244,7 +258,7 @@ pub fn draw(pixmap: &mut Pixmap, docs: &[Arc<Imported>], tile: TileKey) {
     }
     for item in items() {
         if let Shape::Point(p) = &item.shape {
-            draw_projected(pixmap, tile, std::iter::once(std::slice::from_ref(p)), |pm, r| draw_dot(pm, r[0][0]));
+            draw_projected(pixmap, tile, std::iter::once(std::slice::from_ref(p)), |pm, r| draw_dot(pm, r[0][0], item.mark));
         }
     }
 }

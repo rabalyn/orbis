@@ -23,6 +23,7 @@ mod import;
 mod import_draw;
 mod places;
 mod eclipse;
+mod event_feeds;
 mod events;
 mod ephemeris;
 mod search;
@@ -130,6 +131,9 @@ Usage: orbis [options]
                           (a --time or --search given as well decides the moment or the view instead)
                           (key E lists the eclipses around the clock's date)
   --eclipses-panel        with --screenshot, also show the list of eclipses
+  --events-panel          with --screenshot, also show the events panel (key E), which asks the four feeds
+  --event-feed NAME       ask one feed for events around the clock's date (quakes, eruptions, tsunamis or
+                          fireballs) and mark them on the globe; nothing is requested without this or key E
   --import FILE           show the places, tracks and outlines in a GeoJSON, GPX, KML, KMZ or IGC file
                           (repeatable; files can also be dropped on the window; key I lists them;
                           Earth only)
@@ -203,6 +207,8 @@ struct Args {
     /// Jump to the eclipse nearest this time.
     eclipse: Option<f64>,
     eclipses_panel: bool,
+    events_panel: bool,
+    event_feed: Option<event_feeds::Feed>,
     imports: Vec<PathBuf>,
     imports_panel: bool,
     geocoder_url: String,
@@ -263,6 +269,8 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
         places_panel: false,
         eclipse: None,
         eclipses_panel: false,
+        events_panel: false,
+        event_feed: None,
         imports: Vec::new(),
         imports_panel: false,
         services: Default::default(),
@@ -305,6 +313,10 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             }
             "--places-panel" => {
                 a.places_panel = true;
+                continue;
+            }
+            "--events-panel" => {
+                a.events_panel = true;
                 continue;
             }
             "--eclipses-panel" => {
@@ -358,6 +370,9 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
                 a.time = Some(sky_time::parse_iso8601(&value).ok_or_else(|| {
                     anyhow!("--time expects a date and time such as 2026-06-21T12:00:00Z")
                 })?)
+            }
+            "--event-feed" => {
+                a.event_feed = Some(event_feeds::Feed::from_name(&value).ok_or_else(|| anyhow!("--event-feed expects quakes, eruptions, tsunamis or fireballs"))?)
             }
             "--eclipse" => {
                 a.eclipse = Some(sky_time::parse_iso8601(&value).ok_or_else(|| anyhow!("--eclipse expects a date such as 2024-04-08"))?)
@@ -515,6 +530,15 @@ struct Scene {
     import_list: places::Picker,
     /// Eclipses (and later other events) around the clock's date, and the central line shown.
     events: events::EventList,
+    feeds: event_feeds::Feeds,
+    /// Feeds asked and not yet answered, and what the answered ones said when they had nothing.
+    feeds_pending: usize,
+    feed_problems: Vec<(event_feeds::Feed, String)>,
+    /// The markers on the globe, the list's revision and the events they were made from.
+    markers: Option<Arc<import::Imported>>,
+    markers_version: u64,
+    markers_from: (u64, Vec<usize>),
+    marker_credits: Vec<&'static str>,
     eclipse_path: Option<Arc<import::Imported>>,
     eclipse_path_version: u64,
     /// Something to tell the user, shown until the next list is opened or Escape is pressed.
@@ -720,6 +744,13 @@ impl Scene {
             import_labels: Arc::default(),
             import_list: places::Picker::default(),
             events: events::EventList::default(),
+            feeds: event_feeds::Feeds::new(fetcher.clone()),
+            feeds_pending: 0,
+            feed_problems: Vec::new(),
+            markers: None,
+            markers_version: 0,
+            markers_from: (u64::MAX, Vec::new()),
+            marker_credits: Vec::new(),
             eclipse_path: None,
             eclipse_path_version: 0,
             geocoder: geocode::Geocoder::new(fetcher.clone(), args.geocoder_url.clone(), args.lang.clone()),
@@ -796,11 +827,12 @@ impl Scene {
     fn import_docs(&self) -> Arc<Vec<Arc<import::Imported>>> {
         let mut docs = (*self.library.snapshot()).clone();
         docs.extend(self.eclipse_path.clone());
+        docs.extend(self.markers.clone());
         Arc::new(docs)
     }
 
     fn import_generation(&self) -> u64 {
-        self.library.generation + self.eclipse_path_version
+        self.library.generation + self.eclipse_path_version + self.markers_version
     }
 
     /// Starts the drawn overlays and labels over from the new contents.
@@ -848,8 +880,83 @@ impl Scene {
             return;
         }
         self.list_eclipses(self.clock.time());
+        self.request_feeds(&event_feeds::Feed::ALL);
         let row = self.events.nearest_to(self.clock.time()).unwrap_or(0);
         self.events.picker.open_at(row);
+    }
+
+    /// Asks feeds for events around the clock's date. They answer from the disk cache when it is
+    /// fresh, and from the network otherwise.
+    fn request_feeds(&mut self, which: &[event_feeds::Feed]) {
+        self.clock.advance(self.clock_epoch.elapsed().as_secs_f64());
+        for &f in which {
+            self.feed_problems.retain(|(p, _)| *p != f);
+            self.feeds.submit(f, self.clock.time());
+            self.feeds_pending += 1;
+        }
+    }
+
+    /// Takes in what the feeds have answered. True if something changed.
+    fn poll_feeds(&mut self) -> bool {
+        let mut changed = false;
+        while let Some(reply) = self.feeds.poll() {
+            self.feeds_pending = self.feeds_pending.saturating_sub(1);
+            match reply.answer {
+                Ok(mut list) => {
+                    // Yearly and monthly answers hold more than the dates around the clock.
+                    let time = self.clock.time();
+                    list.retain(|e| (e.time - time).abs() <= 90.0 * 86_400.0);
+                    self.events.set_source(reply.feed.source(), list);
+                }
+                Err(e) => self.feed_problems.push((reply.feed, e.message(reply.feed))),
+            }
+            changed = true;
+        }
+        changed
+    }
+
+    /// Redraws the markers when the clock or the list has moved them: events within the window
+    /// of the clock's date, sized by magnitude.
+    fn update_markers(&mut self) {
+        const WINDOW: f64 = 15.0 * 86_400.0;
+        let time = self.clock.time();
+        let near = if body::current().id == body::EARTH.id { self.events.marked_near(time, WINDOW) } else { Vec::new() };
+        if self.markers_from.0 == self.events.revision && self.markers_from.1 == near {
+            return;
+        }
+        let mut credits: Vec<&'static str> = Vec::new();
+        let items: Vec<import::Item> = near
+            .iter()
+            .map(|&j| {
+                let e = self.events.marked(j);
+                let mut item = import::Item::new("", import::Shape::Point(import::Pos { lat: e.lat, lon: e.lon, alt: None }));
+                item.mark = Some(import::Mark { radius: e.marker, colour: e.kind.colour() });
+                if let Some(f) = event_feeds::Feed::ALL.into_iter().find(|f| f.source() == e.source) {
+                    if !credits.contains(&f.credit()) {
+                        credits.push(f.credit());
+                    }
+                }
+                item
+            })
+            .collect();
+        // Large markers first, so that small ones stay on top.
+        let mut order: Vec<usize> = (0..items.len()).collect();
+        order.sort_by(|&a, &b| items[b].mark.map_or(0.0, |m| m.radius).total_cmp(&items[a].mark.map_or(0.0, |m| m.radius)));
+        let items = order.into_iter().map(|i| items[i].clone()).collect();
+        self.markers = (!near.is_empty()).then(|| Arc::new(import::Imported { name: "Events".to_string(), items, truncated: false }));
+        self.marker_credits = credits;
+        self.markers_from = (self.events.revision, near);
+        self.markers_version += 1;
+        self.imports_changed();
+    }
+
+    /// Asks for the feed given with `--event-feed`, if any.
+    fn start_feeds(&mut self, args: &Args) {
+        if let Some(f) = args.event_feed {
+            if body::current().id == body::EARTH.id {
+                self.request_feeds(&[f]);
+            }
+        }
     }
 
     fn list_eclipses(&mut self, around: f64) {
@@ -970,6 +1077,7 @@ impl Scene {
             self.bodies_pos = pos;
         }
         self.drawn_time = self.clock.time();
+        self.update_markers();
     }
 
     fn sky_key(&mut self, key: ClockKey) {
@@ -1338,6 +1446,10 @@ impl Scene {
             credits.push('\n');
             credits.push_str(STARS_CREDIT);
         }
+        for c in &self.marker_credits {
+            credits.push('\n');
+            credits.push_str(c);
+        }
         if self.search.credit_due() {
             credits.push('\n');
             credits.push_str(search::CREDIT);
@@ -1373,7 +1485,14 @@ impl Scene {
             return text;
         }
         if self.events.picker.is_open() {
-            let mut text = self.events.panel_text("Eclipses");
+            let mut text = self.events.panel_text("Events");
+            for (_, problem) in &self.feed_problems {
+                text.push('\n');
+                text.push_str(problem);
+            }
+            if self.feeds_pending > 0 {
+                text.push_str("\nAsking for events...");
+            }
             if let Some(n) = &self.notice {
                 text.push('\n');
                 text.push_str(n);
@@ -1639,6 +1758,10 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
             scene.clock.stop_at(time);
         }
     }
+    scene.start_feeds(args);
+    if args.events_panel {
+        scene.toggle_events();
+    }
     if let Some(query) = &args.search {
         scene.headless_search(query, args.search_panel, args.timeout);
     }
@@ -1669,7 +1792,8 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
         scene.set_panels(&mut r, width, 1);
         scene.place_labels(&mut r, (width, height), 1, step);
         r.flush_uploads();
-        if !scene.loader.is_idle() || scene.waiting > 0 || !scene.text.is_idle() {
+        scene.poll_feeds();
+        if !scene.loader.is_idle() || scene.waiting > 0 || !scene.text.is_idle() || scene.feeds_pending > 0 {
             quiet_since = Instant::now();
         } else if quiet_since.elapsed() > Duration::from_millis(300) {
             break;
@@ -1837,7 +1961,8 @@ impl App {
         let samples = render::sample_count(&adapter, config.format);
         let mut renderer = Renderer::new(device, queue, config.format, samples);
         renderer.roads_visible = self.args.roads;
-        let scene = Scene::new(&self.args, DVec2::new(w as f64, h as f64));
+        let mut scene = Scene::new(&self.args, DVec2::new(w as f64, h as f64));
+        scene.start_feeds(&self.args);
         let now = Instant::now();
         let benchmark = self.args.benchmark.map(|seconds| Benchmark {
             end: now + Duration::from_secs_f64(seconds),
@@ -1977,6 +2102,12 @@ impl ApplicationHandler for App {
             if g.scene.search.is_searching() {
                 wake = wake.min(now + Duration::from_millis(100));
                 if g.scene.poll_search() {
+                    g.redraw_wanted = true;
+                }
+            }
+            if g.scene.feeds_pending > 0 {
+                wake = wake.min(now + Duration::from_millis(100));
+                if g.scene.poll_feeds() {
                     g.redraw_wanted = true;
                 }
             }
@@ -2200,6 +2331,16 @@ impl ApplicationHandler for App {
                         KeyCode::KeyG if !self.mods.ctrl => gfx.scene.toggle_services(),
                         KeyCode::KeyI if !self.mods.ctrl => gfx.scene.toggle_imports(),
                         KeyCode::KeyE if !self.mods.ctrl => gfx.scene.toggle_events(),
+                        KeyCode::Digit1 | KeyCode::Digit2 | KeyCode::Digit3 | KeyCode::Digit4 | KeyCode::Digit5
+                            if !self.mods.ctrl && gfx.scene.events.picker.is_open() =>
+                        {
+                            let n = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5]
+                                .iter()
+                                .position(|k| *k == code);
+                            if let Some(n) = n {
+                                gfx.scene.events.toggle_filter(n);
+                            }
+                        }
                         KeyCode::KeyM if !self.mods.ctrl => gfx.scene.toggle_mode(),
                         _ if !self.mods.ctrl && sky_time::key_for(code, self.mods.shift).is_some() => {
                             if let Some(key) = sky_time::key_for(code, self.mods.shift) {
