@@ -9,8 +9,6 @@
 //!
 //! Times are Unix seconds (UT); angles are in radians.
 
-#![allow(dead_code)]
-
 use crate::ephemeris::{self, SunMoon};
 use crate::geo;
 use glam::DVec3;
@@ -100,7 +98,6 @@ impl Eclipse {
 /// The shadow of the Moon at one instant. Lengths are in Earth radii.
 #[derive(Clone, Copy, Debug)]
 pub struct Elements {
-    pub time: f64,
     /// Unit vector of the shadow axis towards the Sun, Earth-fixed.
     pub axis: DVec3,
     /// Where the axis crosses the plane through the Earth's centre at right angles to it.
@@ -131,7 +128,6 @@ impl Elements {
         let north = g.cross(east);
         let foot = (east * moon.dot(east) + north * moon.dot(north)) / RE;
         Self {
-            time,
             axis: to_fixed * g,
             foot: to_fixed * foot,
             declination: g.z.asin(),
@@ -282,9 +278,8 @@ fn solar_near(new_moon: f64) -> Option<Solar> {
     let time = minimise(new_moon, 6.0 * 3600.0, |t| Elements::at(t).gamma());
     let e = Elements::at(time);
     let gamma = e.gamma();
-    let angle = plane_angle(&e);
-    let reach = silhouette_radius(e.declination, angle);
-    if gamma >= reach + e.penumbra_radius() {
+    let reach = silhouette_radius(e.declination, plane_angle(&e));
+    if !e.touches_earth() {
         return None;
     }
     let north = e.foot.dot(DVec3::Z) >= 0.0;
@@ -337,7 +332,6 @@ fn central_types(time: f64) -> (bool, bool) {
 /// A point of the central line.
 #[derive(Clone, Copy, Debug)]
 pub struct PathPoint {
-    pub time: f64,
     pub lat: f64,
     pub lon: f64,
     /// Total rather than annular here.
@@ -352,7 +346,7 @@ pub fn central_line(time: f64, step: f64) -> Vec<PathPoint> {
         e.axis_hit().map(|p| {
             let (lat, lon, _) = geo::ecef_to_geodetic(p * A);
             let (_, _, l2) = e.local(p);
-            PathPoint { time: t, lat, lon, total: l2 < 0.0 }
+            PathPoint { lat, lon, total: l2 < 0.0 }
         })
     };
     let hits = |t: f64| if point_at(t).is_some() { 1.0 } else { -1.0 };
@@ -462,19 +456,30 @@ fn lunar_near(full_moon: f64) -> Option<Lunar> {
     })
 }
 
-/// How the Moon looks during a lunar eclipse at an instant: a brightness factor and a colour
-/// tint, or `None` outside the shadow. In the umbra the Moon is dim and copper-coloured.
-pub fn moon_tint(time: f64) -> Option<([f32; 3], f32)> {
+/// The colour the Moon's disc is multiplied by during a lunar eclipse, or `None` outside the Earth's
+/// shadow. The penumbra only dims it a little; in the umbra it turns dark copper, the light that the
+/// Earth's air bends round the shadow.
+pub fn moon_tint(time: f64) -> Option<[f32; 3]> {
     let (umbral, penumbral) = lunar_magnitudes(time);
     if penumbral <= 0.0 {
         return None;
     }
-    // The penumbra only dims the Moon a little; the umbra takes it down by a factor of ten to a hundred.
     let pen = (penumbral as f32).clamp(0.0, 1.0);
     let um = (umbral as f32).clamp(0.0, 1.0);
-    let dim = (1.0 - 0.25 * pen) * (1.0 - 0.97 * um);
-    let red = [1.0, 1.0 - 0.55 * um, 1.0 - 0.8 * um];
-    Some((red, dim))
+    const COPPER: [f32; 3] = [0.30, 0.075, 0.03];
+    Some(std::array::from_fn(|i| (1.0 - 0.25 * pen) * (1.0 + (COPPER[i] - 1.0) * um)))
+}
+
+impl Elements {
+    /// Whether the penumbra reaches the Earth: any part of it can be eclipsed.
+    pub fn touches_earth(&self) -> bool {
+        self.gamma() < silhouette_radius(self.declination, plane_angle(self)) + self.penumbra_radius()
+    }
+}
+
+/// The Moon's shadow at an instant, if the penumbra falls on the Earth.
+pub fn shadow_at(time: f64) -> Option<Elements> {
+    Some(Elements::at(time)).filter(Elements::touches_earth)
 }
 
 #[cfg(test)]
@@ -646,15 +651,11 @@ mod tests {
         let t = solar("2024-04-08T00:00:00Z").time;
         let line = central_line(t, 20.0);
         assert!(line.len() > 300, "{}", line.len());
-        assert!(line.windows(2).all(|w| w[0].time < w[1].time));
         let mut worst: f64 = 0.0;
         for (time, lat, lon, _seconds) in NASA_2024_LINE {
-            let when = at(&format!("2024-04-08T{time}:00Z"));
-            // Where the line is at the same time, and how far the table's point is from the line.
+            // How far the table's point is from the computed line.
             let nearest = line.iter().map(|p| km((lat, lon), (p.lat.to_degrees(), p.lon.to_degrees()))).fold(f64::MAX, f64::min);
-            let p = line.iter().min_by(|a, b| (a.time - when).abs().total_cmp(&(b.time - when).abs())).unwrap();
-            let same_time = km((lat, lon), (p.lat.to_degrees(), p.lon.to_degrees()));
-            eprintln!("{time}: {nearest:.1} km from the line, {same_time:.1} km at the same time (nearest sample {} s away)", (p.time - when).abs());
+            eprintln!("{time}: {nearest:.1} km from the line");
             worst = worst.max(nearest);
             assert!(nearest < 8.0, "{time}: {nearest} km from the line");
         }
@@ -676,8 +677,8 @@ mod tests {
     #[test]
     fn the_moon_goes_dark_in_total_lunar_eclipse() {
         let l = lunar("2025-03-14T00:00:00Z");
-        let (red, dim) = moon_tint(l.time).unwrap();
-        assert!(dim < 0.1 && red[2] < red[0]);
+        let tint = moon_tint(l.time).unwrap();
+        assert!(tint[0] < 0.4 && tint[2] < tint[0] / 5.0, "{tint:?}");
         assert!(moon_tint(l.time - 6.0 * 3600.0).is_none());
     }
 }

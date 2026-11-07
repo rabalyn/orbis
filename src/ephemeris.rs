@@ -6,7 +6,7 @@
 //! aberration), referred to the true equator and equinox of date, which is the frame the Earth's
 //! rotation angle belongs to. Times are Unix seconds in UT; ΔT turns them into dynamical time.
 
-#![allow(dead_code, clippy::approx_constant)]
+#![allow(clippy::approx_constant)]
 
 use glam::{DMat3, DVec3};
 use std::f64::consts::PI;

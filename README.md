@@ -39,6 +39,8 @@ Ctrl-F opens a search box: type a place name or coordinates such as `46.5, 11.8`
 
 Ctrl-S saves the current view as a named place, and K lists the saved places to fly to or delete (kept in `orbis/places.json` in your config folder). `--import FILE`, or dropping a file on the window, shows the contents of a GeoJSON, GPX, KML, KMZ or IGC file on the Earth; I lists its items.
 
+E lists the solar and lunar eclipses around the clock's date, computed in the program: Enter jumps to the greatest moment, with the central line drawn and the shadow darkening the globe (`--eclipse 2024-04-08`).
+
 G lists map services (WMS, WMTS or XYZ) to use as the Earth's imagery or to lay over it. Add one with `--add-service ADDRESS` (kept in `orbis/services.json`), and choose with `--service NAME` or `--service-overlay NAME`; `--list-services` shows your library and a built-in directory of public services.
 
 `--body moon|mars|mercury|ceres|vesta` shows that body instead of the Earth, lit by the Sun at the clock's time, with its own imagery and the planets in its sky.

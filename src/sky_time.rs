@@ -114,6 +114,12 @@ impl Clock {
         self.running = false;
     }
 
+    /// Sets the reading and stops, as when jumping to an event.
+    pub fn stop_at(&mut self, time: f64) {
+        self.time = time;
+        self.running = false;
+    }
+
     pub fn set_rate(&mut self, rate: f64) {
         self.rate = rate;
     }

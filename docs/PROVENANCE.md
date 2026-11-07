@@ -30,6 +30,10 @@ The design inputs are:
 - public standards and format documentation
 - general geodesy and real-time rendering practice
 
+## Published formulae in use
+
+Eclipses (Milestone 9a) are computed, with no data source: the VSOP87 series for the Earth (Bretagnon and Francou) and the ELP-2000/82 series for the Moon (Chapront-Touzé and Chapront), as printed in truncated form in Meeus, "Astronomical Algorithms", 2nd ed. (appendix III and chapters 22, 25 and 47); ΔT from the polynomials of Espenak and Meeus (NASA/TP-2006-214141); the shadow geometry from the Besselian elements of the Explanatory Supplement to the Astronomical Almanac. The test values (times, magnitudes, gamma and the central line of 2024-04-08) are facts from the NASA/GSFC eclipse bulletins of Fred Espenak (eclipse.gsfc.nasa.gov); their terms were not checked and no table from them is bundled.
+
 ## Data sources in use
 
 | Data | Source | Terms | Credit shown in the app |

@@ -40,6 +40,11 @@ struct FrameUniform {
     sky_rot: [[f32; 4]; 4],
     /// The faintest magnitude that can be seen from here.
     sky: [f32; 4],
+    /// The Moon's shadow: the axis towards the Sun (w is 1 while there is a shadow), where the axis
+    /// crosses the plane through the Earth's centre, and the apexes and slopes of the umbra and penumbra.
+    eclipse_axis: [f32; 4],
+    eclipse_foot: [f32; 4],
+    eclipse_cones: [f32; 4],
 }
 
 /// Room for the bright planets and the Moon after the stars.
@@ -140,6 +145,8 @@ pub struct Renderer {
     pub sky_on: bool,
     pub sky_rot: DMat3,
     pub sky_limit: f64,
+    /// The Moon's shadow on the Earth, while it touches it.
+    pub shadow: Option<crate::eclipse::Elements>,
     sky_points: wgpu::Buffer,
     star_count: usize,
     body_count: usize,
@@ -724,6 +731,7 @@ impl Renderer {
             sky_on: true,
             sky_rot: DMat3::IDENTITY,
             sky_limit: 6.5,
+            shadow: None,
             sky_points,
             star_count: 0,
             body_count: 0,
@@ -1206,6 +1214,11 @@ impl Renderer {
                 if crate::body::current().atmosphere { 1.0 } else { 0.0 },
                 0.0,
             ],
+            eclipse_axis: self.shadow.map_or([0.0; 4], |e| vec4(e.axis, 1.0)),
+            eclipse_foot: self.shadow.map_or([0.0; 4], |e| vec4(e.foot, 0.0)),
+            eclipse_cones: self.shadow.map_or([0.0; 4], |e| {
+                [e.umbra_apex as f32, e.penumbra_apex as f32, e.tan_umbra as f32, e.tan_penumbra as f32]
+            }),
         };
         self.queue.write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
 

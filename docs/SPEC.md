@@ -49,6 +49,7 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | Ctrl-S | Name and save the current view as a place (see Milestone 7b) |
 | K | Show or hide the list of saved places |
 | I | Show or hide the list of imported items |
+| E | Show or hide the list of eclipses around the clock's date (see Milestone 9a). In it: Enter sets the clock to the greatest moment, pauses it and flies to the greatest point |
 | G | Show or hide the list of map services (see Milestone 8). In it: Enter uses the chosen service as the base layer (again: back to the usual imagery), O as the overlay, + and - change the overlay's opacity, A opens the box to add a service, Delete removes one |
 | Ctrl-Q | Quit |
 
@@ -425,13 +426,32 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
 - The credit of the usual imagery stays on screen while a service replaces it.
 - There is no clipboard paste in the address box. The panel, the keys and adding in the window were not driven by hand here; the logic is unit-tested and the display was checked in saved images.
 
+## Milestone 9a: computed eclipses (done)
+
+### Finding eclipses
+- Solar and lunar eclipses are computed in the program from published formulae, with no network and no data file. The Sun comes from the truncated VSOP87 series for the Earth and the Moon from the truncated ELP-2000/82 series, both as printed in Meeus, "Astronomical Algorithms" (about 10 arcseconds for the Moon, 1 for the Sun), with nutation, the Sun's aberration and ΔT from the polynomial of Espenak and Meeus.
+- The scan visits every New and Full Moon in a range and keeps those where the Moon's shadow (solar) or the Earth's shadow (lunar) touches the other body. Solar eclipses are total, annular, hybrid or partial; lunar ones total, partial or penumbral. Each has its greatest moment (UT) and magnitude; solar ones also the gamma, the greatest eclipse point and the length of totality or annularity there; lunar ones the contact durations and the point below the Moon.
+- Checked against the NASA/GSFC catalogs of Espenak: times of greatest eclipse within a minute for solar eclipses (3 s for 2024-04-08) and two minutes for lunar ones; magnitudes within 0.003 (solar) and 0.02 (lunar); the eclipses of 2023 to 2026 found exactly, with their kinds, and the right number for 2018. The central line of 2024-04-08 lies within 3 km of the NASA table's points.
+
+### Showing them
+- E lists the eclipses from one year before the clock's date to two years after, with the nearest chosen. Enter sets the clock to the greatest moment, pauses it, flies to the greatest eclipse point (for a lunar eclipse, the point below the Moon) and shows the details in a notice. `--eclipse DATE` does this for the eclipse nearest DATE and `--eclipses-panel` shows the list in a saved image.
+- The central line of a solar eclipse is drawn over the terrain like an imported line, from where the axis of the shadow first meets the Earth to where it leaves it.
+- While the clock is within an eclipse the shadow of the Moon darkens the Earth: the penumbra gradually, the umbra (or the antumbra of an annular eclipse) strongly. It follows the clock, so the shadow can be watched crossing the globe at a high clock speed. During a lunar eclipse the Moon in the sky is dimmed, and turns dark copper in the umbra.
+- The list is shared by events of other kinds: `EventList::set_source` replaces one source's events, and choosing one flies to its place (and sets the clock if the event says so).
+
+### Limitations
+- The list and the shadow are for the Earth only. Non-central total and annular eclipses are given the kind of the umbra but have no central line, and the penumbra's limits are not drawn.
+- The shadow's darkness follows a simple rule for how much of the Sun is covered, and ignores clouds, the atmosphere's scattering and the terrain. The shadow is a smooth function of the position and does not show shadows of the mountains.
+- ΔT is the published prediction, some 4 seconds above the measured value for 2024; this moves a shadow by about 2 km. Beyond a few centuries from now ΔT cannot be predicted and the times grow uncertain.
+- The Moon in the sky is still the low-precision geocentric one of Milestone 5b, up to 1° off for a person on the ground, so a solar eclipse shows it beside the Sun, not over it. The key and the panel were not driven by hand here; the logic is unit-tested and the display was checked in saved images.
+
 ## Later milestones
 
 Order and scope are open, and depend on which features are wanted.
 
 | # | Feature | Notes |
 |---|---|---|
-| M9 | Events | Computed eclipses, plus earthquakes, eruptions, tsunamis and fireballs |
+| M9b | Events | Earthquakes, eruptions, tsunamis and fireballs, added to the list of M9a |
 | M10 | SpaceMouse | Through HID or `spacenavd` |
 
 Out of scope: Apple Vision Pro streaming, Quick Look and Share extensions, Sparkle updates.

@@ -15,9 +15,42 @@ struct Frame {
     // The faintest magnitude that can be seen from here, the body's radius in metres, and 1
     // when the body has air.
     sky: vec4<f32>,
+    // The Moon's shadow: its axis towards the Sun (w is 1 when there is one), where the axis
+    // crosses the plane through the Earth's centre, and the umbra's and penumbra's apex
+    // distances along the axis and their slopes. Lengths are in Earth radii.
+    eclipse_axis: vec4<f32>,
+    eclipse_foot: vec4<f32>,
+    eclipse_cones: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> frame: Frame;
+
+// How much of the sunlight the Moon's shadow lets through at the Earth-fixed direction `g`.
+// The radii follow the cones at the ground point's height along the axis, and the fraction of
+// the Sun's diameter that is covered is that of Espenak's local magnitude, (L1 - m) / (L1 + L2).
+fn eclipse_light(g: vec3<f32>) -> f32 {
+    if (frame.eclipse_axis.w < 0.5) {
+        return 1.0;
+    }
+    let axis = frame.eclipse_axis.xyz;
+    // The point on the flattened Earth below `g`.
+    let c = 0.99664719;
+    let p = g / sqrt(g.x * g.x + g.y * g.y + g.z * g.z / (c * c));
+    let zeta = dot(p, axis);
+    // Only the side facing the Sun.
+    if (zeta <= 0.0) {
+        return 1.0;
+    }
+    let q = p - frame.eclipse_foot.xyz;
+    let m = length(q - axis * dot(q, axis));
+    let l1 = max((frame.eclipse_cones.y - zeta) * frame.eclipse_cones.w, 1e-4);
+    // Negative where the umbra reaches the ground, positive in the antumbra.
+    let l2 = (frame.eclipse_cones.x - zeta) * frame.eclipse_cones.z;
+    let covered = clamp((l1 - m) / max(l1 + l2, 1e-4), 0.0, 1.0);
+    // The covered area of the Sun's disc grows faster than the covered width, roughly as its
+    // 1.6th power. A trace of light stays in totality: the corona and the lit sky beyond.
+    return mix(1.0, 0.035, pow(covered, 1.6));
+}
 
 // Sunlight. `n` is the surface normal, `g` the normal of the smooth Earth below it. Day
 // and night follow `g`, with a soft twilight; slopes follow `n`.
@@ -31,13 +64,15 @@ fn sun_light(n: vec3<f32>, g: vec3<f32>) -> vec3<f32> {
         return vec3<f32>(0.012) + 0.95 * max(dot(n, s), 0.0) * smoothstep(0.0, 0.01, dot(g, s));
     }
     let high = dot(g, s);
+    let shade = eclipse_light(g);
     let direct = max(dot(n, s), 0.0) * smoothstep(-0.02, 0.08, high);
     // Sky light fades out until the Sun is about 14 degrees below the horizon.
     let sky = smoothstep(-0.25, 0.1, high);
     let ambient = mix(vec3<f32>(0.045, 0.06, 0.11), vec3<f32>(0.22, 0.24, 0.28), sky);
     // Low sunlight is warm.
     let warm = mix(vec3<f32>(1.0, 0.62, 0.38), vec3<f32>(1.0), smoothstep(0.0, 0.35, high));
-    return ambient + 0.8 * warm * direct;
+    // In the shadow the sky light dims too, but the lit sky around keeps some.
+    return ambient * mix(0.3, 1.0, shade) + 0.8 * warm * direct * shade;
 }
 
 // Tiles

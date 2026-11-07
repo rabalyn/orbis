@@ -23,6 +23,7 @@ mod import;
 mod import_draw;
 mod places;
 mod eclipse;
+mod events;
 mod ephemeris;
 mod search;
 mod service_ui;
@@ -124,6 +125,11 @@ Usage: orbis [options]
   --save-place NAME       save the view as a place before anything else (key Ctrl-S names the view in
                           the window; K lists, flies to and deletes saved places)
   --places-panel          with --screenshot, also show the list of saved places
+  --eclipse DATE          jump to the eclipse nearest DATE (such as 2024-04-08): the clock is set to
+                          its greatest moment and paused, and the view flies to its greatest point
+                          (a --time or --search given as well decides the moment or the view instead)
+                          (key E lists the eclipses around the clock's date)
+  --eclipses-panel        with --screenshot, also show the list of eclipses
   --import FILE           show the places, tracks and outlines in a GeoJSON, GPX, KML, KMZ or IGC file
                           (repeatable; files can also be dropped on the window; key I lists them;
                           Earth only)
@@ -194,6 +200,9 @@ struct Args {
     places_file: Option<PathBuf>,
     save_place: Option<String>,
     places_panel: bool,
+    /// Jump to the eclipse nearest this time.
+    eclipse: Option<f64>,
+    eclipses_panel: bool,
     imports: Vec<PathBuf>,
     imports_panel: bool,
     geocoder_url: String,
@@ -252,6 +261,8 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
         places_file: None,
         save_place: None,
         places_panel: false,
+        eclipse: None,
+        eclipses_panel: false,
         imports: Vec::new(),
         imports_panel: false,
         services: Default::default(),
@@ -294,6 +305,10 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             }
             "--places-panel" => {
                 a.places_panel = true;
+                continue;
+            }
+            "--eclipses-panel" => {
+                a.eclipses_panel = true;
                 continue;
             }
             "--imports-panel" => {
@@ -343,6 +358,9 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
                 a.time = Some(sky_time::parse_iso8601(&value).ok_or_else(|| {
                     anyhow!("--time expects a date and time such as 2026-06-21T12:00:00Z")
                 })?)
+            }
+            "--eclipse" => {
+                a.eclipse = Some(sky_time::parse_iso8601(&value).ok_or_else(|| anyhow!("--eclipse expects a date such as 2024-04-08"))?)
             }
             "--time-speed" => a.time_speed = num()?,
             "--exaggeration" => a.exaggeration = num()? as f32,
@@ -494,6 +512,10 @@ struct Scene {
     /// Names of imported points, placed like map labels.
     import_labels: Arc<Vec<vector::Label>>,
     import_list: places::Picker,
+    /// Eclipses (and later other events) around the clock's date, and the central line shown.
+    events: events::EventList,
+    eclipse_path: Option<Arc<import::Imported>>,
+    eclipse_path_version: u64,
     /// Something to tell the user, shown until the next list is opened or Escape is pressed.
     notice: Option<String>,
     /// The renderer is to drop its overlays at the next update.
@@ -696,6 +718,9 @@ impl Scene {
             library: import::Library::default(),
             import_labels: Arc::default(),
             import_list: places::Picker::default(),
+            events: events::EventList::default(),
+            eclipse_path: None,
+            eclipse_path_version: 0,
             geocoder: geocode::Geocoder::new(fetcher.clone(), args.geocoder_url.clone(), args.lang.clone()),
             fetcher,
             last_retry_tick: Instant::now(),
@@ -765,9 +790,20 @@ impl Scene {
         eprintln!("{}", self.notice.as_deref().unwrap_or(""));
     }
 
+    /// What is drawn over the map: the imported files and the eclipse path.
+    fn import_docs(&self) -> Arc<Vec<Arc<import::Imported>>> {
+        let mut docs = (*self.library.snapshot()).clone();
+        docs.extend(self.eclipse_path.clone());
+        Arc::new(docs)
+    }
+
+    fn import_generation(&self) -> u64 {
+        self.library.generation + self.eclipse_path_version
+    }
+
     /// Starts the drawn overlays and labels over from the new contents.
     fn imports_changed(&mut self) {
-        self.loader.set_imports(self.library.snapshot(), self.library.generation);
+        self.loader.set_imports(self.import_docs(), self.import_generation());
         self.overlay_empty.clear();
         self.overlay_retries.clear();
         self.clear_overlays = true;
@@ -791,7 +827,84 @@ impl Scene {
         self.notice = None;
         self.place_list.close();
         self.services.picker.close();
+        self.events.picker.close();
         self.import_list.toggle();
+    }
+
+    /// Opens or closes the list of eclipses, listed from a year before the clock's date to two years after.
+    fn toggle_events(&mut self) {
+        self.notice = None;
+        self.place_list.close();
+        self.import_list.close();
+        self.services.picker.close();
+        if self.events.picker.is_open() {
+            self.events.picker.close();
+            return;
+        }
+        if body::current().id != body::EARTH.id {
+            self.notice = Some(format!("Eclipses are listed for Earth only, and this is {}.", body::current().name));
+            return;
+        }
+        self.list_eclipses(self.clock.time());
+        let row = self.events.nearest_to(self.clock.time()).unwrap_or(0);
+        self.events.picker.open_at(row);
+    }
+
+    fn list_eclipses(&mut self, around: f64) {
+        const YEAR: f64 = 365.25 * 86_400.0;
+        let found = eclipse::between(around - YEAR, around + 2.0 * YEAR);
+        self.events.set_source("eclipse", found.iter().map(events::Event::from_eclipse).collect());
+    }
+
+    fn events_key(&mut self, key: places::Key) {
+        let pick = self.events.picker.key(key, self.events.len());
+        self.notice = None;
+        if let places::Pick::Fly(i) = pick {
+            self.show_event(i);
+        }
+    }
+
+    /// Sets the clock to the event, pauses it, and flies to its place. A solar eclipse's central
+    /// line is drawn; any other event takes it away.
+    fn show_event(&mut self, i: usize) {
+        let Some(e) = self.events.get(i).cloned() else { return };
+        if e.set_clock {
+            self.clock.advance(self.clock_epoch.elapsed().as_secs_f64());
+            self.clock.stop_at(e.time);
+        }
+        self.set_eclipse_path((e.kind == events::Kind::SolarEclipse).then_some(e.time));
+        self.notice = Some(e.note.clone());
+        self.fly_to(search::Target { lat: e.lat, lon: e.lon, distance: e.distance });
+    }
+
+    /// Draws the central line of the solar eclipse whose greatest phase is at `time`, or none.
+    fn set_eclipse_path(&mut self, time: Option<f64>) {
+        let line = time.map(|t| eclipse::central_line(t, 20.0)).unwrap_or_default();
+        self.eclipse_path = (line.len() > 1).then(|| {
+            let points = line.iter().map(|p| import::Pos { lat: p.lat, lon: p.lon, alt: None }).collect();
+            Arc::new(import::Imported {
+                name: "Eclipse central line".to_string(),
+                items: vec![import::Item::new("", import::Shape::Line(points))],
+                truncated: false,
+            })
+        });
+        self.eclipse_path_version += 1;
+        self.imports_changed();
+    }
+
+    /// Jumps to the eclipse nearest `time`, as choosing it in the list does.
+    fn jump_to_eclipse(&mut self, time: f64) {
+        if body::current().id != body::EARTH.id {
+            self.notice = Some(format!("Eclipses are listed for Earth only, and this is {}.", body::current().name));
+            return;
+        }
+        let Some(found) = eclipse::nearest(time) else { return };
+        self.list_eclipses(found.time());
+        if let Some(i) = self.events.nearest_to(found.time()) {
+            self.events.picker.open_at(i);
+            self.events.picker.close();
+            self.show_event(i);
+        }
     }
 
     fn imports_key(&mut self, key: places::Key) {
@@ -815,6 +928,7 @@ impl Scene {
             r.set_stars(&sky::star_points());
         }
         r.sky_rot = (body::current().rotation)(time);
+        r.shadow = (self.sun_on && body::current().id == body::EARTH.id).then(|| eclipse::shadow_at(time)).flatten();
         let (_, _, height) = ecef_to_geodetic(self.nav.cam.basis().pos);
         let sun_sin = self.sun_on.then(|| self.nav.cam.basis().pos.normalize().dot(r.sun));
         // Without air, nothing hides the stars, whatever the Sun is doing.
@@ -823,6 +937,13 @@ impl Scene {
         // Planets move slowly: a few seconds' error is far below a pixel.
         if (time - self.bodies_time).abs() > 10.0 {
             self.bodies = (body::current().sky_bodies)(time);
+            if body::current().id == body::EARTH.id {
+                if let Some(tint) = eclipse::moon_tint(time) {
+                    for b in self.bodies.iter_mut().filter(|b| b.name == "Moon") {
+                        b.colour = std::array::from_fn(|i| b.colour[i] * tint[i]);
+                    }
+                }
+            }
             let points: Vec<_> = self.bodies.iter().map(|b| b.point()).collect();
             r.set_sky_bodies(&points);
             self.bodies_time = time;
@@ -886,7 +1007,7 @@ impl Scene {
                 Some(Outcome::Overlay(data)) => {
                     self.label_sets.insert(data.source, data.labels.clone());
                     // Drawn before the imports last changed: the tile will be asked for again.
-                    if data.generation != self.library.generation {
+                    if data.generation != self.import_generation() {
                         changed = true;
                         continue;
                     }
@@ -1230,6 +1351,14 @@ impl Scene {
             }
             return text;
         }
+        if self.events.picker.is_open() {
+            let mut text = self.events.panel_text("Eclipses");
+            if let Some(n) = &self.notice {
+                text.push('\n');
+                text.push_str(n);
+            }
+            return text;
+        }
         if self.import_list.is_open() {
             let library = &self.library;
             let mut text = self.import_list.panel_text(
@@ -1259,6 +1388,7 @@ impl Scene {
     /// Opens or closes the list of map services.
     fn toggle_services(&mut self) {
         self.notice = None;
+        self.events.picker.close();
         self.import_list.close();
         self.place_list.close();
         self.services.toggle();
@@ -1267,6 +1397,7 @@ impl Scene {
     /// Opens or closes the list of saved places.
     fn toggle_places(&mut self) {
         self.notice = None;
+        self.events.picker.close();
         self.import_list.close();
         self.services.picker.close();
         self.place_list.toggle();
@@ -1480,6 +1611,13 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     let view = target.create_view(&Default::default());
     let aspect = width as f64 / height as f64;
     let mut scene = Scene::new(args, DVec2::new(width as f64, height as f64));
+    if let Some(t) = args.eclipse {
+        scene.jump_to_eclipse(t);
+        // A time or a search given as well decides the picture's moment and view.
+        if let Some(time) = args.time {
+            scene.clock.stop_at(time);
+        }
+    }
     if let Some(query) = &args.search {
         scene.headless_search(query, args.search_panel, args.timeout);
     }
@@ -1494,6 +1632,9 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     if args.places_panel {
         scene.place_list.toggle();
         scene.notice = None;
+    }
+    if args.eclipses_panel {
+        scene.toggle_events();
     }
     if args.services.panel {
         scene.services.toggle();
@@ -1984,6 +2125,15 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            WindowEvent::KeyboardInput { event, .. }
+                if gfx.scene.events.picker.is_open() && list_key(&event).is_some() =>
+            {
+                if event.state == ElementState::Pressed {
+                    if let Some(key) = list_key(&event) {
+                        gfx.scene.events_key(key);
+                    }
+                }
+            }
             WindowEvent::DroppedFile(path) => gfx.scene.import_path(&path, true),
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
@@ -2021,12 +2171,14 @@ impl ApplicationHandler for App {
                             gfx.scene.notice = None;
                             gfx.scene.place_list.close();
                             gfx.scene.import_list.close();
+                            gfx.scene.events.picker.close();
                             gfx.scene.search.open_save();
                             gfx.window.set_ime_allowed(true);
                         }
                         KeyCode::KeyK if !self.mods.ctrl => gfx.scene.toggle_places(),
                         KeyCode::KeyG if !self.mods.ctrl => gfx.scene.toggle_services(),
                         KeyCode::KeyI if !self.mods.ctrl => gfx.scene.toggle_imports(),
+                        KeyCode::KeyE if !self.mods.ctrl => gfx.scene.toggle_events(),
                         KeyCode::KeyM if !self.mods.ctrl => gfx.scene.toggle_mode(),
                         _ if !self.mods.ctrl && sky_time::key_for(code, self.mods.shift).is_some() => {
                             if let Some(key) = sky_time::key_for(code, self.mods.shift) {
