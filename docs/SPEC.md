@@ -31,6 +31,7 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | Ctrl-Up, Ctrl-Down | One level closer or farther |
 | Ctrl-0 | Whole Earth, or the whole map on the map |
 | Ctrl-Alt-N | Straighten up, one step per press: north up, straight down, whole body, equator centred |
+| SpaceMouse | Push or pull: climb or sink; slide: move across the ground; twist: turn; tilt: tilt, and on through the horizon; button 1: whole body (Ctrl-0); button 2: straighten up (Ctrl-Alt-N). On the map: slide pans, push or pull zooms (see Milestone 10) |
 | Escape | Stop a flight or a gliding movement |
 | R | Show or hide roads and boundaries |
 | L | Show or hide labels |
@@ -460,13 +461,32 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
 - Markers are drawn in the tile overlay like imported points, so they are on the Earth only and have no labels or click. Only the panel's choice shows an event's details.
 - The panel and keys were not driven by hand here; the parsers, the filters and the cache logic are unit-tested and the display was checked in saved images.
 
+## Milestone 10: SpaceMouse (done, untried on a device)
+
+### Behaviour
+- A background thread looks for a 3Dconnexion SpaceMouse. It first tries the `spacenavd` socket at /var/run/spnav.sock, and if that is absent, the HID devices /dev/hidraw* whose vendor and product are 3Dconnexion's (vendor 0x256f, or 0x046d with a 3Dconnexion product number). It is started with the window, never affects start-up, and shows nothing when there is no device or no permission to read it.
+- With no device, the only activity is a look every 5 seconds. A device that goes away stops the view at once; a device that comes back is found again within 5 seconds.
+- The window is woken only when the device's reading changes. A resting device, or a stream of identical readings, causes no redraw. While the cap is held away from its centre, frames are drawn continuously.
+- A brief notice says "SpaceMouse connected" with the source.
+- Readings inside a small dead zone (6% of full deflection) count as zero, and the rest follow a curve that is finer than linear for small pushes and reaches full speed at full deflection.
+- Push or pull the cap up or down to climb or sink, in proportion to the height above ground. Sliding it moves across the ground, faster the higher the view. Twisting turns the view and tilting tilts it, up to the limits and, past the horizon, into the sky. All speeds are per second, so they do not depend on the frame rate. Manual flight's rule holds: the view stays at least 2 m above the ground.
+- Moving the device ends a flight, as moving by hand does.
+- Button 1 shows the whole body (Ctrl-0), button 2 straightens up (Ctrl-Alt-N, on the globe only).
+- On the flat map only slide (pan) and push or pull (zoom) are used.
+- `--no-spacemouse` does not look for a device. `--spacemouse-sensitivity N` scales all speeds (default 1). Neither is saved.
+
+### Limitations
+- No real device was tried: no SpaceMouse was available. The socket protocol and the HID reports were implemented from the public descriptions and checked only with byte fixtures and a fake socket in unit tests. The assignment of axis signs (which way is up, tilt and twist) and the HID report layout of the various models are assumptions; if a direction is wrong, it is a sign in `spacemouse_nav.rs` or `hid_to_frame`.
+- Reading /dev/hidraw usually needs permission. A udev rule such as `KERNEL=="hidraw*", ATTRS{idVendor}=="256f", TAG+="uaccess"` (and the same with `046d` for older models), or a running `spacenavd`, provides it. When `spacenavd` runs, the HID path is not used.
+- Only the first matching HID device is used, and its buttons beyond the first two do nothing. The device's LEDs and its own settings are not touched.
+- The first frame after a long rest moves by up to 0.1 s of motion at once.
+
 ## Later milestones
 
 Order and scope are open, and depend on which features are wanted.
 
 | # | Feature | Notes |
 |---|---|---|
-| M10 | SpaceMouse | Through HID or `spacenavd` |
 | M11 | Help dialog and clickable interface | A help icon toggles a floating window in a corner that lists the keyboard shortcuts, scrollable when they don't fit. Brings the mouse-driven interface layer that M12 and M16 also use |
 | M12 | View options and saved settings | A dialog to show or hide streets, cities, trails, trains and 3D buildings, to switch map projection, and to choose what the globe shows. Every setting is saved in the application's configuration directory; during development, a committed configuration directory in the working directory takes priority |
 | M13 | Information on click | Clicking a place on the map, such as a city name, peak or sea, opens a box with relevant data from Wikipedia and Wikidata |

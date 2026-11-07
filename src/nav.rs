@@ -84,6 +84,9 @@ pub struct Nav {
     arrows: Vec<HeldArrow>,
     flight: Option<Flight>,
     since_move: f64,
+    /// Shaped SpaceMouse axes, held until the device reports new ones, and their scale.
+    device: crate::spacemouse::Axes,
+    device_sensitivity: f64,
     pub altitude: f64,
     /// While true, the view stands the chosen distance from the ground, however the ground's
     /// height turns out as finer terrain arrives. Later, the camera holds its height instead.
@@ -102,6 +105,8 @@ impl Nav {
             arrows: Vec::new(),
             flight: None,
             since_move: 0.0,
+            device: [0.0; 6],
+            device_sensitivity: 1.0,
             altitude: cam.distance,
             starting: false,
         }
@@ -150,6 +155,7 @@ impl Nav {
             || self.glide != DVec3::ZERO
             || self.zoom_pending != 0.0
             || !self.arrows.is_empty()
+            || !crate::spacemouse_nav::is_at_rest(&self.device)
     }
 
     pub fn press(&mut self, button: Button, pos: DVec2, mods: Mods) {
@@ -255,6 +261,38 @@ impl Nav {
             ArrowMode::Fly
         };
         self.arrows.push(HeldArrow { arrow, mode, held: 0.0 });
+    }
+
+    /// Takes the latest SpaceMouse axes. A moving device ends a flight, as a hand does.
+    pub fn set_device(&mut self, axes: crate::spacemouse::Axes, sensitivity: f64) {
+        self.device = axes;
+        self.device_sensitivity = sensitivity;
+        if !crate::spacemouse_nav::is_at_rest(&axes) {
+            self.end_automatic_motion();
+            self.zoom_pending = 0.0;
+        }
+    }
+
+    pub fn device(&self) -> (crate::spacemouse::Axes, f64) {
+        (self.device, self.device_sensitivity)
+    }
+
+    fn step_device(&mut self, dt: f64) {
+        if crate::spacemouse_nav::is_at_rest(&self.device) {
+            return;
+        }
+        let s = crate::spacemouse_nav::globe_step(&self.device, self.device_sensitivity, dt);
+        let f = self.cam.ground_forward();
+        let (_, _, up) = enu(self.cam.lat, self.cam.lon);
+        let dir = f * s.forward + f.cross(up) * s.right;
+        let len = dir.length();
+        if len > 0.0 {
+            let angle = self.cam.distance * len / radius();
+            self.cam.apply_rotation(DQuat::from_axis_angle(up.cross(dir / len).normalize(), angle));
+        }
+        self.cam.distance *= s.climb.exp();
+        self.cam.heading += s.turn;
+        self.cam.add_tilt(s.tilt);
     }
 
     pub fn arrow_up(&mut self, arrow: Arrow) {
@@ -415,6 +453,7 @@ impl Nav {
         self.since_move += dt;
         self.step_flight(dt);
         self.step_arrows(dt);
+        self.step_device(dt);
         self.step_zoom(dt);
         self.step_glide(dt);
         self.cam.clamp();
@@ -724,5 +763,71 @@ mod tests {
         for _ in 0..(seconds * 60.0) as usize {
             n.tick(1.0 / 60.0, ground);
         }
+    }
+
+    #[test]
+    fn device_moves_the_camera_and_ends_a_flight() {
+        let mut n = nav();
+        n.whole_body();
+        assert!(n.flight.is_some());
+        n.set_device([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.0);
+        assert!(n.flight.is_some(), "a resting device leaves the flight alone");
+        n.set_device([0.0, 0.5, 0.0, 0.0, 0.0, 0.0], 1.0);
+        assert!(n.flight.is_none());
+        assert!(n.is_animating());
+        let d = n.cam.distance;
+        n.tick(0.1, NO_GROUND);
+        assert!(n.cam.distance > d);
+        n.set_device([0.0; 6], 1.0);
+        assert!(!n.is_animating());
+    }
+
+    #[test]
+    fn device_speed_follows_height_not_frame_rate() {
+        let axes = [0.5, 0.3, -0.4, 0.2, 0.5, 0.0];
+        let go = |dist: f64, steps: usize| {
+            let mut n = nav();
+            n.cam.distance = dist;
+            n.set_device(axes, 1.0);
+            for _ in 0..steps {
+                n.tick(1.0 / steps as f64, NO_GROUND);
+            }
+            n.cam
+        };
+        let (a, b) = (go(100_000.0, 30), go(100_000.0, 240));
+        assert!((a.lat - b.lat).abs() < 1e-3 && (a.lon - b.lon).abs() < 1e-3);
+        assert!((a.distance / b.distance - 1.0).abs() < 1e-6);
+        assert!((a.heading - b.heading).abs() < 1e-3);
+        // Ten times lower, ten times less ground covered.
+        let (hi, lo) = (go(100_000.0, 60), go(10_000.0, 60));
+        let moved = |c: Camera| ((c.lat - 0.82).powi(2) + ((c.lon - 0.2) * 0.82f64.cos()).powi(2)).sqrt();
+        assert!((moved(hi) / moved(lo) - 10.0).abs() < 1.5, "{} {}", moved(hi), moved(lo));
+    }
+
+    #[test]
+    fn device_tilts_past_the_horizon_and_respects_limits() {
+        let mut n = nav();
+        n.set_device([0.0, 0.0, 0.0, -1.0, 0.0, 0.0], 1.0);
+        run(&mut n, 6.0);
+        assert!(n.cam.sky > 0.0, "tilting on looks up into the sky");
+        assert!(n.cam.total_tilt() <= MAX_TILT + crate::camera::MAX_SKY + 1e-9);
+        n.set_device([0.0, 0.0, 0.0, 1.0, 0.0, 0.0], 1.0);
+        run(&mut n, 10.0);
+        assert_eq!(n.cam.total_tilt(), 0.0);
+        n.set_device([0.0, -1.0, 0.0, 0.0, 0.0, 0.0], 1.0);
+        run(&mut n, 30.0);
+        assert!(n.cam.distance >= crate::camera::MIN_DISTANCE);
+    }
+
+    #[test]
+    fn device_sinking_keeps_two_metres_above_ground() {
+        let mut n = Nav::new(Camera { distance: 500.0, tilt: 0.0, ..nav().cam }, SIZE);
+        let ground = |_: f64, _: f64| Some(120.0);
+        n.cam.target_h = 120.0;
+        n.set_device([0.0, -1.0, 0.0, 0.0, 0.0, 0.0], 1.0);
+        for _ in 0..600 {
+            n.tick(1.0 / 60.0, &ground);
+        }
+        assert!(n.altitude >= 2.0 - 1e-6, "altitude {}", n.altitude);
     }
 }

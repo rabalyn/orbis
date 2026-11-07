@@ -30,6 +30,8 @@ mod search;
 mod service_ui;
 mod select;
 mod sky;
+mod spacemouse;
+mod spacemouse_nav;
 mod sky_time;
 mod servers;
 mod service_lib;
@@ -61,7 +63,7 @@ use std::time::{Duration, Instant, SystemTime};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
@@ -112,6 +114,8 @@ Usage: orbis [options]
   --time-speed N          clock seconds per real second (default 1)
   --no-sun                start with flat, always-lit imagery (key S)
   --no-stars              start with stars, planets and the Moon hidden (key O)
+  --no-spacemouse         do not look for a SpaceMouse (spacenavd or USB)
+  --spacemouse-sensitivity N  scale SpaceMouse speed (default 1)
   --fps 120|90            frame rate limit (default 120, key F switches)
   --benchmark SECONDS     turn the view in the window, print frame timings and exit
   --cache-dir PATH        tile cache location
@@ -188,6 +192,8 @@ struct Args {
     time_speed: f64,
     sun: bool,
     stars: bool,
+    spacemouse: bool,
+    spacemouse_sensitivity: f64,
     limit: FrameLimit,
     benchmark: Option<f64>,
     cache_limit_gib: u64,
@@ -253,6 +259,8 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
         time_speed: 1.0,
         sun: true,
         stars: true,
+        spacemouse: true,
+        spacemouse_sensitivity: 1.0,
         limit: FrameLimit::Fps120,
         benchmark: None,
         cache_limit_gib: CACHE_LIMIT_GIB,
@@ -293,6 +301,10 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             }
             "--no-stars" => {
                 a.stars = false;
+                continue;
+            }
+            "--no-spacemouse" => {
+                a.spacemouse = false;
                 continue;
             }
             "--no-sun" => {
@@ -378,6 +390,13 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
                 a.eclipse = Some(sky_time::parse_iso8601(&value).ok_or_else(|| anyhow!("--eclipse expects a date such as 2024-04-08"))?)
             }
             "--time-speed" => a.time_speed = num()?,
+            "--spacemouse-sensitivity" => {
+                let n = num()?;
+                if !(n.is_finite() && n > 0.0) {
+                    bail!("--spacemouse-sensitivity expects a number above 0");
+                }
+                a.spacemouse_sensitivity = n.min(20.0);
+            }
             "--exaggeration" => a.exaggeration = num()? as f32,
             "--atlas" => {
                 a.atlas = Some(Projection::parse(&value).ok_or_else(|| {
@@ -1175,6 +1194,8 @@ impl Scene {
         let received = self.receive(r);
         let atlas = self.mode == Mode::Atlas;
         let selection = if atlas {
+            let (axes, sens) = self.nav.device();
+            self.map.device(&axes, sens, dt);
             let size = DVec2::new((aspect_height.0 * aspect_height.1).round(), aspect_height.1);
             if self.map.view.size != (size.x, size.y) {
                 self.map.resize(size);
@@ -1691,6 +1712,17 @@ impl Scene {
         self.map.release();
     }
 
+    /// A SpaceMouse button: the same as Ctrl-0 and Ctrl-Alt-N.
+    fn spacemouse_action(&mut self, a: spacemouse::Action) {
+        let atlas = self.mode == Mode::Atlas;
+        match a {
+            spacemouse::Action::WholeBody if atlas => self.map.key(atlas_nav::Key::Whole),
+            spacemouse::Action::WholeBody => self.nav.whole_body(),
+            spacemouse::Action::Straighten if !atlas => self.nav.straighten(),
+            spacemouse::Action::Straighten => {}
+        }
+    }
+
     /// Hands the renderer the flat map's meshes, or tells it to draw the globe.
     fn prepare_draw(&self, r: &mut Renderer) {
         r.set_atlas((self.mode == Mode::Atlas).then_some((&self.map.view, self.draw.as_slice())));
@@ -1915,8 +1947,16 @@ struct Benchmark {
     intervals: Vec<f64>,
 }
 
+/// Events sent to the window from other threads.
+#[derive(Debug)]
+enum UserEvent {
+    SpaceMouse,
+}
+
 struct App {
     args: Args,
+    proxy: EventLoopProxy<UserEvent>,
+    spacemouse: Option<spacemouse::Handle>,
     gfx: Option<Gfx>,
     error: Option<anyhow::Error>,
     mods: Mods,
@@ -2065,13 +2105,22 @@ impl App {
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.gfx.is_some() {
             return;
         }
         match self.start(event_loop) {
             Ok(g) => {
+                if self.args.spacemouse && self.args.benchmark.is_none() && self.spacemouse.is_none() {
+                    let proxy = self.proxy.clone();
+                    self.spacemouse = Some(spacemouse::spawn(
+                        spacemouse::Config::default(),
+                        Arc::new(move || {
+                            let _ = proxy.send_event(UserEvent::SpaceMouse);
+                        }),
+                    ));
+                }
                 g.window.request_redraw();
                 self.gfx = Some(g);
             }
@@ -2080,6 +2129,20 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
         }
+    }
+
+    fn user_event(&mut self, _: &ActiveEventLoop, event: UserEvent) {
+        let (UserEvent::SpaceMouse, Some(gfx), Some(sm)) = (event, &mut self.gfx, &self.spacemouse) else { return };
+        let u = sm.shared.drain();
+        let scene = &mut gfx.scene;
+        scene.nav.set_device(u.axes, self.args.spacemouse_sensitivity);
+        for a in u.actions {
+            scene.spacemouse_action(a);
+        }
+        if let Some(n) = u.notice {
+            scene.notice = Some(n);
+        }
+        gfx.redraw_wanted = true;
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -2460,9 +2523,11 @@ fn main() -> Result<()> {
     if let Some(path) = args.screenshot.clone() {
         return screenshot(&args, &path);
     }
-    let event_loop = EventLoop::new().context("could not connect to the display")?;
+    let event_loop = EventLoop::<UserEvent>::with_user_event().build().context("could not connect to the display")?;
     let mut app = App {
         args,
+        proxy: event_loop.create_proxy(),
+        spacemouse: None,
         gfx: None,
         error: None,
         mods: Mods::default(),
@@ -2483,6 +2548,16 @@ mod tests {
 
     fn parse(s: &[&str]) -> Result<Option<Args>> {
         parse_args(s.iter().map(|x| x.to_string()))
+    }
+
+    #[test]
+    fn spacemouse_options() {
+        let a = parse(&[]).unwrap().unwrap();
+        assert!(a.spacemouse && a.spacemouse_sensitivity == 1.0);
+        let a = parse(&["--no-spacemouse", "--spacemouse-sensitivity", "2.5"]).unwrap().unwrap();
+        assert!(!a.spacemouse && a.spacemouse_sensitivity == 2.5);
+        assert!(parse(&["--spacemouse-sensitivity", "0"]).is_err());
+        assert!(parse(&["--spacemouse-sensitivity", "-1"]).is_err());
     }
 
     #[test]

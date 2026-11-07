@@ -79,6 +79,18 @@ impl AtlasNav {
         }
     }
 
+    /// Moves the map for SpaceMouse axes held for `dt`: pan and zoom only. Returns whether it changed.
+    pub fn device(&mut self, axes: &crate::spacemouse::Axes, sensitivity: f64, dt: f64) -> bool {
+        if crate::spacemouse_nav::is_at_rest(axes) {
+            return false;
+        }
+        let s = crate::spacemouse_nav::atlas_step(axes, sensitivity, dt);
+        let before = self.view;
+        self.view.pan(s.dx, s.dy);
+        self.view.zoom_at((self.view.size.0 / 2.0, self.view.size.1 / 2.0), s.zoom);
+        self.view != before
+    }
+
     pub fn resize(&mut self, size: DVec2) {
         self.view.resize((size.x, size.y));
     }

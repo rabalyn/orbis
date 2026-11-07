@@ -45,6 +45,8 @@ G lists map services (WMS, WMTS or XYZ) to use as the Earth's imagery or to lay 
 
 `--body moon|mars|mercury|ceres|vesta` shows that body instead of the Earth, lit by the Sun at the clock's time, with its own imagery and the planets in its sky.
 
+A 3Dconnexion SpaceMouse is used when found, through `spacenavd` or `/dev/hidraw*` (for the latter, a udev rule such as `KERNEL=="hidraw*", ATTRS{idVendor}=="256f", TAG+="uaccess"` gives your user access). It flies, turns and tilts the view, and its two buttons show the whole body and straighten up. It has not yet been tried on a real device. `--no-spacemouse` turns it off and `--spacemouse-sensitivity N` scales its speed.
+
 `--help` lists all options. If your desktop reserves Alt-drag for moving windows, use
 right-drag to turn and tilt.
 
