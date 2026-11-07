@@ -37,6 +37,8 @@ The globe is lit by the Sun at the current time (shown in UTC). Space pauses the
 
 Ctrl-F opens a search box: type a place name or coordinates such as `46.5, 11.8`, press Enter, choose with Up and Down, and Enter again to fly there. Names are looked up on OpenStreetMap's Nominatim, only when you press Enter.
 
+Ctrl-S saves the current view as a named place, and K lists the saved places to fly to or delete (kept in `orbis/places.json` in your config folder). `--import FILE`, or dropping a file on the window, shows the contents of a GeoJSON, GPX, KML, KMZ or IGC file on the Earth; I lists its items.
+
 `--body moon|mars|mercury|ceres|vesta` shows that body instead of the Earth, lit by the Sun at the clock's time, with its own imagery and the planets in its sky.
 
 `--help` lists all options. If your desktop reserves Alt-drag for moving windows, use

@@ -897,6 +897,13 @@ impl Renderer {
         self.tiles.get(&k).is_some_and(|t| t.overlay.is_some())
     }
 
+    /// Drops every tile's overlay, as when what they were drawn from has changed.
+    pub fn clear_overlays(&mut self) {
+        for tile in self.tiles.values_mut() {
+            tile.overlay = None;
+        }
+    }
+
     /// Attaches an overlay to its tile. If the tile has gone meanwhile, it is asked for again
     /// whenever the tile returns.
     pub fn insert_overlay(&mut self, k: TileKey, mips: &[(u32, u32, Vec<u8>)]) {

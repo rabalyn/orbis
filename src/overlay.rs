@@ -2,6 +2,9 @@
 //! laid over the tile's imagery, so lines follow the terrain without any 3D geometry.
 
 use crate::geo::TileKey;
+use crate::import::Imported;
+use crate::import_draw;
+use std::sync::Arc;
 use crate::vector::{Line, RoadClass, VectorTile};
 use tiny_skia::{Color, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, StrokeDash, Transform};
 
@@ -113,7 +116,7 @@ fn stroke(
 
 /// Draws the lines for `tile`, whose data comes from the `source` vector tile. Returns
 /// premultiplied RGBA, or `None` when nothing was drawn.
-pub fn render(data: &VectorTile, tile: TileKey, source: TileKey) -> Option<Vec<u8>> {
+pub fn render(data: &VectorTile, tile: TileKey, source: TileKey, imports: &[Arc<Imported>]) -> Option<Vec<u8>> {
     let place = placement(tile, source);
     let margin = 32.0;
     let z = tile.z;
@@ -134,7 +137,8 @@ pub fn render(data: &VectorTile, tile: TileKey, source: TileKey) -> Option<Vec<u
         }
         push(&mut groups, 1000 - boundary.admin_level as i32, style, &boundary.line);
     }
-    if groups.is_empty() {
+    let imported = import_draw::touches(imports, tile);
+    if groups.is_empty() && !imported {
         return None;
     }
     groups.sort_by_key(|g| g.0);
@@ -149,6 +153,10 @@ pub fn render(data: &VectorTile, tile: TileKey, source: TileKey) -> Option<Vec<u
     }
     for (_, style, lines) in &groups {
         stroke(&mut pixmap, lines, place, style.width * TEXELS_PER_PIXEL, style.color, style.dash);
+    }
+    // What was imported lies over the roads.
+    if imported {
+        import_draw::draw(&mut pixmap, imports, tile);
     }
     Some(pixmap.take())
 }
@@ -201,7 +209,7 @@ mod tests {
     #[test]
     fn empty_tiles_produce_no_image() {
         let key = TileKey::new(12, 100, 100);
-        assert!(render(&VectorTile::default(), key, key).is_none());
+        assert!(render(&VectorTile::default(), key, key, &[]).is_none());
     }
 
     #[test]
@@ -211,7 +219,7 @@ mod tests {
             roads: vec![road(RoadClass::Motorway, vec![[0.0, 0.5], [1.0, 0.5]])],
             ..Default::default()
         };
-        let image = render(&data, key, key).unwrap();
+        let image = render(&data, key, key, &[]).unwrap();
         assert_eq!(image.len(), (OVERLAY_SIZE * OVERLAY_SIZE * 4) as usize);
         assert!(alpha_at(&image, 256, 256) > 200);
         assert_eq!(alpha_at(&image, 256, 50), 0);
@@ -226,11 +234,11 @@ mod tests {
             roads: vec![road(RoadClass::Motorway, vec![[0.5, 0.75], [1.0, 0.75]])],
             ..Default::default()
         };
-        let image = render(&data, child, source).unwrap();
+        let image = render(&data, child, source, &[]).unwrap();
         assert!(alpha_at(&image, 256, 256) > 200, "runs through the child's middle");
         assert_eq!(alpha_at(&image, 256, 20), 0);
         // The other child sees none of it.
-        assert!(render(&data, TileKey::new(15, 2000, 2000), source).is_none());
+        assert!(render(&data, TileKey::new(15, 2000, 2000), source, &[]).is_none());
     }
 
     #[test]
@@ -243,7 +251,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let image = render(&data, key, key).unwrap();
+        let image = render(&data, key, key, &[]).unwrap();
         assert!(alpha_at(&image, 100, 256) > 100);
         assert_eq!(alpha_at(&image, 256, 100), 0, "local boundaries stay hidden");
     }
@@ -255,7 +263,7 @@ mod tests {
             roads: vec![road(RoadClass::Minor, vec![[0.0, 0.5], [1.0, 0.5]])],
             ..Default::default()
         };
-        let image = render(&data, key, key).unwrap();
+        let image = render(&data, key, key, &[]).unwrap();
         assert!(image.chunks(4).all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]));
     }
 }

@@ -3,6 +3,7 @@
 use crate::buildings::{self, BuildingMesh};
 use crate::fetcher::{FetchError, Fetcher, Wait};
 use crate::geo::{geodetic_to_ecef, radius, TileKey};
+use crate::import::Imported;
 use crate::overlay::{self, OVERLAY_SIZE};
 use crate::sources;
 use crate::vector::{self, Label, VectorTile};
@@ -60,6 +61,8 @@ pub struct OverlayData {
     pub labels: Arc<Vec<Label>>,
     /// Premultiplied RGBA8 mip chain, largest first. `None` when there are no lines to draw.
     pub mips: Option<Vec<(u32, u32, Vec<u8>)>>,
+    /// The state of the imports it was drawn with.
+    pub generation: u64,
 }
 
 pub enum Outcome {
@@ -322,6 +325,8 @@ struct Shared {
     wake: Condvar,
     dems: Mutex<HashMap<TileKey, Arc<Dem>>>,
     vectors: Mutex<HashMap<TileKey, Arc<VectorTile>>>,
+    /// What was imported, with the count of changes that made it.
+    imports: Mutex<(Arc<Vec<Arc<Imported>>>, u64)>,
 }
 
 impl Shared {
@@ -376,9 +381,10 @@ impl Shared {
             Ok(tile) => tile,
             Err(e) => return after_failure(e, k, Outcome::OverlayRetry),
         };
-        let mips = overlay::render(&tile, k, source)
+        let (imports, generation) = self.imports.lock().unwrap().clone();
+        let mips = overlay::render(&tile, k, source, &imports)
             .map(|rgba| build_mips(OVERLAY_SIZE, OVERLAY_SIZE, rgba));
-        Outcome::Overlay(Box::new(OverlayData { key: k, source, labels: tile.labels.clone(), mips }))
+        Outcome::Overlay(Box::new(OverlayData { key: k, source, labels: tile.labels.clone(), mips, generation }))
     }
 
     fn dem(&self, k: TileKey) -> Result<Arc<Dem>, FetchError> {
@@ -474,6 +480,7 @@ impl Loader {
             wake: Condvar::new(),
             dems: Mutex::new(HashMap::new()),
             vectors: Mutex::new(HashMap::new()),
+            imports: Mutex::new((Arc::default(), 0)),
         });
         let (tx, results) = sync_channel(RESULT_QUEUE);
         for _ in 0..WORKERS {
@@ -481,6 +488,12 @@ impl Loader {
             std::thread::spawn(move || worker(&shared, &tx));
         }
         Self { shared, results }
+    }
+
+    /// Sets what overlays are drawn with besides map data. Overlays already drawn carry the
+    /// generation they were made with, so that older ones can be told apart.
+    pub fn set_imports(&self, docs: Arc<Vec<Arc<Imported>>>, generation: u64) {
+        *self.shared.imports.lock().unwrap() = (docs, generation);
     }
 
     /// Replaces the queue, so tiles the view no longer needs are not fetched. Imagery and

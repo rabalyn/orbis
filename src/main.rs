@@ -18,6 +18,7 @@ mod planetary;
 mod planets;
 mod render;
 mod import;
+mod import_draw;
 mod places;
 mod search;
 mod select;
@@ -64,6 +65,8 @@ Map: OpenFreeMap © OpenMapTiles Data from OpenStreetMap";
 const STARS_CREDIT: &str = "Stars: HYG database by David Nash, CC BY-SA 4.0";
 /// The search panel is no wider than this many characters, and keeps clear of the readout.
 const SEARCH_COLUMNS: usize = 72;
+/// Imported points that are given a name label at most.
+const IMPORT_LABELS: usize = 3000;
 const GIB: u64 = 1024 * 1024 * 1024;
 const CACHE_LIMIT_GIB: u64 = 10;
 /// A long-running program checks its cache's size this often.
@@ -431,9 +434,13 @@ struct Scene {
     places: places::Store,
     place_list: places::Picker,
     library: import::Library,
+    /// Names of imported points, placed like map labels.
+    import_labels: Arc<Vec<vector::Label>>,
     import_list: places::Picker,
     /// Something to tell the user, shown until the next list is opened or Escape is pressed.
     notice: Option<String>,
+    /// The renderer is to drop its overlays at the next update.
+    clear_overlays: bool,
     geocoder: geocode::Geocoder,
     /// Keeps a slow tick going for tiles waiting out a retry delay.
     last_retry_tick: Instant,
@@ -611,7 +618,9 @@ impl Scene {
             notice: places.notice.clone(),
             places,
             place_list: places::Picker::default(),
+            clear_overlays: false,
             library: import::Library::default(),
+            import_labels: Arc::default(),
             import_list: places::Picker::default(),
             geocoder: geocode::Geocoder::new(fetcher.clone(), args.geocoder_url.clone(), args.lang.clone()),
             fetcher,
@@ -671,6 +680,7 @@ impl Scene {
                     if doc.truncated { " (the rest was left out, the file is too big)" } else { "" }
                 ));
                 self.library.add(doc);
+                self.imports_changed();
                 self.import_list.clamp(self.library.item_count());
                 if let Some(t) = target.filter(|_| fly) {
                     self.fly_to(t);
@@ -679,6 +689,28 @@ impl Scene {
             Err(e) => self.notice = Some(format!("{shown} could not be imported: {e}.")),
         }
         eprintln!("{}", self.notice.as_deref().unwrap_or(""));
+    }
+
+    /// Starts the drawn overlays and labels over from the new contents.
+    fn imports_changed(&mut self) {
+        self.loader.set_imports(self.library.snapshot(), self.library.generation);
+        self.overlay_empty.clear();
+        self.overlay_retries.clear();
+        self.clear_overlays = true;
+        let mut labels = Vec::new();
+        'files: for doc in self.library.snapshot().iter() {
+            for item in &doc.items {
+                let import::Shape::Point(p) = &item.shape else { continue };
+                if item.name.is_empty() {
+                    continue;
+                }
+                if labels.len() >= IMPORT_LABELS {
+                    break 'files;
+                }
+                labels.push(vector::Label { text: item.name.clone(), style: vector::LabelStyle::Town, priority: -1000, lat: p.lat, lon: p.lon, along: None });
+            }
+        }
+        self.import_labels = Arc::new(labels);
     }
 
     fn toggle_imports(&mut self) {
@@ -748,6 +780,10 @@ impl Scene {
 
     fn collect_results(&mut self, r: &mut Renderer) -> bool {
         let mut changed = false;
+        if std::mem::take(&mut self.clear_overlays) {
+            r.clear_overlays();
+            changed = true;
+        }
         for _ in 0..UPLOADS_PER_FRAME {
             match self.loader.try_result() {
                 Some(Outcome::Ready(data)) => {
@@ -760,8 +796,13 @@ impl Scene {
                 }
                 Some(Outcome::Retry(k, until)) => next_retry(&mut self.retries, k, until),
                 Some(Outcome::Overlay(data)) => {
-                    self.overlay_retries.remove(&data.key);
                     self.label_sets.insert(data.source, data.labels.clone());
+                    // Drawn before the imports last changed: the tile will be asked for again.
+                    if data.generation != self.library.generation {
+                        changed = true;
+                        continue;
+                    }
+                    self.overlay_retries.remove(&data.key);
                     match &data.mips {
                         Some(mips) => r.insert_overlay(data.key, mips),
                         None => {
@@ -896,7 +937,10 @@ impl Scene {
         // position in this list keeps them from swapping between frames.
         let mut ordered: Vec<TileKey> = sources.iter().copied().collect();
         ordered.sort_unstable();
-        let sets: Vec<_> = ordered.iter().filter_map(|k| self.label_sets.get(k).cloned()).collect();
+        let mut sets: Vec<_> = ordered.iter().filter_map(|k| self.label_sets.get(k).cloned()).collect();
+        if !self.import_labels.is_empty() {
+            sets.push(self.import_labels.clone());
+        }
 
         let pad = |p: [f64; 4]| [p[0] - 4.0, p[1] - 4.0, p[2] + 4.0, p[3] + 4.0];
         let screen = Screen {

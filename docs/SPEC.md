@@ -333,7 +333,7 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
 - The user agent names the program but gives no contact address.
 - The window's key handling was not driven by hand here; the logic is unit-tested.
 
-## Milestone 7b: saved places, file import (in progress)
+## Milestone 7b: saved places and file import (done)
 
 ### Saved places
 
@@ -370,7 +370,32 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
   predefined and numeric ones are not expanded, nesting is limited, and positions that are not on the globe
   are skipped. Damaged files give a message on screen, never a crash.
 - I lists the imported items at the top left; Enter flies to the chosen item's bounding box (a point to 4 km).
-- Imports are for Earth. On another body a message says so and nothing is read.
+- Imports are for Earth. On another body a message says so and nothing is read. Files do not name a body, so
+  none is assumed other than Earth.
+
+### Showing imports
+
+- Lines and areas are drawn into the tile overlays, with the roads and on top of them, so they follow the
+  terrain on the globe and on the map. Lines are red with a dark edge; areas have a translucent yellow fill
+  (holes stay open) and a yellow outline; points are white dots with a red ring.
+- Names of points are labels on the globe, placed before the map's own labels (at most 3000), and are
+  hidden by the label key L. The line key R hides imported lines, areas and dots with the roads.
+- Adding a file drops every drawn overlay, so the tiles in view are drawn again with it.
+- Lines that cross the antimeridian are cut there, not drawn round the world. Very long lines are thinned to
+  points at least half a texel apart. Latitudes beyond 85.05° are drawn at the edge of the map.
+
+### Limitations (7b)
+
+- Altitude is read but not used: lines lie on the terrain, and nothing floats above it.
+- Colours, line styles, icons and descriptions in the files are ignored; KML `gx:Track`, NetworkLinks,
+  GroundOverlays and Models are skipped; GPX extensions and times are not read.
+- On the flat map points are dots without names, as the map shows no labels.
+- A point's name is centred on its dot, so it hides the dot while it is shown.
+- A name that collides with another is left out, as for map labels.
+- The format is recognised from the contents; XML in UTF-16 or other non-UTF-8 encodings is not read.
+- There is no way to remove an import short of restarting. Imports are not remembered between runs.
+- Dropping and the keys were not driven by hand here; the logic is unit-tested and the display was
+  checked in saved images only.
 
 ## Later milestones
 
@@ -378,7 +403,6 @@ Order and scope are open, and depend on which features are wanted.
 
 | # | Feature | Notes |
 |---|---|---|
-| M7b | File import | KML, KMZ, GeoJSON, GPX and IGC import (saved places are done) |
 | M8 | Map service library | User-added WMS, WMTS and XYZ, with an independently built directory |
 | M9 | Events | Computed eclipses, plus earthquakes, eruptions, tsunamis and fireballs |
 | M10 | SpaceMouse | Through HID or `spacenavd` |

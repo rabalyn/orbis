@@ -51,9 +51,21 @@ pub enum Shape {
 pub struct Item {
     pub name: String,
     pub shape: Shape,
+    /// South, west, north and east limits of the positions, not allowing for the antimeridian.
+    pub extent: [f64; 4],
 }
 
 impl Item {
+    pub fn new(name: &str, shape: Shape) -> Item {
+        let mut item = Item { name: clean(name), shape, extent: [0.0; 4] };
+        let mut e = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+        for p in item.positions() {
+            e = [e[0].min(p.lat), e[1].min(p.lon), e[2].max(p.lat), e[3].max(p.lon)];
+        }
+        item.extent = e;
+        item
+    }
+
     pub fn positions(&self) -> Box<dyn Iterator<Item = &Pos> + '_> {
         match &self.shape {
             Shape::Point(p) => Box::new(std::iter::once(p)),
@@ -173,6 +185,11 @@ impl Library {
         self.generation += 1;
     }
 
+    /// The contents as they are now, for another thread.
+    pub fn snapshot(&self) -> Arc<Vec<Arc<Imported>>> {
+        self.docs.clone()
+    }
+
     /// The number of items in all files.
     pub fn item_count(&self) -> usize {
         self.docs.iter().map(|d| d.items.len()).sum()
@@ -211,7 +228,7 @@ impl Builder {
             return false;
         }
         self.points += count;
-        self.items.push(Item { name: clean(name), shape });
+        self.items.push(Item::new(name, shape));
         true
     }
 
