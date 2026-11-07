@@ -48,6 +48,7 @@ mod service_lib;
 mod services;
 mod sources;
 mod text;
+mod time_slider;
 mod ui;
 mod ui_draw;
 mod vector;

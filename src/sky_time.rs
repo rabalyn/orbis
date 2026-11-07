@@ -89,11 +89,14 @@ pub struct Clock {
     rate: f64,
     running: bool,
     last_real: f64,
+    /// A slider holds the clock while it is dragged: the time stays where it is put, and the
+    /// running or paused state and the rate are as they were.
+    held: bool,
 }
 
 impl Clock {
     pub fn new(time: f64, real: f64) -> Self {
-        Self { time, rate: 1.0, running: true, last_real: real }
+        Self { time, rate: 1.0, running: true, last_real: real, held: false }
     }
 
     pub fn time(&self) -> f64 {
@@ -105,9 +108,26 @@ impl Clock {
         self.rate
     }
 
-    #[cfg(test)]
     pub fn is_running(&self) -> bool {
         self.running
+    }
+
+    /// Sets the reading and leaves the clock running or paused, as it was.
+    pub fn set_time(&mut self, time: f64) {
+        self.time = time;
+    }
+
+    /// Stops the time from advancing while a slider is dragged. `release` lets it go on.
+    pub fn hold(&mut self) {
+        self.held = true;
+    }
+
+    pub fn release(&mut self) {
+        self.held = false;
+    }
+
+    pub fn is_held(&self) -> bool {
+        self.held
     }
 
     pub fn pause(&mut self) {
@@ -126,7 +146,7 @@ impl Clock {
 
     /// Brings the clock up to a reading of real time, in seconds from any fixed start.
     pub fn advance(&mut self, real: f64) {
-        if self.running {
+        if self.running && !self.held {
             self.time += (real - self.last_real) * self.rate;
         }
         self.last_real = real;
@@ -150,7 +170,7 @@ impl Clock {
 
     /// True when running fast enough that the picture changes every frame.
     pub fn is_fast(&self) -> bool {
-        self.running && self.rate.abs() >= CONTINUOUS_RATE
+        self.running && !self.held && self.rate.abs() >= CONTINUOUS_RATE
     }
 
     /// How many real seconds until the Sun has moved enough from where `drawn` was drawn
@@ -161,7 +181,7 @@ impl Clock {
         if moved >= limit {
             return Some(0.0);
         }
-        if !self.running || self.rate == 0.0 {
+        if !self.running || self.held || self.rate == 0.0 {
             return None;
         }
         Some((limit - moved) / self.rate.abs())
@@ -170,6 +190,16 @@ impl Clock {
     /// The date and time in UTC for the on-screen display, with a note on the speed.
     /// Seconds are only shown when they change the display more often than once a minute.
     pub fn label(&self) -> String {
+        let mut text = self.reading();
+        if let Some(mark) = crate::time_slider::clock_mark(self.time) {
+            text.push_str("  ");
+            text.push_str(mark);
+        }
+        text
+    }
+
+    /// The label without the mark for dates the formulae do not cover.
+    pub fn reading(&self) -> String {
         let seconds = !self.running || self.rate != 1.0;
         let mut text = format_utc(self.time, seconds);
         if !self.running {
@@ -452,5 +482,37 @@ mod tests {
         assert_eq!(c.label(), "2026-06-21 12:00:07 UTC  x10");
         c.apply(ClockKey::PauseResume, 0.0);
         assert_eq!(c.label(), "2026-06-21 12:00:07 UTC  paused");
+    }
+
+    #[test]
+    fn a_held_clock_stands_still_and_goes_on_as_it_was_when_let_go() {
+        for (running, rate) in [(true, 60.0), (false, 1.0)] {
+            let mut c = Clock::new(1000.0, 0.0);
+            c.set_rate(rate);
+            if !running {
+                c.pause();
+            }
+            c.advance(10.0);
+            let before = c.time();
+            c.hold();
+            c.advance(20.0);
+            c.set_time(5000.0);
+            c.advance(30.0);
+            assert_eq!(c.time(), 5000.0);
+            assert!(c.redraw_in(5000.0).is_none() && !c.is_fast());
+            c.release();
+            assert_eq!((c.is_running(), c.rate()), (running, rate));
+            c.advance(40.0);
+            assert_eq!(c.time(), 5000.0 + if running { 10.0 * rate } else { 0.0 }, "{before}");
+        }
+    }
+
+    #[test]
+    fn the_clock_line_marks_dates_beyond_the_planet_formulae() {
+        let line = |t: &str| Clock::new(parse_iso8601(t).unwrap(), 0.0).label();
+        assert!(!line("2026-06-21T12:00:00Z").contains("approximate"));
+        assert!(!line("1850-06-21T12:00:00Z").contains("approximate"));
+        assert!(line("1700-01-01T12:00:00Z").contains("approximate"));
+        assert!(line("1700-01-01T12:00:00Z").starts_with("1700-01-01 12:00 UTC"));
     }
 }
