@@ -13,6 +13,7 @@ mod moon;
 mod nav;
 mod overlay;
 mod pacing;
+mod planetary;
 mod planets;
 mod render;
 mod select;
@@ -76,8 +77,8 @@ orbis: a globe viewer
 Usage: orbis [options]
 
   --lat DEG  --lon DEG    view point (default 30, 10)
-  --body NAME             the body to view: earth or moon (default earth). The Moon is
-                          a smooth sphere with no roads, labels or buildings
+  --body NAME             the body to view: earth, moon, mars, mercury, ceres or vesta
+                          (default earth). The others are smooth, with no roads, labels or buildings
   --distance METRES       distance from the view point (default the whole body)
   --heading DEG           heading, 0 is north up
   --tilt DEG              tilt, 0 is straight down

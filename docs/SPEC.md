@@ -214,7 +214,7 @@ sharper imagery near the ground.
 ## Milestone 6a: other bodies, the Moon first (done)
 
 ### Choosing a body
-- `--body earth` (the default) or `--body moon` selects the body for the whole run. Everything
+- `--body earth` (the default), `moon`, `mars`, `mercury`, `ceres` or `vesta` selects the body for the whole run. Everything
   follows it: geodesy and altitude, the zoom limits, the whole-body view, the horizon, the tile grid,
   lighting and the sky. Earth's behaviour and requests are unchanged.
 - Bodies are entries of an immutable table (`src/body.rs`) holding the semi-axes, the tile grid, whether
@@ -248,13 +248,59 @@ sharper imagery near the ground.
 - The Earth in the Moon's sky is a plain disc without clouds or oceans.
 - No switching of body while running; restart with `--body`.
 
+## Milestone 6b: Mars, Mercury, Ceres and Vesta (done)
+
+These are table entries like the Moon's (`src/body.rs`), chosen with `--body mars|mercury|ceres|vesta`.
+Each is a smooth body with no roads, labels, buildings, terrain or air, carrying one global
+image from NASA's Trek services, a sharp terminator and stars in the sky.
+
+- Shapes: Mars is the IAU 2015 spheroid (3396.19 km equatorial, 3376.20 km polar), Mercury a sphere of
+  2439.4 km, Ceres a spheroid of 487.3 and 446.0 km, Vesta a spheroid of 284.5 and 229.0 km (its published
+  figure is a triaxial 289, 280 and 229 km; the equatorial axes are averaged).
+- Latitude and longitude are as on the Moon: longitude counted east, `--lat` and the HUD in geodetic
+  (planetographic) latitude on the spheroid. The imagery is laid out in planetocentric latitude, so
+  its rows are converted when the tiles are placed; features sit where the maps put them. Checked by eye:
+  Olympus Mons on Mars at 18.65 N, 226.2 E, and Kuiper crater on Mercury at 11.3 S, 31.5 W, appear at the
+  middle of the view at those coordinates, and a Ceres crater the size of Occator (19.8 N, 239.3 E) too.
+- Imagery (all 256-pixel JPEG, plate carrée, two tiles at zoom 0, from `trek.nasa.gov`, cached apart per body):
+  Mars the Viking MDIM 2.1 colour mosaic to zoom 7 (about 330 m per pixel at the equator), Mercury
+  the MESSENGER MDIS basemap to zoom 7 (about 330 m), Ceres the Dawn framing camera HAMO colour-shaded mosaic
+  to zoom 5 (about 1.3 km) and Vesta the Dawn HAMO mosaic to zoom 6 (about 700 m). The credit of each is shown
+  while the body is in view, also in saved images.
+- Rotation: the IAU Working Group's pole and prime meridian for each body, with Mars's and Mercury's periodic
+  terms, from the 2015 report. The clock is read as TT (UTC plus 69.2 s).
+- The Sun's direction: heliocentric positions of Mars and Mercury come from the JPL planet elements already
+  used for the planets; Ceres and Vesta use two-body orbits from JPL Small-Body Database elements for the epoch
+  2026-11-21. Against JPL Horizons the sub-solar point of Mercury and Mars is within 0.01 degrees at three
+  dates in 2026 to 2031, Ceres within 0.6 degrees of longitude and Vesta within 1.4 (see Limitations).
+- The sky: the Sun, stars, the other planets and the Earth (a point, with a magnitude), turned with the
+  body's frame, so they move with its rotation. The Moon is not drawn from other bodies.
+- Only the command line chooses the body; as for the Moon, switching needs a restart.
+
+### Limitations
+- Mars has no air: no blue-brown sky, no dust haze and soft dusk. A thin atmosphere needs its own scattering
+  colours and was left out; Mars looks as the Moon does, with black shadows and visible stars by day.
+- Vesta's published prime meridian is the Dawn "Claudia double prime" system (Archinal 2018); the Trek layer
+  names the IAU coordinate system of Vesta without more detail. Only the poles could be checked by eye (the
+  Rheasilvia basin sits at the south pole), not Vesta's or Ceres's longitudes against a named feature.
+- Vesta's longitude differs by 1.0 to 1.4 degrees from Horizons, partly from its triaxial figure, which
+  is a spheroid here; its shadow edge and horizon are slightly off. Ceres differs by up to 0.6 degrees
+  from Horizons, from the orbit and the assumed frame.
+- The orbits of Ceres and Vesta are two-body and drift from the real ones by up to 0.25 degrees from the
+  Sun within three years of the epoch and more beyond; refresh the elements in `src/planetary.rs` with a newer
+  epoch for years far from 2026.
+- Imagery is not terrain: nothing rises above the spheroid. The flat map (atlas) places the rows in geodetic
+  latitude, so Vesta in particular appears distorted there.
+- The planets are points with approximate magnitudes (no phase for the Earth). Phobos, Deimos and the other
+  moons are not drawn, and the Moon is not drawn from Mars. The Sun is a point source with no angular size.
+- The imagery is lit on top of its own illumination, as for the Moon. Ceres' layer is coloured by elevation.
+
 ## Later milestones
 
 Order and scope are open, and depend on which features are wanted.
 
 | # | Feature | Notes |
 |---|---|---|
-| M6b | Other bodies | Mars, Mercury, Ceres, Vesta (the Moon is done) |
 | M7 | Search and saved places | Geocoding, plus KML, KMZ, GeoJSON, GPX and IGC import |
 | M8 | Map service library | User-added WMS, WMTS and XYZ, with an independently built directory |
 | M9 | Events | Computed eclipses, plus earthquakes, eruptions, tsunamis and fireballs |

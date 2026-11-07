@@ -80,3 +80,29 @@ The credits must stay visible wherever the data is displayed, including saved im
 Label text comes from the system's installed fonts; none are bundled.
 EOX's license page does not explicitly address its public WMTS endpoint, and Mapterhorn's
 pages state no usage conditions for its public tiles. Recheck both before publishing.
+
+### Mars, Mercury, Ceres and Vesta
+
+| Data | Source (capabilities document under `https://trek.nasa.gov/tiles/<Body>/EQ/<layer>/1.0.0/WMTSCapabilities.xml`) | Credit shown in the app |
+|---|---|---|
+| Mars imagery | NASA Mars Trek WMTS layer `Mars_Viking_MDIM21_ClrMosaic_global_232m`: 256-pixel JPEG, default028mm plate carrée set with 2 by 1 tiles at level 0, levels 0 to 7 | `Mars: Viking MDIM 2.1 colour mosaic, NASA/JPL/USGS, via NASA Mars Trek https://trek.nasa.gov/mars/` |
+| Mercury imagery | NASA Mercury Trek layer `Mercury_MESSENGER_MDIS_Basemap_BDR_Mosaic_Global_166m`, levels 0 to 7 | `Mercury: MESSENGER MDIS basemap, NASA/JHUAPL/Carnegie Institution of Washington/USGS, via NASA Mercury Trek https://trek.nasa.gov/mercury/` |
+| Ceres imagery | NASA Ceres Trek layer `Ceres_Dawn_FC_HAMO_ClrShade_DLR_Global_60ppd_Oct2016`, levels 0 to 5 | `Ceres: Dawn FC HAMO colour mosaic, NASA/JPL-Caltech/UCLA/MPS/DLR/IDA, via NASA Ceres Trek https://trek.nasa.gov/ceres/` |
+| Vesta imagery | NASA Vesta Trek layer `Vesta_Dawn_FC_HAMO_Mosaic_Global_74ppd`, levels 0 to 6 | `Vesta: Dawn FC HAMO mosaic, NASA/JPL-Caltech/UCLA/MPS/DLR/IDA, via NASA Vesta Trek https://trek.nasa.gov/vesta/` |
+
+The layer names were found by trying the Trek tile directory (which returns 403 for listing) and confirmed by
+their capabilities documents, which also give the coordinate system (the IAU2000 or ESRI code of each body). Terms
+are those for the Moon: NASA media usage guidelines (NASA content, including texture maps, is generally not
+subject to copyright in the United States; acknowledge NASA as the source; no endorsement may be implied). The Trek
+sites' own terms pages could not be found and no request limits are stated, so requests are kept gentle (two at
+once, cached on disk, host pacing shared with the Moon). The credit lines name the data products and their
+teams from general knowledge of these missions, not from a credit text published by Trek, so recheck them before
+publishing. The Trek layers also offer other products (THEMIS and MOLA for Mars, elevation for all) that were not
+used.
+
+Rotation constants and radii are from the IAU Working Group report (Archinal et al., Celestial Mechanics and
+Dynamical Astronomy 130, 22, 2018) as listed in NASA NAIF's `pck00011.tpc`, which was read for this.
+Orbital elements of Ceres and Vesta are osculating elements for 2026-11-21 (JD 2461200.5) from the JPL Small-Body
+Database API (`ssd-api.jpl.nasa.gov/sbdb.api`). The tests quote results from the JPL Horizons API
+(`ssd.jpl.nasa.gov/api/horizons.api`) as reference values; they are facts, not data files. Mars's and Mercury's
+orbits use the JPL approximate planet elements already listed above. These are published constants, not data files.

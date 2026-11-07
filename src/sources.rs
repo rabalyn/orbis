@@ -102,6 +102,70 @@ pub static MOON_WAC: TileSource = TileSource {
     grid: Grid::Equirect,
 };
 
+/// NASA Mars Trek's layer of the Viking MDIM 2.1 colour mosaic (232 m per pixel), read from its capabilities document: 256-pixel JPEG tiles, plate carrée matrix set with 2 by 1 tiles at level 0 and levels 0 to 7.
+pub static MARS_VIKING: TileSource = TileSource {
+    id: "mars-viking",
+    kind: Kind::Imagery,
+    url: "https://trek.nasa.gov/tiles/Mars/EQ/Mars_Viking_MDIM21_ClrMosaic_global_232m/1.0.0/default/default028mm/{z}/{y}/{x}.jpg",
+    cache: "nasa-trek-mars-viking/{z}/{y}/{x}.jpg",
+    content_type: JPEG,
+    min_z: 0,
+    max_z: 7,
+    bounds: &[],
+    credit: "",
+    concurrency: 2,
+    pixels: 256,
+    grid: Grid::Equirect,
+};
+
+/// NASA Mercury Trek's layer of the MESSENGER MDIS basemap (166 m per pixel), levels 0 to 7 of the same plate carrée matrix set.
+pub static MERCURY_MDIS: TileSource = TileSource {
+    id: "mercury-mdis",
+    kind: Kind::Imagery,
+    url: "https://trek.nasa.gov/tiles/Mercury/EQ/Mercury_MESSENGER_MDIS_Basemap_BDR_Mosaic_Global_166m/1.0.0/default/default028mm/{z}/{y}/{x}.jpg",
+    cache: "nasa-trek-mercury-mdis/{z}/{y}/{x}.jpg",
+    content_type: JPEG,
+    min_z: 0,
+    max_z: 7,
+    bounds: &[],
+    credit: "",
+    concurrency: 2,
+    pixels: 256,
+    grid: Grid::Equirect,
+};
+
+/// NASA Ceres Trek's layer of the Dawn Framing Camera HAMO colour-shaded mosaic (60 pixels per degree), levels 0 to 5.
+pub static CERES_FC: TileSource = TileSource {
+    id: "ceres-fc",
+    kind: Kind::Imagery,
+    url: "https://trek.nasa.gov/tiles/Ceres/EQ/Ceres_Dawn_FC_HAMO_ClrShade_DLR_Global_60ppd_Oct2016/1.0.0/default/default028mm/{z}/{y}/{x}.jpg",
+    cache: "nasa-trek-ceres-fc/{z}/{y}/{x}.jpg",
+    content_type: JPEG,
+    min_z: 0,
+    max_z: 5,
+    bounds: &[],
+    credit: "",
+    concurrency: 2,
+    pixels: 256,
+    grid: Grid::Equirect,
+};
+
+/// NASA Vesta Trek's layer of the Dawn Framing Camera HAMO mosaic (74 pixels per degree), levels 0 to 6.
+pub static VESTA_FC: TileSource = TileSource {
+    id: "vesta-fc",
+    kind: Kind::Imagery,
+    url: "https://trek.nasa.gov/tiles/Vesta/EQ/Vesta_Dawn_FC_HAMO_Mosaic_Global_74ppd/1.0.0/default/default028mm/{z}/{y}/{x}.jpg",
+    cache: "nasa-trek-vesta-fc/{z}/{y}/{x}.jpg",
+    content_type: JPEG,
+    min_z: 0,
+    max_z: 6,
+    bounds: &[],
+    credit: "",
+    concurrency: 2,
+    pixels: 256,
+    grid: Grid::Equirect,
+};
+
 pub static TERRAIN: TileSource = TileSource {
     id: "mapterhorn",
     kind: Kind::Terrain,
@@ -372,7 +436,7 @@ fn mercator_bbox(k: TileKey) -> String {
 
 /// All sources a cache server can serve.
 pub fn all() -> impl Iterator<Item = &'static TileSource> {
-    [&EOX, &TERRAIN, &MAP, &MOON_WAC].into_iter().chain(DETAIL.iter())
+    [&EOX, &TERRAIN, &MAP, &MOON_WAC, &MARS_VIKING, &MERCURY_MDIS, &CERES_FC, &VESTA_FC].into_iter().chain(DETAIL.iter())
 }
 
 pub fn by_id(id: &str) -> Option<&'static TileSource> {

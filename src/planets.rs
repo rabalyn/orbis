@@ -48,8 +48,10 @@ const EARTH_MOON: Elements = Elements {
     name: "Earth",
     at_epoch: [1.00000261, 0.01671123, -0.00001531, 100.46457166, 102.93768193, 0.0],
     rate: [0.00000562, -0.00004392, -0.01294668, 35999.37244981, 0.32327364, 0.0],
-    magnitude: [0.0; 4],
-    colour: [1.0; 3],
+    // Earth's magnitude seen from elsewhere is its absolute magnitude, -3.99 (Mallama and
+    // Hilton 2018), without a phase term.
+    magnitude: [-3.99, 0.0, 0.0, 0.0],
+    colour: [0.62, 0.78, 1.0],
 };
 
 const PLANETS: [Elements; 5] = [
@@ -114,7 +116,7 @@ fn heliocentric(el: &Elements, t: f64) -> DVec3 {
     )
 }
 
-fn ecliptic_to_equatorial(v: DVec3) -> DVec3 {
+pub fn ecliptic_to_equatorial(v: DVec3) -> DVec3 {
     let (s, c) = OBLIQUITY_J2000.sin_cos();
     DVec3::new(v.x, c * v.y - s * v.z, s * v.y + c * v.z)
 }
@@ -122,15 +124,21 @@ fn ecliptic_to_equatorial(v: DVec3) -> DVec3 {
 /// The planets as seen from the Earth (light travel time is ignored, which is under 20 arcseconds
 /// for the inner planets and under half an arcminute for the others).
 fn planets(t: f64) -> Vec<Body> {
-    let earth = heliocentric(&EARTH_MOON, t);
-    let sun_distance = earth.length();
-    PLANETS
-        .iter()
+    planets_seen_from(heliocentric(&EARTH_MOON, t), "Earth", t)
+}
+
+/// The planets, and the Earth, seen from a point given in au on the J2000 ecliptic relative to the
+/// Sun, leaving out the one called `exclude`.
+fn planets_seen_from(origin: DVec3, exclude: &str, t: f64) -> Vec<Body> {
+    let sun_distance = origin.length();
+    std::iter::once(&EARTH_MOON)
+        .chain(PLANETS.iter())
+        .filter(|el| el.name != exclude)
         .map(|el| {
             let p = heliocentric(el, t);
-            let geo = p - earth;
+            let geo = p - origin;
             let (r, delta) = (p.length(), geo.length());
-            // The phase angle at the planet, between the Sun and the Earth.
+            // The phase angle at the planet, between the Sun and the observer.
             let cos_i = ((r * r + delta * delta - sun_distance * sun_distance) / (2.0 * r * delta)).clamp(-1.0, 1.0);
             let i = cos_i.acos().to_degrees();
             let [m0, k1, k2, k3] = el.magnitude;
@@ -144,6 +152,24 @@ fn planets(t: f64) -> Vec<Body> {
             }
         })
         .collect()
+}
+
+/// The planets as seen from another body whose heliocentric position is known: its own name
+/// is left out. The Moon and the planets' moons are not listed.
+pub fn seen_from(origin: DVec3, exclude: &str, unix: f64) -> Vec<Body> {
+    planets_seen_from(origin, exclude, julian_centuries(unix))
+}
+
+/// Heliocentric position in au on the J2000 ecliptic of Earth (the Earth-Moon barycentre),
+/// Mercury or Mars, from the JPL table above.
+pub fn heliocentric_of(name: &str, unix: f64) -> Option<DVec3> {
+    let t = julian_centuries(unix);
+    std::iter::once(&EARTH_MOON).chain(PLANETS.iter()).find(|el| el.name == name).map(|el| heliocentric(el, t))
+}
+
+/// J2000 equatorial direction of the Sun seen from a heliocentric ecliptic position.
+pub fn sun_from(origin: DVec3) -> DVec3 {
+    ecliptic_to_equatorial(-origin).normalize()
 }
 
 /// The Moon, from the Astronomical Almanac's low-precision formulae (about 0.3° in longitude and

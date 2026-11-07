@@ -16,6 +16,21 @@ pub fn radius() -> f64 {
     body::current().a
 }
 
+/// Equirectangular imagery of the other bodies is laid out in planetocentric latitude (the
+/// angle at the centre, which is what a sphere-based map gives). The rest of the program
+/// uses geodetic latitude on the body's spheroid, so rows are converted at the grid.
+fn planetographic(lat: f64, e2: f64) -> f64 {
+    if e2 == 0.0 {
+        lat
+    } else {
+        (lat.tan() / (1.0 - e2)).atan()
+    }
+}
+
+fn planetocentric(lat: f64, e2: f64) -> f64 {
+    (lat.tan() * (1.0 - e2)).atan()
+}
+
 /// How a body's tile pyramid covers it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Grid {
@@ -175,7 +190,7 @@ impl TileKey {
         let (u, v) = self.unit_on(grid, s, t);
         let lat = match grid {
             Grid::Mercator => merc_v_to_lat(v),
-            Grid::Equirect => PI / 2.0 - v * PI,
+            Grid::Equirect => planetographic(PI / 2.0 - v * PI, body::current().e2),
         };
         (lat, u * 2.0 * PI - PI)
     }
@@ -189,7 +204,7 @@ impl TileKey {
         let (cols, rows) = (grid.columns(z) as f64, grid.rows(z) as f64);
         let v = match grid {
             Grid::Mercator => lat_to_merc_v(lat),
-            Grid::Equirect => (PI / 2.0 - lat) / PI,
+            Grid::Equirect => (PI / 2.0 - planetocentric(lat, body::current().e2)) / PI,
         };
         let x = ((lon_to_merc_u(lon) * cols).floor() as i64).clamp(0, cols as i64 - 1);
         let y = ((v * rows).floor() as i64).clamp(0, rows as i64 - 1);
@@ -200,6 +215,23 @@ impl TileKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn planetocentric_rows_convert_to_geodetic_latitude() {
+        // Vesta's flattening: a 45 degree row is a geodetic latitude of about 57 degrees, the
+        // conversion is its own inverse, and the equator and poles stay put.
+        let e2 = 1.0 - (229.0f64 / 284.5).powi(2);
+        let g = planetographic(45f64.to_radians(), e2).to_degrees();
+        assert!((g - 57.1).abs() < 0.2, "{g}");
+        for lat in [-90.0, -60.0, -10.0, 0.0, 33.0, 89.9] {
+            let l = f64::to_radians(lat);
+            assert!((planetocentric(planetographic(l, e2), e2) - l).abs() < 1e-9);
+        }
+        assert_eq!(planetographic(0.0, e2), 0.0);
+        assert!((planetographic(PI / 2.0, e2) - PI / 2.0).abs() < 1e-9);
+        // A sphere is unchanged.
+        assert_eq!(planetographic(0.7, 0.0), 0.7);
+    }
 
     #[test]
     fn ecef_round_trip() {
