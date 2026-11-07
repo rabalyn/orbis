@@ -59,12 +59,47 @@ pub fn parse(script: &str) -> Result<Vec<Step>> {
 
 const DT: f64 = 1.0 / 30.0;
 
-fn frame(scene: &mut Scene, r: &mut Renderer, size: (u32, u32)) {
+/// The largest change of the camera's height between two frames, up and down, and where.
+#[derive(Default)]
+struct Jumps {
+    last: Option<f64>,
+    up: (f64, usize),
+    down: (f64, usize),
+    frames: usize,
+    lift: (f64, usize),
+}
+
+impl Jumps {
+    fn note(&mut self, h: f64, lifted: f64) {
+        self.frames += 1;
+        // A rise in a frame where the ground held or lifted the camera is the ground's doing; the
+        // amount `lifted` alone also counts a descent that the ground stopped.
+        if let Some(last) = self.last.filter(|_| lifted > 0.0) {
+            if h - last > self.lift.0 {
+                self.lift = (h - last, self.frames);
+            }
+        }
+        if let Some(last) = self.last {
+            let d = h - last;
+            if d > self.up.0 {
+                self.up = (d, self.frames);
+            }
+            if -d > self.down.0 {
+                self.down = (-d, self.frames);
+            }
+        }
+        self.last = Some(h);
+    }
+}
+
+fn frame(scene: &mut Scene, r: &mut Renderer, size: (u32, u32), jumps: &mut Jumps) {
     let aspect = size.0 as f64 / size.1 as f64;
     scene.update(r, DT, (aspect, size.1 as f64));
     scene.set_panels(r, size.0, size.1, 1);
     scene.place_labels(r, size, 1, DT);
     r.flush_uploads();
+    let h = ecef_to_geodetic(scene.nav.cam.basis().pos).2;
+    jumps.note(h, scene.nav.lifted);
     std::thread::sleep(Duration::from_millis(15));
 }
 
@@ -310,6 +345,7 @@ pub fn run(args: &Args, script: &[Step], scene: &mut Scene, r: &mut Renderer, ta
     let aspect = size.0 as f64 / size.1 as f64;
     let mut n = 0;
     let started = std::time::Instant::now();
+    let mut jumps = Jumps::default();
     for step in script {
         match step {
             Step::Pointer(x, y) => pointer = DVec2::new(*x, *y),
@@ -322,7 +358,7 @@ pub fn run(args: &Args, script: &[Step], scene: &mut Scene, r: &mut Renderer, ta
             Step::Survey(radius) => survey(scene, r, *radius),
             Step::Frames(c) => {
                 for _ in 0..*c {
-                    frame(scene, r, size);
+                    frame(scene, r, size, &mut jumps);
                 }
                 n += 1;
                 let px = grab(r, scene, target, size)?;
@@ -332,7 +368,7 @@ pub fn run(args: &Args, script: &[Step], scene: &mut Scene, r: &mut Renderer, ta
             }
             Step::Settle => {
                 loop {
-                    frame(scene, r, size);
+                    frame(scene, r, size, &mut jumps);
                     if scene.loader.is_idle() && scene.waiting == 0 {
                         break;
                     }
@@ -342,7 +378,7 @@ pub fn run(args: &Args, script: &[Step], scene: &mut Scene, r: &mut Renderer, ta
                     }
                 }
                 for _ in 0..60 {
-                    frame(scene, r, size);
+                    frame(scene, r, size, &mut jumps);
                 }
                 n += 1;
                 let px = grab(r, scene, target, size)?;
@@ -366,6 +402,10 @@ pub fn run(args: &Args, script: &[Step], scene: &mut Scene, r: &mut Renderer, ta
             }
         }
     }
+    println!(
+        "camera height between frames ({} frames): largest rise {:.1} m at frame {}, largest fall {:.1} m at frame {}; largest rise while the ground held the camera {:.1} m at frame {}",
+        jumps.frames, jumps.up.0, jumps.up.1, jumps.down.0, jumps.down.1, jumps.lift.0, jumps.lift.1
+    );
     Ok(())
 }
 

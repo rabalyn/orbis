@@ -278,6 +278,23 @@ pub fn mesh_indices() -> Vec<u32> {
     out
 }
 
+/// The height of the drawn surface of a tile mesh at `u`, `v` in 0..1: linear inside the same two
+/// triangles per cell that `mesh_indices` draws (the cell's diagonal runs from its top-right to its
+/// bottom-left vertex), not the bilinear blend between the four corners.
+pub fn height_on_mesh(heights: &[f32], u: f64, v: f64) -> f64 {
+    let n = GRID as f64;
+    let (x, y) = ((u * n).clamp(0.0, n), (v * n).clamp(0.0, n));
+    let (i, j) = ((x as usize).min(GRID - 1), (y as usize).min(GRID - 1));
+    let (fx, fy) = (x - i as f64, y - j as f64);
+    let at = |i: usize, j: usize| heights[j * (GRID + 1) + i] as f64;
+    let (h00, h10, h01, h11) = (at(i, j), at(i + 1, j), at(i, j + 1), at(i + 1, j + 1));
+    if fx + fy <= 1.0 {
+        h00 + fx * (h10 - h00) + fy * (h01 - h00)
+    } else {
+        h11 + (1.0 - fx) * (h01 - h11) + (1.0 - fy) * (h10 - h11)
+    }
+}
+
 /// A box-filtered mip chain for a tightly packed RGBA8 image.
 pub fn build_mips(mut w: u32, mut h: u32, rgba: Vec<u8>) -> Vec<(u32, u32, Vec<u8>)> {
     let mut mips = vec![(w, h, rgba)];
@@ -671,6 +688,40 @@ fn worker(shared: &Shared, tx: &SyncSender<(Job, Outcome)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The height of the plane through the triangle of `mesh_indices` that holds (u, v), by
+    /// barycentric weights on the three corners, as the GPU interpolates it.
+    fn height_on_drawn_triangle(heights: &[f32], u: f64, v: f64) -> f64 {
+        let n = GRID as f64;
+        let corner = |idx: u32| ((idx as usize % (GRID + 1)) as f64 / n, (idx as usize / (GRID + 1)) as f64 / n, heights[idx as usize] as f64);
+        for t in mesh_indices().chunks(3).take(GRID * GRID * 2) {
+            let (a, b, c) = (corner(t[0]), corner(t[1]), corner(t[2]));
+            let d = (b.1 - c.1) * (a.0 - c.0) + (c.0 - b.0) * (a.1 - c.1);
+            let w0 = ((b.1 - c.1) * (u - c.0) + (c.0 - b.0) * (v - c.1)) / d;
+            let w1 = ((c.1 - a.1) * (u - c.0) + (a.0 - c.0) * (v - c.1)) / d;
+            let w2 = 1.0 - w0 - w1;
+            if w0 >= -1e-9 && w1 >= -1e-9 && w2 >= -1e-9 {
+                return w0 * a.2 + w1 * b.2 + w2 * c.2;
+            }
+        }
+        panic!("no triangle holds {u}, {v}");
+    }
+
+    #[test]
+    fn mesh_height_follows_the_drawn_triangles_not_the_bilinear_blend() {
+        let heights: Vec<f32> = (0..(GRID + 1) * (GRID + 1)).map(|i| ((i * 7919) % 1000) as f32).collect();
+        let mut worst_bilinear: f64 = 0.0;
+        for a in 0..37 {
+            for b in 0..37 {
+                let (u, v) = (a as f64 / 36.0 * 0.999 + 0.0005, b as f64 / 36.0 * 0.999 + 0.0005);
+                let want = height_on_drawn_triangle(&heights, u, v);
+                let got = height_on_mesh(&heights, u, v);
+                assert!((got - want).abs() < 1e-6, "at {u},{v}: {got} against {want}");
+                worst_bilinear = worst_bilinear.max((crate::render::bilinear_for_test(&heights, u, v) - want).abs());
+            }
+        }
+        assert!(worst_bilinear > 10.0, "the cases should tell the two apart: {worst_bilinear}");
+    }
     use crate::cache::DiskCache;
     use crate::fetcher::Peers;
     use glam::Vec3;

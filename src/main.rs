@@ -1754,16 +1754,40 @@ impl Scene {
             atlas::select(&self.map.view, &|k| r.has_tile(k), sources::max_tile_z)
         } else {
             {
+                // The camera also stays above the surface as drawn, which a coarse parent tile can
+                // hold higher than the finest ground until its finer tiles have all arrived.
                 let ground = |lat: f64, lon: f64| r.ground(lat, lon);
-                self.nav.tick(dt, &ground);
+                let draw = &self.draw;
+                let floor = |lat: f64, lon: f64| match (r.ground(lat, lon), r.drawn_ground(draw, lat, lon)) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (a, b) => a.or(b),
+                };
+                self.nav.tick_over(dt, &ground, &floor);
             }
-            let view = View {
-                basis: self.nav.cam.basis(),
-                aspect: aspect_height.0,
-                height_px: aspect_height.1,
-                max_z: sources::max_tile_z,
-            };
-            let mut selection = view.select(&|k| k.z <= self.draw_max_z && r.has_tile(k));
+            let mut view;
+            let mut selection;
+            // The surface that was drawn a frame ago is only a guess for this one: the view may
+            // have moved onto a coarser, higher tile. So the camera is checked again against the
+            // tiles chosen for it now, and lifted and chosen for again if it is under them.
+            let mut pass = 0;
+            loop {
+                view = View {
+                    basis: self.nav.cam.basis(),
+                    aspect: aspect_height.0,
+                    height_px: aspect_height.1,
+                    max_z: sources::max_tile_z,
+                };
+                selection = view.select(&|k| k.z <= self.draw_max_z && r.has_tile(k));
+                pass += 1;
+                let draw = &selection.draw;
+                let floor = |lat: f64, lon: f64| match (r.ground(lat, lon), r.drawn_ground(draw, lat, lon)) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (a, b) => a.or(b),
+                };
+                if !self.nav.keep_above(&floor) || pass == 3 {
+                    break;
+                }
+            }
             // During a flight only the tiles of the view it lands on are asked for, early; the
             // views passed on the way are drawn from what is there, and cost no downloads.
             if let Some(goal) = self.nav.flight_goal() {

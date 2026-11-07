@@ -1,6 +1,6 @@
 # Bug: the view ends up between two layers of map when zooming in
 
-Status: cause found and demonstrated, not fixed. Investigated on 2026-11-07 with the new `--simulate-nav` harness (see below).
+Status: **fixed** by the commit "Keep the camera above the surface as drawn, not only above the finest loaded ground". Investigated on 2026-11-07 with the new `--simulate-nav` harness (see below).
 Reported by the user on 2026-11-07 while testing a window build. It was also seen in an older build, so it predates the current milestone.
 
 Short answer: the camera ends up **below the drawn terrain surface**. Navigation takes the ground height from the finest tile that is
@@ -164,17 +164,46 @@ Tests of the cause (each of which could have failed):
   That is a hypothesis; it is consistent with the mechanism but not reproduced.
 - Real window timing. The natural cases are from the harness, whose frame steps are 1/30 s with 15 ms of real sleep.
 
-## Proposed fix (not applied)
+## Fix (applied)
 
-Give navigation the height of what is drawn. In `Scene::update`, pass `Nav::tick` a ground function that takes the mesh height of the tile
-in the previous frame's draw list that contains the position (the same grid lookup `Renderer::ground` already does), and use the larger of
-that and the finest loaded height, so the camera is above both. The near plane's altitude follows from the same function.
+Navigation now keeps the camera above the higher of the finest loaded ground and the surface as drawn.
 
-- Scope: one new method on `Renderer` (a `ground` that takes the draw list), the closure in `Scene::update`, about 20 lines. It can be checked
-  with the harness: the held-state command above must show `below_drawn=false` and no magenta in every step.
-- Risk: when finer tiles replace the coarse ones, the surface drops by up to the undercut (about 100 m in the Himalaya at one level), and
-  the camera, which `Nav` lifts at once but lowers with its smoothing, follows at the speed of `follow_ground` (6 per second). So there is a short
-  visible float over the ground when zooming in while loading, instead of a view from below. The start phase and the min-distance of 30 m are
-  not affected. A different option (drawing the finest loaded tile under the camera over its coarse parent) would remove the float but give overlapping
-  meshes and depth fighting, so it is worse.
-- Not enough on its own for the plateaus' small effects, which need none.
+- `loader::height_on_mesh` gives the height of a tile mesh with the two triangles per cell that `mesh_indices` draws (a unit test compares it
+  with barycentric interpolation of those triangles, and with the bilinear blend that differs by tens of metres on rough cells).
+  `Renderer::drawn_ground(draw, lat, lon)` looks the position up in a draw list. `Renderer::ground` is unchanged (the true finest ground),
+  so labels, picks, flights' targets, `--simulate-*` and the view point of navigation keep it.
+- `Nav::tick_over(dt, ground, floor)`; `Nav::tick` calls it with the same function twice. The view point and the start phase follow `ground`;
+  the clearance (2 m) and the altitude used for the near plane follow `floor`. Flights end through the same clearance, so they end above the drawn surface.
+- In `Scene::update` the camera is checked again after the tile selection of the same frame (not only against the previous frame's draw list,
+  which missed the case of the view moving onto a coarser tile): if it is under the new selection it is lifted and the selection is made again,
+  up to three passes. The lift goes back along the view line as before, and straight up if the line climbs more slowly than the slope.
+- The log's `drawn_under_cam` now uses the triangle height too (it used the bilinear one, which differs by up to tens of metres from what is drawn).
+- `--simulate-nav` prints a last line with the largest rise and fall of the camera height between two frames (rises include the user's own zoom out),
+  and the largest rise in a frame where the ground held or lifted the camera.
+
+### Results
+
+| check | before | after |
+|---|---|---|
+| held state, 11 logged steps (the cache of the first run was gone, so tiles were downloaded again) | `below_drawn` true in steps f4 to f10, camera 4.6 m over the true ground, with the camera about 280 m under the z7 mesh | `below_drawn` false in all 11 steps, no magenta (`hole=0.000`) with `--mark-underlay`; the camera sits 2 m over the drawn surface while the z7 tile is shown (4894 m against `nav_ground` 4742 m, a float of 150 m) |
+| natural walk, fresh cache, 141 steps | under the surface in 15 steps (report) and again in 3 steps (f60 to f62) with the first version of this fix, which only looked at the previous frame's tiles | 0 of 141 steps under; 19.1 MB downloaded; the camera floats up to about 190 m over the true ground while 40 to 57 tiles are wanted (steps f15, f16) |
+| same walk, warm cache, `--nav-uploads 1` | 0 steps under (it never reproduced warm) | 0 steps under; largest rise while the ground held the camera 25.6 m in one frame |
+| held state, largest rise in a frame while the ground held the camera | - | 400.8 m (tilting to 78 degrees with z7 forced on screen; an extreme case made by `--nav-draw-max-z 7`) |
+| closest zoom at Everest summit, warm | h 8524.2 m, alt 30.3 m, distance 30 m | identical |
+| closest zoom at Netherlands 52.09N 5.12E | h 28.6 m, alt 22.9 m, distance 30 m | identical |
+
+Whole-run rises and falls in camera height (906 frames) come from the user's own wheel input (about 1000 m rises and 9000 m falls, the same in old
+and new), so they say nothing about the fix; the last column of the table is the useful number.
+
+### What the user sees, and what remains
+
+- While finer tiles are still on their way in steep country, the camera floats above the true ground by up to the difference between a coarse and the
+  fine mesh (150 m in the held state, up to about 190 m in the fresh walk), and then stays at that height: it is never lowered by the loading. Once the
+  finer tiles are drawn the floor is the fine ground again, and zooming down to the closest distance works as before (the numbers above).
+- When the view turns or moves onto a coarse tile of an area that is not loaded yet, the camera is lifted in one frame (it cannot be eased without being
+  under the drawn surface for some frames). In the 120-step walk the largest such rise was 26 m per frame; the extreme test with z7 forced gave 400 m.
+  Tiles near the camera are loaded first, which keeps it small in real use. Not tried in a real window.
+- The lift is still decided from the selection of the frame, so a view that changes its tile selection after the lift (three passes at most) could
+  leave the last pass stale by a few metres. Not seen in any log.
+- The fresh-cache walk was run twice with the code as it changed (about 20 MB each time); the second run is the one in the table. The timing of the real
+  network decides whether the natural case occurs, so "0 of 141" is one run, not a proof.

@@ -1061,6 +1061,22 @@ impl Renderer {
         })
     }
 
+    /// The height of the surface as drawn at a position: the mesh of the tile in `draw` that
+    /// covers it, with the triangles the GPU draws. `None` where no drawn tile covers it.
+    pub fn drawn_ground(&self, draw: &[TileKey], lat: f64, lon: f64) -> Option<f64> {
+        draw.iter().find_map(|k| {
+            if TileKey::containing(lat, lon, k.z) != *k {
+                return None;
+            }
+            let tile = self.tiles.get(k)?;
+            let (u, v) = (
+                crate::geo::lon_to_merc_u(lon) * (1u64 << k.z) as f64 - k.x as f64,
+                crate::geo::lat_to_merc_v(lat) * (1u64 << k.z) as f64 - k.y as f64,
+            );
+            Some(crate::loader::height_on_mesh(&tile.heights, u, v))
+        })
+    }
+
     /// What a loaded tile is made of, for `--simulate-nav`: its lowest and highest mesh height,
     /// the share of its imagery's tile it covers, and the mesh height at a position.
     pub fn tile_report(&self, k: TileKey, lat: f64, lon: f64) -> Option<TileReport> {
@@ -1071,7 +1087,7 @@ impl Renderer {
             crate::geo::lat_to_merc_v(lat) * (1u64 << k.z) as f64 - k.y as f64,
         );
         let inside = (0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v);
-        Some(TileReport { min, max, imagery_size: t.uv_rect.2, height_here: inside.then(|| height_on_grid(&t.heights, u, v)) })
+        Some(TileReport { min, max, imagery_size: t.uv_rect.2, height_here: inside.then(|| crate::loader::height_on_mesh(&t.heights, u, v)) })
     }
 
     fn evict(&mut self, in_use: &HashSet<TileKey>) {
@@ -1482,6 +1498,11 @@ fn height_on_grid(heights: &[f32], u: f64, v: f64) -> f64 {
     let top = at(x0, y0) * (1.0 - fx) + at(x0 + 1, y0) * fx;
     let bottom = at(x0, y0 + 1) * (1.0 - fx) + at(x0 + 1, y0 + 1) * fx;
     top * (1.0 - fy) + bottom * fy
+}
+
+#[cfg(test)]
+pub(crate) fn bilinear_for_test(heights: &[f32], u: f64, v: f64) -> f64 {
+    height_on_grid(heights, u, v)
 }
 
 /// A position as readable text.

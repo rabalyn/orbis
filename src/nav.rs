@@ -92,6 +92,8 @@ pub struct Nav {
     device: crate::spacemouse::Axes,
     device_sensitivity: f64,
     pub altitude: f64,
+    /// How far the ground lifted the camera in the last tick, in metres (a diagnostic).
+    pub lifted: f64,
     /// While true, the view stands the chosen distance from the ground, however the ground's
     /// height turns out as finer terrain arrives. Later, the camera holds its height instead.
     starting: bool,
@@ -113,6 +115,7 @@ impl Nav {
             device: [0.0; 6],
             device_sensitivity: 1.0,
             altitude: cam.distance,
+            lifted: 0.0,
             starting: false,
         }
     }
@@ -512,17 +515,25 @@ impl Nav {
 
     /// Advances all motion. `ground` gives the terrain height at a position, when known.
     pub fn tick(&mut self, dt: f64, ground: &dyn Fn(f64, f64) -> Option<f64>) {
+        self.tick_over(dt, ground, ground);
+    }
+
+    /// Like `tick`, with a second height the camera must also stay above: `floor` is the surface
+    /// as drawn, which can stand higher than the finest ground until finer tiles replace it. The
+    /// view point and the start phase follow `ground`.
+    pub fn tick_over(&mut self, dt: f64, ground: &dyn Fn(f64, f64) -> Option<f64>, floor: &dyn Fn(f64, f64) -> Option<f64>) {
         self.since_move += dt;
+        self.lifted = 0.0;
         self.step_flight(dt);
         self.step_arrows(dt);
         self.step_device(dt);
         self.step_zoom(dt);
         self.step_glide(dt);
         self.cam.clamp();
-        self.follow_ground(dt, ground);
+        self.follow_ground(dt, ground, floor);
     }
 
-    fn follow_ground(&mut self, dt: f64, ground: &dyn Fn(f64, f64) -> Option<f64>) {
+    fn follow_ground(&mut self, dt: f64, ground: &dyn Fn(f64, f64) -> Option<f64>, floor: &dyn Fn(f64, f64) -> Option<f64>) {
         // The view point sits on the terrain, while the camera keeps its height.
         if let Some(h) = ground(self.cam.lat, self.cam.lon).filter(|_| self.starting) {
             self.cam.target_h = h;
@@ -531,14 +542,35 @@ impl Nav {
             self.cam.target_h += change;
             self.cam.distance -= change * self.cam.tilt.cos();
         }
-        let (lat, lon, h) = ecef_to_geodetic(self.cam.basis().pos);
-        let terrain = ground(lat, lon).unwrap_or(0.0);
-        let gap = h - terrain - GROUND_CLEARANCE;
-        if gap < 0.0 {
-            self.cam.distance -= gap / self.cam.tilt.cos().max(MAX_TILT.cos());
+        self.keep_above(floor);
+    }
+
+    /// Lifts the camera, if need be, to stand `GROUND_CLEARANCE` over `floor`. Returns whether it
+    /// was lifted.
+    pub fn keep_above(&mut self, floor: &dyn Fn(f64, f64) -> Option<f64>) -> bool {
+        let mut lifted = false;
+        for attempt in 0..2 {
+            let (lat, lon, h) = ecef_to_geodetic(self.cam.basis().pos);
+            let terrain = floor(lat, lon).unwrap_or(0.0);
+            let gap = h - terrain - GROUND_CLEARANCE;
+            if gap < 0.0 {
+                lifted = true;
+                self.lifted -= gap;
+                if attempt == 0 {
+                    // Back along the view line, as the ground always lifted the camera.
+                    self.cam.distance -= gap / self.cam.tilt.cos().max(MAX_TILT.cos());
+                } else {
+                    // The line may climb more slowly than a steep slope, so lift straight up.
+                    self.cam.target_h -= gap;
+                }
+                self.cam.clamp();
+            }
+            self.altitude = (h - terrain).max(GROUND_CLEARANCE);
+            if gap >= 0.0 {
+                break;
+            }
         }
-        self.cam.clamp();
-        self.altitude = (h - terrain).max(GROUND_CLEARANCE);
+        lifted
     }
 }
 
@@ -885,6 +917,29 @@ mod tests {
         assert!(n.is_animating());
         n.press(Button::Left, DVec2::new(600.0, 400.0), Mods::default());
         assert!(!n.is_animating());
+    }
+
+    #[test]
+    fn camera_stays_over_the_drawn_surface_without_falling_when_it_drops() {
+        let cam = Camera { distance: 300.0, tilt: 1.2, ..nav().cam };
+        let mut n = Nav::new(cam, SIZE);
+        let fine: &dyn Fn(f64, f64) -> Option<f64> = &|_, _| Some(1000.0);
+        let drawn: &dyn Fn(f64, f64) -> Option<f64> = &|_, _| Some(1300.0);
+        let height = |n: &Nav| ecef_to_geodetic(n.cam.basis().pos).2;
+        for _ in 0..120 {
+            n.tick_over(1.0 / 60.0, fine, drawn);
+            assert!(height(&n) >= 1300.0 + GROUND_CLEARANCE - 1e-6, "under the drawn surface: {}", height(&n));
+        }
+        // Finer tiles arrive and the drawn surface drops to the real ground: no fall.
+        let before = height(&n);
+        for _ in 0..120 {
+            n.tick_over(1.0 / 60.0, fine, fine);
+            assert!(height(&n) >= before - 1e-6, "fell from {before} to {}", height(&n));
+        }
+        // And nothing keeps the camera up: it can come down to the ground by zooming.
+        n.cam.distance = 5.0;
+        n.tick_over(1.0 / 60.0, fine, fine);
+        assert!(height(&n) < 1100.0, "raised floor stays: {}", height(&n));
     }
 
     #[test]

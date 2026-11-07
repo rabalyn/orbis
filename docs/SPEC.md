@@ -58,7 +58,12 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | Ctrl-Q | Quit |
 
 An arrow key keeps its meaning while held, even if modifiers change. Moving by hand ends a
-flight. Manual flight holds altitude and only rises when the ground comes within 2 m.
+flight. Manual flight holds altitude and only rises when the ground comes within 2 m. "The
+ground" is the higher of the finest terrain loaded at that spot and the surface as drawn there (the
+mesh of the tile on screen, with the same triangles), so the view is never under what is drawn,
+even while a coarse tile is still shown for want of its finer neighbours. Once the finer tiles
+are drawn the two agree and the view may come down to 2 m again; the camera is never lowered
+by the loading, only held up.
 
 Tilt orbits the view point down to 85° from straight down. Tilting further raises the head about
 the camera, which stays where it is, through the horizon up to straight up. Tile selection and labels
@@ -557,6 +562,11 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
 - Intermediate views of a long flight show what is cached; where nothing is, they show the coarsest imagery.
 - A label's distance depends only on its kind and the importance it was drawn with, not on the size of the place.
 - On the flat map a flight is a straight pan in map coordinates; near the edge of a projection it is clamped to the map.
+- While tiles load in steep country, the camera can float above the true ground (by up to the
+  difference between a coarse and a fine mesh: about 100 m at one zoom level in the Himalaya, more at
+  coarser levels) and then stays there until the finer tiles are drawn; when the view turns or moves
+  onto a coarse tile of an area not yet loaded, it is lifted at once (up to 26 m in one frame in a
+  120-step walk, 400 m in a test that forces tiles of zoom 7 on screen) rather than eased, because it must not be under the drawn surface in any frame.
 
 ## Milestone 13: information on click (done, untried in a window)
 
