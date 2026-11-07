@@ -2,7 +2,7 @@
 
 use crate::buildings::{self, BuildingMesh};
 use crate::fetcher::{FetchError, Fetcher, Wait};
-use crate::geo::{geodetic_to_ecef, TileKey, A};
+use crate::geo::{geodetic_to_ecef, radius, TileKey};
 use crate::overlay::{self, OVERLAY_SIZE};
 use crate::sources;
 use crate::vector::{self, Label, VectorTile};
@@ -187,7 +187,7 @@ pub fn build_mesh(
     let side = GRID + 1;
     let mut vertices = Vec::with_capacity(side * side + 4 * GRID);
     let mut heights = Vec::with_capacity(side * side);
-    let width = std::f64::consts::TAU * A / (1u64 << k.z) as f64;
+    let width = std::f64::consts::TAU * radius() / crate::body::current().grid.columns(k.z) as f64;
     let skirt = (width * 0.02).clamp(5.0, 50_000.0);
     let position = |s: f64, t: f64, h: f64| -> DVec3 {
         let (lat, lon) = k.lat_lon(s, t);
@@ -411,9 +411,13 @@ impl Shared {
     fn load(&self, k: TileKey) -> Outcome {
         // Terrain first: a job sent back to the queue then does not decode its image again.
         let (dem_key, dem_rect) = terrain_source(k);
-        let dem = match self.dem(dem_key) {
-            Ok(dem) => dem,
-            Err(e) => return after_failure(e, k, Outcome::Retry),
+        let dem = if crate::body::current().surface_data {
+            match self.dem(dem_key) {
+                Ok(dem) => dem,
+                Err(e) => return after_failure(e, k, Outcome::Retry),
+            }
+        } else {
+            Arc::new(Dem::flat())
         };
         // Best imagery first. While a better source is unavailable for a moment the tile
         // waits, with a coarser one staying on screen, so nothing gets stuck on poor imagery.

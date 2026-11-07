@@ -1,38 +1,79 @@
-//! WGS84 geodesy and Web Mercator tile addressing. Angles are radians, lengths metres.
+//! Geodesy of the viewed body (WGS84 for Earth) and tile addressing. Angles are radians,
+//! lengths metres.
 
+use crate::body;
 use glam::DVec3;
 use std::f64::consts::PI;
 
+/// WGS84 equatorial and polar semi-axes. Use `radius()` for the body being viewed.
+#[cfg(test)]
 pub const A: f64 = 6_378_137.0;
+#[cfg(test)]
 pub const B: f64 = 6_356_752.314_245;
-const E2: f64 = 6.694_379_990_14e-3;
+
+/// The equatorial radius of the body being viewed.
+pub fn radius() -> f64 {
+    body::current().a
+}
+
+/// How a body's tile pyramid covers it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Grid {
+    /// Web Mercator: one square tile at zoom 0, rows linear in the Mercator ordinate.
+    Mercator,
+    /// Plate carrée as in OGC WMTS "EPSG:4326" sets: two square tiles at zoom 0, rows
+    /// linear in latitude, top row at the north pole.
+    #[allow(dead_code)]
+    Equirect,
+}
+
+impl Grid {
+    /// Tiles around the body at a zoom level.
+    pub fn columns(self, z: u8) -> u64 {
+        match self {
+            Grid::Mercator => 1 << z,
+            Grid::Equirect => 2 << z,
+        }
+    }
+
+    pub fn rows(self, z: u8) -> u64 {
+        1 << z
+    }
+}
+
+/// The tiles at zoom 0.
+pub fn root_tiles() -> Vec<TileKey> {
+    (0..body::current().grid.columns(0) as u32).map(|x| TileKey::new(0, x, 0)).collect()
+}
 
 pub fn geodetic_to_ecef(lat: f64, lon: f64, h: f64) -> DVec3 {
+    let (a, e2) = (body::current().a, body::current().e2);
     let (sl, cl) = lat.sin_cos();
-    let n = A / (1.0 - E2 * sl * sl).sqrt();
+    let n = a / (1.0 - e2 * sl * sl).sqrt();
     DVec3::new(
         (n + h) * cl * lon.cos(),
         (n + h) * cl * lon.sin(),
-        (n * (1.0 - E2) + h) * sl,
+        (n * (1.0 - e2) + h) * sl,
     )
 }
 
 /// Returns (lat, lon, height).
 pub fn ecef_to_geodetic(p: DVec3) -> (f64, f64, f64) {
+    let (a, e2) = (body::current().a, body::current().e2);
     let lon = p.y.atan2(p.x);
     let r = (p.x * p.x + p.y * p.y).sqrt();
-    let mut lat = p.z.atan2(r * (1.0 - E2));
+    let mut lat = p.z.atan2(r * (1.0 - e2));
     for _ in 0..5 {
         let sl = lat.sin();
-        let n = A / (1.0 - E2 * sl * sl).sqrt();
-        lat = (p.z + E2 * n * sl).atan2(r);
+        let n = a / (1.0 - e2 * sl * sl).sqrt();
+        lat = (p.z + e2 * n * sl).atan2(r);
     }
     let (sl, cl) = lat.sin_cos();
-    let n = A / (1.0 - E2 * sl * sl).sqrt();
+    let n = a / (1.0 - e2 * sl * sl).sqrt();
     let h = if cl.abs() > 1e-6 {
         r / cl - n
     } else {
-        p.z.abs() - n * (1.0 - E2)
+        p.z.abs() - n * (1.0 - e2)
     };
     (lat, lon, h)
 }
@@ -50,7 +91,8 @@ pub fn enu(lat: f64, lon: f64) -> (DVec3, DVec3, DVec3) {
 
 /// Distance along `dir` to an ellipsoid inflated by `h`. The nearest forward hit, if any.
 pub fn ray_ellipsoid(origin: DVec3, dir: DVec3, h: f64) -> Option<f64> {
-    let s = DVec3::new(A + h, A + h, B + h);
+    let (a, b) = (body::current().a, body::current().b);
+    let s = DVec3::new(a + h, a + h, b + h);
     let (o, d) = (origin / s, dir / s);
     let a = d.length_squared();
     let b = o.dot(d);
@@ -119,24 +161,39 @@ impl TileKey {
         (ox as f64 / n, oy as f64 / n, 1.0 / n)
     }
 
-    /// Mercator coordinates of a point within the tile, with `s` and `t` in 0..1.
-    pub fn merc(self, s: f64, t: f64) -> (f64, f64) {
-        let n = (1u64 << self.z) as f64;
-        ((self.x as f64 + s) / n, (self.y as f64 + t) / n)
+    /// Position within the tile's grid as fractions of the whole, with `s` and `t` in 0..1.
+    fn unit_on(self, grid: Grid, s: f64, t: f64) -> (f64, f64) {
+        let (cols, rows) = (grid.columns(self.z) as f64, grid.rows(self.z) as f64);
+        ((self.x as f64 + s) / cols, (self.y as f64 + t) / rows)
     }
 
     /// (lat, lon) of a point within the tile.
     pub fn lat_lon(self, s: f64, t: f64) -> (f64, f64) {
-        let (u, v) = self.merc(s, t);
-        (merc_v_to_lat(v), u * 2.0 * PI - PI)
+        self.lat_lon_on(body::current().grid, s, t)
+    }
+
+    pub fn lat_lon_on(self, grid: Grid, s: f64, t: f64) -> (f64, f64) {
+        let (u, v) = self.unit_on(grid, s, t);
+        let lat = match grid {
+            Grid::Mercator => merc_v_to_lat(v),
+            Grid::Equirect => PI / 2.0 - v * PI,
+        };
+        (lat, u * 2.0 * PI - PI)
     }
 
     /// The tile at zoom `z` containing a position.
     pub fn containing(lat: f64, lon: f64, z: u8) -> TileKey {
-        let n = (1u64 << z) as f64;
-        let max = (1u64 << z) as i64 - 1;
-        let x = ((lon_to_merc_u(lon) * n).floor() as i64).clamp(0, max);
-        let y = ((lat_to_merc_v(lat) * n).floor() as i64).clamp(0, max);
+        Self::containing_on(body::current().grid, lat, lon, z)
+    }
+
+    pub fn containing_on(grid: Grid, lat: f64, lon: f64, z: u8) -> TileKey {
+        let (cols, rows) = (grid.columns(z) as f64, grid.rows(z) as f64);
+        let v = match grid {
+            Grid::Mercator => lat_to_merc_v(lat),
+            Grid::Equirect => (PI / 2.0 - lat) / PI,
+        };
+        let x = ((lon_to_merc_u(lon) * cols).floor() as i64).clamp(0, cols as i64 - 1);
+        let y = ((v * rows).floor() as i64).clamp(0, rows as i64 - 1);
         Self::new(z, x as u32, y as u32)
     }
 }
@@ -190,6 +247,25 @@ mod tests {
         assert_eq!((k.x, k.y), (544, 359));
         let (lat, lon) = k.lat_lon(0.5, 0.5);
         assert_eq!(TileKey::containing(lat, lon, 10), k);
+    }
+
+    #[test]
+    fn equirect_tiles_follow_the_wmts_layout() {
+        let g = Grid::Equirect;
+        // Zoom 0 is two tiles side by side, each 180 degrees square.
+        assert_eq!((g.columns(0), g.rows(0), g.columns(8), g.rows(8)), (2, 1, 512, 256));
+        let west = TileKey::new(0, 0, 0);
+        assert_eq!(west.lat_lon_on(g, 0.0, 0.0), (PI / 2.0, -PI));
+        assert_eq!(west.lat_lon_on(g, 1.0, 1.0), (-PI / 2.0, 0.0));
+        assert_eq!(TileKey::new(0, 1, 0).lat_lon_on(g, 0.5, 0.5), (0.0, PI / 2.0));
+        // Tycho, 43.3 S 11.2 W, at zoom 5: 64 columns, 32 rows, top left at 90 N 180 W.
+        let k = TileKey::containing_on(g, -43.3f64.to_radians(), -11.2f64.to_radians(), 5);
+        assert_eq!((k.x, k.y), (((180.0 - 11.2) / 360.0 * 64.0) as u32, ((90.0 + 43.3) / 180.0 * 32.0) as u32));
+        let (lat, lon) = k.lat_lon_on(g, 0.5, 0.5);
+        assert_eq!(TileKey::containing_on(g, lat, lon, 5), k);
+        // The poles and the date line stay inside the grid.
+        let k = TileKey::containing_on(g, -PI / 2.0, PI, 3);
+        assert_eq!((k.x, k.y), (15, 7));
     }
 
     #[test]

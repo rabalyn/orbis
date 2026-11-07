@@ -1,11 +1,16 @@
 //! Turns input into camera movement. Independent of the window system.
 
-use crate::camera::{wrap, Camera, MAX_DISTANCE, MAX_TILT};
-use crate::geo::{ecef_to_geodetic, enu, A};
+use crate::camera::{max_distance, wrap, Camera, MAX_TILT};
+use crate::geo::{ecef_to_geodetic, enu, radius};
 use glam::{DQuat, DVec2, DVec3};
 use std::f64::consts::PI;
 
 pub const WHOLE_EARTH: f64 = 2.2e7;
+
+/// The distance at which the whole body fits the view.
+pub fn whole_body() -> f64 {
+    crate::body::scaled(WHOLE_EARTH)
+}
 const GROUND_CLEARANCE: f64 = 2.0;
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
@@ -273,7 +278,7 @@ impl Nav {
     }
 
     pub fn whole_body(&mut self) {
-        let to = Camera { distance: WHOLE_EARTH, tilt: 0.0, sky: 0.0, ..self.cam };
+        let to = Camera { distance: whole_body(), tilt: 0.0, sky: 0.0, ..self.cam };
         self.fly_to(to);
     }
 
@@ -285,8 +290,8 @@ impl Nav {
             Camera { heading: 0.0, ..c }
         } else if c.total_tilt() > EPS {
             Camera { tilt: 0.0, sky: 0.0, ..c }
-        } else if c.distance < WHOLE_EARTH * 0.99 {
-            Camera { distance: WHOLE_EARTH, ..c }
+        } else if c.distance < whole_body() * 0.99 {
+            Camera { distance: whole_body(), ..c }
         } else {
             Camera { lat: 0.0, ..c }
         };
@@ -304,7 +309,7 @@ impl Nav {
         let arc = DQuat::from_rotation_arc(a, b);
         let angle = a.dot(b).clamp(-1.0, 1.0).acos();
         // Longer trips climb first, travel high and then sink.
-        let cruise = (angle * A * 0.8).min(1.5e7);
+        let cruise = (angle * radius() * 0.8).min(crate::body::scaled(1.5e7));
         let duration = (0.6 + angle * 1.5).min(4.0);
         self.flight = Some(Flight { from_dir: a, arc, from, to, cruise, t: 0.0, duration });
     }
@@ -314,12 +319,12 @@ impl Nav {
         f.t = (f.t + dt / f.duration).min(1.0);
         let s = f.t * f.t * (3.0 - 2.0 * f.t);
         let dir = DQuat::IDENTITY.slerp(f.arc, s) * f.from_dir;
-        let (lat, lon, _) = ecef_to_geodetic(dir * A);
+        let (lat, lon, _) = ecef_to_geodetic(dir * radius());
         let log_d = f.from.distance.ln() * (1.0 - s) + f.to.distance.ln() * s;
         let bump = (f.cruise - f.from.distance.max(f.to.distance)).max(0.0) * (PI * s).sin();
         self.cam.lat = lat;
         self.cam.lon = lon;
-        self.cam.distance = (log_d.exp() + bump).min(MAX_DISTANCE);
+        self.cam.distance = (log_d.exp() + bump).min(max_distance());
         self.cam.heading = f.from.heading + wrap(f.to.heading - f.from.heading) * s;
         self.cam.set_total_tilt(f.from.total_tilt() + (f.to.total_tilt() - f.from.total_tilt()) * s);
         if f.t >= 1.0 {
@@ -351,7 +356,7 @@ impl Nav {
                         Arrow::Right => f.cross(up),
                         Arrow::Left => up.cross(f),
                     };
-                    let angle = self.cam.distance * rate * 0.6 * dt / A;
+                    let angle = self.cam.distance * rate * 0.6 * dt / radius();
                     self.cam.apply_rotation(DQuat::from_axis_angle(up.cross(dir).normalize(), angle));
                 }
                 ArrowMode::Orbit => match arrow {
@@ -397,7 +402,7 @@ impl Nav {
             return;
         }
         let speed = self.glide.length();
-        if speed * A < 1.0 || speed < 1e-5 {
+        if speed * radius() < 1.0 || speed < 1e-5 {
             self.glide = DVec3::ZERO;
             return;
         }

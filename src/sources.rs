@@ -357,6 +357,10 @@ pub fn by_id(id: &str) -> Option<&'static TileSource> {
 /// Which imagery could serve a tile, best first, with the source tile to ask for. A tile
 /// beyond a source's detail takes a part of a coarser image.
 pub fn imagery_for(k: TileKey) -> Vec<(&'static TileSource, TileKey)> {
+    let body = crate::body::current();
+    if !body.surface_data {
+        return vec![(body.imagery, body.imagery.source_key(k))];
+    }
     let mut out: Vec<_> = DETAIL
         .iter()
         .filter(|s| k.z >= s.min_z && s.covers(k))
@@ -368,6 +372,10 @@ pub fn imagery_for(k: TileKey) -> Vec<(&'static TileSource, TileKey)> {
 
 /// How far a tile may be split at this place, given the imagery available there.
 pub fn max_tile_z(k: TileKey) -> u8 {
+    let body = crate::body::current();
+    if !body.surface_data {
+        return body.imagery.max_z;
+    }
     if k.z < BASE_TILE_MAX_Z {
         return BASE_TILE_MAX_Z;
     }

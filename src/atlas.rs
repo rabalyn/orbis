@@ -281,7 +281,7 @@ impl AtlasView {
 
     /// The scale at which a texel of the finest imagery covers `OVERZOOM` pixels.
     pub fn max_scale(&self) -> f64 {
-        let texels_round = TILE_TEXELS * (1u64 << crate::sources::ABSOLUTE_MAX_Z) as f64;
+        let texels_round = TILE_TEXELS * crate::body::current().grid.columns(crate::body::max_zoom()) as f64;
         OVERZOOM * texels_round / TAU
     }
 
@@ -404,17 +404,17 @@ impl AtlasView {
 
     /// Metres on the ground that one pixel covers at the equator.
     pub fn metres_per_pixel(&self) -> f64 {
-        crate::geo::A / self.scale
+        crate::geo::radius() / self.scale
     }
 
     /// The scale that shows about what a globe view at this distance shows.
     pub fn scale_for_distance(&self, distance: f64) -> f64 {
-        self.size.1 * crate::geo::A / (2.0 * (crate::camera::FOV_Y / 2.0).tan() * distance.max(1.0))
+        self.size.1 * crate::geo::radius() / (2.0 * (crate::camera::FOV_Y / 2.0).tan() * distance.max(1.0))
     }
 
     /// Shows what a globe view of this place and distance shows. The whole Earth gives the whole map.
     pub fn match_globe(&mut self, lat: f64, lon: f64, distance: f64) {
-        if distance >= crate::nav::WHOLE_EARTH {
+        if distance >= crate::nav::whole_body() {
             self.show_whole();
             return;
         }
@@ -425,7 +425,7 @@ impl AtlasView {
 
     /// The globe distance whose view has about the extent of this map view.
     pub fn distance_for_scale(&self) -> f64 {
-        self.size.1 * crate::geo::A / (2.0 * (crate::camera::FOV_Y / 2.0).tan() * self.scale)
+        self.size.1 * crate::geo::radius() / (2.0 * (crate::camera::FOV_Y / 2.0).tan() * self.scale)
     }
 }
 
@@ -441,13 +441,13 @@ pub struct Piece {
 
 impl Piece {
     fn rel_lon(&self, k: TileKey, s: f64, cm: f64) -> f64 {
-        let n = (1u64 << k.z) as f64;
+        let n = crate::body::current().grid.columns(k.z) as f64;
         TAU * (k.x as f64 + s) / n - PI - cm - self.shift
     }
 }
 
 pub fn pieces(k: TileKey, central_meridian: f64) -> Vec<Piece> {
-    let n = (1u64 << k.z) as f64;
+    let n = crate::body::current().grid.columns(k.z) as f64;
     let lon0 = TAU * k.x as f64 / n - PI;
     let width = TAU / n;
     // The seam lies at the central meridian plus half a turn, repeating every n tile widths.
@@ -513,7 +513,9 @@ pub fn select(v: &AtlasView, loaded: &impl Fn(TileKey) -> bool, max_z: fn(TileKe
     let mut out = Selection::default();
     let mut wanted = Vec::new();
     let mut budget = MAX_TILES;
-    visit(v, TileKey::new(0, 0, 0), loaded, max_z, &mut out.draw, &mut wanted, &mut budget);
+    for root in crate::geo::root_tiles() {
+        visit(v, root, loaded, max_z, &mut out.draw, &mut wanted, &mut budget);
+    }
     wanted.sort_by(|a: &(u8, f64, TileKey), b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
     out.wanted = wanted.into_iter().map(|w| w.2).collect();
     out

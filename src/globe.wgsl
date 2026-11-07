@@ -12,11 +12,10 @@ struct Frame {
     sun: vec4<f32>,
     // From J2000 equatorial directions to the Earth-fixed frame.
     sky_rot: mat4x4<f32>,
-    // The faintest magnitude that can be seen from here.
+    // The faintest magnitude that can be seen from here, the body's radius in metres, and 1
+    // when the body has air.
     sky: vec4<f32>,
 }
-
-const EARTH_RADIUS: f32 = 6378137.0;
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 
@@ -66,7 +65,7 @@ fn vs_tile(
     out.uv = uv;
     out.st = st;
     out.normal = normal;
-    out.ground = normalize(rel + frame.cam.xyz * EARTH_RADIUS);
+    out.ground = normalize(rel + frame.cam.xyz * frame.sky.y);
     return out;
 }
 
@@ -135,7 +134,7 @@ fn fs_building(in: BuildingOut) -> @location(0) vec4<f32> {
     if (dot(n, in.rel) > 0.0) {
         n = -n;
     }
-    let g = normalize(in.rel + frame.cam.xyz * EARTH_RADIUS);
+    let g = normalize(in.rel + frame.cam.xyz * frame.sky.y);
     return vec4<f32>(in.colour * sun_light(n, g), 1.0);
 }
 
@@ -243,7 +242,7 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
         colour = colour * mix(0.04, 1.0, lit) + vec3<f32>(0.9, 0.38, 0.15) * glow * dusk * 0.5;
     }
     // Close to the ground the whole sky is air; the weight fades out over 15 km.
-    let altitude = (length(o) - 1.0) * EARTH_RADIUS;
+    let altitude = (length(o) - 1.0) * frame.sky.y;
     let inside = exp(-max(altitude, 0.0) / 15000.0);
     if (inside > 0.002) {
         colour = mix(colour, sky_inside(dir, normalize(o)), inside);

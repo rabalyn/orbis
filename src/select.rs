@@ -1,7 +1,8 @@
 //! Chooses which tiles to draw and which to load for a view.
 
 use crate::camera::{Basis, FOV_Y};
-use crate::geo::{geodetic_to_ecef, TileKey, A};
+use crate::body;
+use crate::geo::{geodetic_to_ecef, radius, Grid, TileKey};
 use glam::DVec3;
 use std::f64::consts::TAU;
 
@@ -52,8 +53,9 @@ impl View {
         let b = &self.basis;
         // The padding covers the surface bulging between samples and terrain rising above
         // the ellipsoid.
-        let width = TAU * A / (1u64 << k.z) as f64;
-        let pad = TERRAIN_MARGIN + width * width / (8.0 * A) + width * 0.05;
+        let a = radius();
+        let width = TAU * a / body::current().grid.columns(k.z) as f64;
+        let pad = TERRAIN_MARGIN + width * width / (8.0 * a) + width * 0.05;
         // Above the horizon: some sample faces the camera.
         let above = s.points.iter().any(|p| (b.pos - *p).dot(p.normalize()) > -pad);
         if !above {
@@ -84,7 +86,13 @@ impl View {
                 point = *p;
             }
         }
-        let texel = TAU * A * lat.cos() / ((1u64 << k.z) as f64 * TILE_TEXELS);
+        // Mercator rows stretch east-west by 1/cos(lat); equirectangular ones do not, and
+        // their north-south texel stays the larger one.
+        let squeeze = match body::current().grid {
+            Grid::Mercator => lat.cos(),
+            Grid::Equirect => 1.0,
+        };
+        let texel = TAU * radius() * squeeze / (body::current().grid.columns(k.z) as f64 * TILE_TEXELS);
         let per_metre = self.height_px / (2.0 * (FOV_Y / 2.0).tan() * nearest.max(1.0));
         // Seen at a slant, a texel covers fewer pixels along the view direction. Averaging
         // both axes keeps grazing views from demanding full detail up to the horizon.
@@ -95,7 +103,9 @@ impl View {
     pub fn select(&self, loaded: &impl Fn(TileKey) -> bool) -> Selection {
         let mut out = Selection::default();
         let mut wanted = Vec::new();
-        self.visit(TileKey::new(0, 0, 0), loaded, &mut out.draw, &mut wanted);
+        for root in crate::geo::root_tiles() {
+            self.visit(root, loaded, &mut out.draw, &mut wanted);
+        }
         wanted.sort_by(|a: &(u8, f64, TileKey), b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
         out.wanted = wanted.into_iter().map(|w| w.2).collect();
         out

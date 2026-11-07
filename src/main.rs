@@ -1,5 +1,6 @@
 mod atlas;
 mod atlas_nav;
+mod body;
 mod buildings;
 mod cache;
 mod camera;
@@ -35,7 +36,7 @@ use nav::{Arrow, Button, Mods, Nav, WHOLE_EARTH};
 use pacing::{FrameLimit, Pacer, RateMeter};
 use render::{hemisphere_label, Corner, LabelInstance, Renderer};
 use select::View;
-use sky_time::{Clock, ClockKey, Sun};
+use sky_time::{Clock, ClockKey};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
@@ -74,7 +75,8 @@ orbis: a globe viewer
 Usage: orbis [options]
 
   --lat DEG  --lon DEG    view point (default 30, 10)
-  --distance METRES       distance from the view point (default whole Earth)
+  --body NAME             the body to view: earth or moon (default earth)
+  --distance METRES       distance from the view point (default the whole body)
   --heading DEG           heading, 0 is north up
   --tilt DEG              tilt, 0 is straight down
   --exaggeration N        terrain height factor (default 1)
@@ -108,6 +110,9 @@ See docs/SPEC.md for the mouse and keyboard controls.";
 
 struct Args {
     cam: Camera,
+    /// The body to view; chosen once for the run.
+    body: &'static body::Body,
+    distance_given: bool,
     /// The flat map's projection, when it is shown instead of the globe.
     atlas: Option<Projection>,
     central_meridian: f64,
@@ -148,6 +153,8 @@ fn locale_language() -> String {
 
 fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
     let mut a = Args {
+        body: &body::EARTH,
+        distance_given: false,
         cam: Camera {
             lat: 30f64.to_radians(),
             lon: 10f64.to_radians(),
@@ -231,7 +238,14 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
         match flag.as_str() {
             "--lat" => a.cam.lat = num()?.clamp(-89.9, 89.9).to_radians(),
             "--lon" => a.cam.lon = num()?.to_radians(),
-            "--distance" => a.cam.distance = num()?,
+            "--distance" => {
+                a.cam.distance = num()?;
+                a.distance_given = true;
+            }
+            "--body" => {
+                a.body = body::by_id(&value)
+                    .ok_or_else(|| anyhow!("--body expects one of: {}", body::ids().join(", ")))?;
+            }
             "--heading" => a.cam.heading = num()?.to_radians(),
             "--tilt" => a.cam.set_total_tilt(num()?.to_radians()),
             "--time" => {
@@ -468,12 +482,13 @@ fn next_retry(retries: &mut HashMap<TileKey, (Instant, u32)>, k: TileKey, until:
 
 /// The credits for what is on screen: those always shown, then any aerial imagery in view.
 fn credits_for<'a>(detail: impl Iterator<Item = &'a str>) -> String {
+    let credits = body::current().credit;
     let names: BTreeSet<&str> = detail.filter(|c| !c.is_empty()).collect();
     if names.is_empty() {
-        return CREDITS.to_string();
+        return credits.to_string();
     }
     let list: Vec<&str> = names.into_iter().collect();
-    format!("{CREDITS}\nAerial images: {}", list.join(", "))
+    format!("{credits}\nAerial images: {}", list.join(", "))
 }
 
 /// Says whether more is coming: a finished view and a stuck one otherwise look the same.
@@ -560,13 +575,13 @@ impl Scene {
     fn sync_sky(&mut self, r: &mut Renderer) {
         self.clock.advance(self.clock_epoch.elapsed().as_secs_f64());
         let time = self.clock.time();
-        r.sun = Sun::at(time).direction();
+        r.sun = (body::current().sun)(time);
         r.sun_on = self.sun_on;
         r.sky_on = self.sky_on;
         if !r.has_stars() {
             r.set_stars(&sky::star_points());
         }
-        r.sky_rot = sky::earth_fixed(time);
+        r.sky_rot = (body::current().rotation)(time);
         let (_, _, height) = ecef_to_geodetic(self.nav.cam.basis().pos);
         let sun_sin = self.sun_on.then(|| self.nav.cam.basis().pos.normalize().dot(r.sun));
         r.sky_limit = sky::limiting_magnitude(height, sun_sin);
@@ -690,7 +705,7 @@ impl Scene {
         let mut overlays = Vec::new();
         // Labels are placed on the globe only.
         let labels_wanted = self.labels_on && !atlas;
-        if self.roads_on || labels_wanted {
+        if body::current().surface_data && (self.roads_on || labels_wanted) {
             for &k in &self.draw {
                 let lines_needed = !r.has_overlay(k) && !self.overlay_empty.contains(&k);
                 if !lines_needed && (!labels_wanted || self.label_sets.contains_key(&vector_source(k))) {
@@ -708,7 +723,7 @@ impl Scene {
             }
         }
         let mut building_jobs = Vec::new();
-        let visible = if self.buildings_on && !atlas { building_tiles(&self.draw) } else { Vec::new() };
+        let visible = if body::current().surface_data && self.buildings_on && !atlas { building_tiles(&self.draw) } else { Vec::new() };
         for &k in &visible {
             if r.has_buildings(k) || self.building_empty.contains(&k) {
                 continue;
@@ -1489,10 +1504,14 @@ impl ApplicationHandler for App {
 }
 
 fn main() -> Result<()> {
-    let Some(args) = parse_args(std::env::args().skip(1))? else {
+    let Some(mut args) = parse_args(std::env::args().skip(1))? else {
         println!("{USAGE}");
         return Ok(());
     };
+    body::select(args.body);
+    if !args.distance_given {
+        args.cam.distance = nav::whole_body();
+    }
     if args.cache_status {
         cache_status(&args);
         return Ok(());

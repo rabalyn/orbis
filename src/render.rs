@@ -4,7 +4,7 @@
 use crate::atlas::{self, AtlasVertex, AtlasView, Mesh};
 use crate::buildings::{BuildingMesh, BuildingVertex};
 use crate::camera::{Camera, FOV_Y};
-use crate::geo::{geodetic_to_ecef, TileKey, A};
+use crate::geo::{geodetic_to_ecef, radius, TileKey};
 use crate::labels::{AtlasRect, Mask, Shelves, TextKey, TextWorker, ATLAS_SIZE};
 use crate::sky::SkyPoint;
 use crate::loader::{mesh_indices, TileData, Vertex, GRID, TILE_MAX_Z};
@@ -1165,7 +1165,7 @@ impl Renderer {
         let vec4 = |v: DVec3, w: f64| [v.x as f32, v.y as f32, v.z as f32, w as f32];
         let uniform = FrameUniform {
             view_proj: cam.view_proj(aspect, near).to_cols_array_2d(),
-            cam: vec4(basis.pos / A, (FOV_Y / 2.0).tan()),
+            cam: vec4(basis.pos / radius(), (FOV_Y / 2.0).tan()),
             right: vec4(basis.right, aspect),
             up: vec4(basis.up, 0.0),
             look: vec4(basis.look, 0.0),
@@ -1176,7 +1176,12 @@ impl Renderer {
                 let c = |v: DVec3| [v.x as f32, v.y as f32, v.z as f32, 0.0];
                 [c(r.x_axis), c(r.y_axis), c(r.z_axis), [0.0, 0.0, 0.0, 1.0]]
             },
-            sky: [self.sky_limit as f32, 0.0, 0.0, 0.0],
+            sky: [
+                self.sky_limit as f32,
+                radius() as f32,
+                if crate::body::current().atmosphere { 1.0 } else { 0.0 },
+                0.0,
+            ],
         };
         self.queue.write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
 

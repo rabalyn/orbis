@@ -6,7 +6,10 @@ use std::f64::consts::{PI, TAU};
 
 pub const FOV_Y: f64 = 45.0 * PI / 180.0;
 pub const MIN_DISTANCE: f64 = 30.0;
-pub const MAX_DISTANCE: f64 = 4.0e7;
+/// The farthest the camera may be from the body's surface point it looks at.
+pub fn max_distance() -> f64 {
+    crate::body::scaled(4.0e7)
+}
 pub const MAX_TILT: f64 = 85.0 * PI / 180.0;
 /// The most the head can be raised beyond `MAX_TILT`: straight up.
 pub const MAX_SKY: f64 = PI - MAX_TILT;
@@ -144,7 +147,7 @@ impl Camera {
     }
 
     pub fn clamp(&mut self) {
-        self.distance = self.distance.clamp(MIN_DISTANCE, MAX_DISTANCE);
+        self.distance = self.distance.clamp(MIN_DISTANCE, max_distance());
         self.tilt = self.tilt.clamp(0.0, MAX_TILT);
         self.sky = self.sky.clamp(0.0, MAX_SKY);
         self.lat = self.lat.clamp(-MAX_LAT, MAX_LAT);
