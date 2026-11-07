@@ -41,7 +41,7 @@ The design inputs are:
 Aerial imagery for close views comes from national and regional services, listed with their
 terms in [CACHING.md](CACHING.md). Their credits appear on screen while their imagery is in
 view. Terms were read from basemap.at, the Swiss federal geoportal and cartes.gouv.fr, and from
-the capability documents of the PDOK, Bavaria, NRW and Berlin services, IGN Spain's licence
+the capability documents of the PDOK, Bavaria, NRW, Lower Saxony and Berlin services, IGN Spain's licence
 document, and VersaTiles' sources page, which lists a licence per country. USGS products are
 listed as US public domain from general knowledge; its terms page could not be loaded.
 

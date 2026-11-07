@@ -363,6 +363,9 @@ impl Shared {
         // Best imagery first. While a better source is unavailable for a moment the tile
         // waits, with a coarser one staying on screen, so nothing gets stuck on poor imagery.
         for (source, source_key) in sources::imagery_for(k) {
+            if source.blank_means_missing() && self.fetcher.empty_above(source, source_key) {
+                continue;
+            }
             let bytes = match self.fetcher.fetch(source, source_key) {
                 Ok(bytes) => bytes,
                 Err(FetchError::Missing) => continue,
@@ -632,6 +635,29 @@ mod tests {
         assert_eq!(tile.vertices[0].uv, [rect.0 as f32, rect.1 as f32]);
         assert!(cache.is_known_missing(&at.cache_name(k)));
         assert_eq!(cache.get(&at.cache_name(k)), None, "no need to keep it");
+    }
+
+    #[test]
+    fn an_empty_coarse_image_spares_the_service_all_finer_requests() {
+        let (cache, k, base) = detail_setup("empty-above");
+        let at = sources::by_id("basemap-at").unwrap();
+        // Were it consulted, this finer image would win.
+        cache.put(&at.cache_name(k), &tile_bytes(|x, y| [x as u8 * 10, y as u8 * 10, 50])).unwrap();
+        cache.put(&sources::EOX.cache_name(base), &tile_bytes(|x, y| [x as u8, y as u8, 9])).unwrap();
+        cache.mark_missing(&at.cache_name(k.ancestor(15)));
+        let Outcome::Ready(tile) = load_with(&cache, k) else { panic!("no tile") };
+        assert_eq!(tile.credit, "");
+    }
+
+    #[test]
+    fn only_an_empty_image_of_the_same_area_counts() {
+        let (cache, k, _) = detail_setup("empty-elsewhere");
+        let at = sources::by_id("basemap-at").unwrap();
+        cache.put(&at.cache_name(k), &tile_bytes(|x, y| [x as u8 * 10, y as u8 * 10, 50])).unwrap();
+        let elsewhere = k.ancestor(15);
+        cache.mark_missing(&at.cache_name(TileKey::new(15, elsewhere.x + 1, elsewhere.y)));
+        let Outcome::Ready(tile) = load_with(&cache, k) else { panic!("no tile") };
+        assert_eq!(tile.credit, at.credit);
     }
 
     #[test]

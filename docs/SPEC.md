@@ -12,6 +12,7 @@ fed from open map data. Behaviour is specified here in our own words. See
   replacements are ready, so the view never shows holes while loading.
 - A simple atmosphere glow, and plain colour where no imagery exists (the poles).
 - Always-visible data credits, plus the view point's coordinates and the camera altitude.
+- The display says whether tiles are still loading or waiting to retry, or all have loaded.
 
 ### Navigation
 The view is defined by a view point on the ground, a distance, a heading and a tilt.

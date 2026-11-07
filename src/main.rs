@@ -404,6 +404,16 @@ fn credits_for<'a>(detail: impl Iterator<Item = &'a str>) -> String {
     format!("{CREDITS}\nAerial images: {}", list.join(", "))
 }
 
+/// Says whether more is coming: a finished view and a stuck one otherwise look the same.
+fn loading_status(waiting: usize, retrying: usize) -> String {
+    match (waiting.saturating_sub(retrying), retrying) {
+        (0, 0) => "all loaded".to_string(),
+        (loading, 0) => format!("loading {loading}"),
+        (0, retrying) => format!("{retrying} waiting to retry"),
+        (loading, retrying) => format!("loading {loading}, {retrying} waiting to retry"),
+    }
+}
+
 /// The on-screen line about traffic, and a line for each server being left alone.
 fn network_status(fetcher: &Fetcher, now: SystemTime) -> Vec<String> {
     let t = fetcher.traffic();
@@ -675,11 +685,12 @@ impl Scene {
     fn hud(&self, r: &Renderer) -> String {
         let cam = &self.nav.cam;
         let mut text = format!(
-            "{}\naltitude {}  tiles {}/{}",
+            "{}\naltitude {}  tiles {}/{}\n{}",
             hemisphere_label(cam.lat, cam.lon),
             format_distance(self.nav.altitude),
             self.draw.len(),
             r.tile_count(),
+            loading_status(self.waiting, self.retrying),
         );
         if let Some(status) = &self.frame_status {
             text.push('\n');
@@ -1376,5 +1387,13 @@ mod tests {
         };
         assert_eq!(label_id(&label(0.8001, "A")), label_id(&label(0.80011, "A")));
         assert_ne!(label_id(&label(0.8001, "A")), label_id(&label(0.8001, "B")));
+    }
+
+    #[test]
+    fn the_display_tells_finished_from_still_loading() {
+        assert_eq!(loading_status(0, 0), "all loaded");
+        assert_eq!(loading_status(5, 0), "loading 5");
+        assert_eq!(loading_status(3, 3), "3 waiting to retry");
+        assert_eq!(loading_status(5, 2), "loading 3, 2 waiting to retry");
     }
 }

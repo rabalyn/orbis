@@ -113,17 +113,24 @@ pub const MAP_TILEJSON_URL: &str = "https://tiles.openfreemap.org/planet";
 
 macro_rules! wms {
     ($base:literal, $layer:literal) => {
+        wms!($base, $layer, "256")
+    };
+    ($base:literal, $layer:literal, $size:literal) => {
         concat!(
             $base,
             "?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=",
             $layer,
-            "&STYLES=&CRS=EPSG:3857&BBOX={bbox}&WIDTH=256&HEIGHT=256&FORMAT=image/jpeg"
+            "&STYLES=&CRS=EPSG:3857&BBOX={bbox}&WIDTH=",
+            $size,
+            "&HEIGHT=",
+            $size,
+            "&FORMAT=image/jpeg"
         )
     };
 }
 
 /// Detail imagery, best first. Smaller regions come before the larger ones around them.
-pub static DETAIL: [TileSource; 10] = [
+pub static DETAIL: [TileSource; 11] = [
     detail(
         "berlin",
         wms!("https://gdi.berlin.de/services/wms/truedop_2024", "truedop_2024"),
@@ -138,10 +145,32 @@ pub static DETAIL: [TileSource; 10] = [
         wms!("https://www.wms.nrw.de/geobasis/wms_nw_dop", "nw_dop_rgb"),
         "nrw/{z}/{x}/{y}.jpg",
         19,
-        &[[5.8, 50.3, 9.5, 52.6]],
+        &[[5.8, 50.3, 7.8, 52.35], [7.8, 50.7, 8.3, 52.1], [8.3, 50.7, 9.0, 52.55], [9.0, 51.4, 9.5, 52.0]],
         "Geobasis NRW",
         2,
     ),
+    // Each image takes this service about a second whatever its size: 512 pixels took 10% longer
+    // than 256 when measured, so one request for four tiles is kinder to it and much faster.
+    TileSource {
+        pixels: 512,
+        ..detail(
+            "lgln",
+            wms!("https://opendata.lgln.niedersachsen.de/doorman/noauth/dop_wms", "ni_dop20", "512"),
+            "lgln/{z}/{x}/{y}.jpg",
+            18,
+            &[
+                [6.6, 52.24, 8.0, 53.8],
+                [8.0, 52.1, 10.7, 53.4],
+                [9.0, 51.35, 10.7, 52.1],
+                [8.0, 53.4, 9.7, 54.0],
+                [10.7, 52.1, 11.1, 52.9],
+                [10.9, 52.9, 11.7, 53.15],
+            ],
+            // The service asks for the year of retrieval; update it with each release.
+            "LGLN (2026) CC BY 4.0",
+            2,
+        )
+    },
     detail(
         "bavaria",
         wms!("https://geoservices.bayern.de/od/wms/dop/v1/dop40", "by_dop40c"),
@@ -436,6 +465,26 @@ mod tests {
         ] {
             assert_eq!(ids(key_at(lat, lon, 18)), ["versatiles", "eox"], "{name}");
         }
+        for (name, lat, lon) in [("Cologne", 50.94, 6.96), ("Aachen", 50.78, 6.08), ("Muenster", 51.96, 7.63), ("Siegen", 50.87, 8.02), ("Bielefeld", 52.02, 8.53), ("Minden", 52.29, 8.92), ("Hoexter", 51.77, 9.38)] {
+            assert_eq!(ids(key_at(lat, lon, 18))[0], "nrw", "{name}");
+        }
+        for (name, lat, lon) in [
+            ("Hameln", 52.10, 9.28),
+            ("Osnabrueck", 52.27, 8.05),
+            ("Hannover", 52.37, 9.73),
+            ("Goettingen", 51.53, 9.93),
+            ("Oldenburg", 53.14, 8.21),
+            ("Cuxhaven", 53.86, 8.69),
+            ("Wolfsburg", 52.42, 10.78),
+            ("Lueneburg", 53.25, 10.41),
+            ("Luechow", 52.97, 11.15),
+        ] {
+            assert_eq!(ids(key_at(lat, lon, 18)), ["lgln", "versatiles", "eox"], "{name}");
+        }
+        for (name, lat, lon) in [("Hamburg", 53.55, 9.99), ("Kassel", 51.31, 9.49), ("Magdeburg", 52.13, 11.63), ("Erfurt", 50.98, 11.03)] {
+            assert_eq!(ids(key_at(lat, lon, 18)), ["versatiles", "eox"], "{name}");
+        }
+        assert_eq!(ids(key_at(51.72, 8.75, 18)), ["nrw", "versatiles", "eox"], "Paderborn");
         // On the Austrian border, so Austria's service is asked first and finds nothing.
         assert_eq!(ids(key_at(48.15, 17.11, 18)), ["basemap-at", "versatiles", "eox"]);
         for (name, lat, lon) in [("Warsaw", 52.23, 21.01), ("Rome", 41.90, 12.50), ("London", 51.50, -0.12), ("Tokyo", 35.68, 139.76)] {
@@ -466,6 +515,8 @@ mod tests {
     #[test]
     fn tiles_split_further_only_where_detail_exists() {
         assert_eq!(max_tile_z(key_at(50.11, 8.68, 16)), 18);
+        assert_eq!(max_tile_z(key_at(53.55, 9.99, 16)), 18, "no finer service covers Hamburg");
+        assert_eq!(max_tile_z(key_at(52.10, 9.28, 16)), 19);
         assert_eq!(max_tile_z(key_at(47.27, 11.4, 16)), 19);
         assert_eq!(max_tile_z(key_at(48.14, 11.58, 16)), 18);
         assert_eq!(max_tile_z(key_at(40.42, -3.70, 16)), 19);
@@ -502,6 +553,16 @@ mod tests {
         );
         let url = TileSource::url_from(by_id("bavaria").unwrap().url, TileKey::new(1, 1, 0));
         assert!(url.contains("BBOX=0.000,0.000,20037508.343,20037508.343&WIDTH=256"));
+    }
+
+    #[test]
+    fn large_wms_images_are_requested_at_their_full_size() {
+        let lgln = by_id("lgln").unwrap();
+        let k = key_at(52.10, 9.28, 19);
+        assert_eq!(lgln.source_key(k), k.ancestor(18));
+        assert_eq!(lgln.source_key(k.ancestor(15)), k.ancestor(14));
+        assert!(TileSource::url_from(lgln.url, k).contains("&WIDTH=512&HEIGHT=512&"));
+        assert!(by_id("nrw").unwrap().url.contains("&WIDTH=256&HEIGHT=256&"));
     }
 
     #[test]

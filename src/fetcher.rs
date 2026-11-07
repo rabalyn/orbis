@@ -254,6 +254,12 @@ impl Fetcher {
         self.cache.is_known_missing(&name).then_some(Err(FetchError::Missing))
     }
 
+    /// Whether a coarser image of this area already turned out empty. A finer one holds nothing
+    /// either, so asking the service for each of them would only cost it requests.
+    pub fn empty_above(&self, source: &TileSource, k: TileKey) -> bool {
+        (source.min_z.saturating_sub(1)..k.z).any(|z| self.cache.is_known_missing(&source.cache_name(k.ancestor(z))))
+    }
+
     /// Gets a tile by the cheapest route available.
     pub fn fetch(&self, source: &'static TileSource, k: TileKey) -> Result<Vec<u8>, FetchError> {
         if let Some(known) = self.cached(source, k) {

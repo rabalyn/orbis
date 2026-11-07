@@ -92,13 +92,15 @@ The server is meant for a trusted home or office network.
 ## Imagery by level of detail
 
 Candidates for a tile are tried best first, within each source's approximate coverage box.
-A 404 or a blank image falls through to the next. The global base covers everything else,
-magnified beyond its resolution.
+A 404 or a blank image falls through to the next. Once a coarse image of an area has turned
+out empty, the service is not asked for anything finer inside it. The global base covers
+everything else, magnified beyond its resolution.
 
 | Source | Area | From zoom | To zoom | Licence or terms | Credit |
 |---|---|---|---|---|---|
 | Berlin TrueDOP | Berlin | 15 | 19 | DL-DE Zero 2.0 | Geoportal Berlin |
 | NRW DOP | North Rhine-Westphalia | 15 | 19 | GovData terms | Geobasis NRW |
+| LGLN DOP20 | Lower Saxony | 15 | 19 | CC BY 4.0 | LGLN (2026) CC BY 4.0 |
 | Bavaria DOP40 | Bavaria | 15 | 18 | CC BY 4.0 | Bayerische Vermessungsverwaltung |
 | basemap.at | Austria | 15 | 19 | CC BY 4.0 | Grundkarte: basemap.at |
 | swisstopo SWISSIMAGE | Switzerland | 15 | 19 | Free under fair use | © swisstopo |
@@ -122,6 +124,14 @@ Credits on screen follow the sources in view.
 - VersaTiles publishes no usage terms for its public server, and it is one project's service.
   It gets two requests at a time, is asked only where no national service answers, and is
   worth contacting before Orbis is published.
+- A service answering with one plain image by mistake hides its finer imagery of that area
+  until the note expires after 30 days.
+- A slow service holds up the tiles waiting for it, and with enough of them the other data
+  too, as all workers can end up in its queue.
+- LGLN takes about a second per image, so a cold close view there takes much longer than
+  elsewhere. Asking for 512-pixel images makes one request serve four tiles.
+- LGLN asks for the year of retrieval in its credit. The year is fixed in the source list and
+  needs updating with each release, and older cached tiles show the newer year.
 - Images change at national borders and between zoom 14 and 15, and differ in date and colour.
 - A tile crossing a coverage edge can show white or black where the service has no data.
 - basemap.at prints the capture year as a watermark at zooms 17 and above.
