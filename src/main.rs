@@ -962,9 +962,15 @@ impl Scene {
         let mut order: Vec<usize> = (0..items.len()).collect();
         order.sort_by(|&a, &b| items[b].mark.map_or(0.0, |m| m.radius).total_cmp(&items[a].mark.map_or(0.0, |m| m.radius)));
         let items = order.into_iter().map(|i| items[i].clone()).collect();
+        let was_empty = self.markers.is_none();
         self.markers = (!near.is_empty()).then(|| Arc::new(import::Imported { name: "Events".to_string(), items, truncated: false }));
         self.marker_credits = credits;
         self.markers_from = (self.events.revision, near);
+        // Nothing before and nothing now: the drawn overlays are still right, and starting them
+        // over would only throw away tiles that are in flight.
+        if was_empty && self.markers.is_none() {
+            return;
+        }
         self.markers_version += 1;
         self.imports_changed();
     }
@@ -1757,6 +1763,12 @@ fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue)
     .context("no suitable graphics device")
 }
 
+/// Whether a saved image must keep waiting. A flight in progress counts: the tiles of the view it
+/// ends in are not asked for until it gets there, so a quiet loader mid-flight proves nothing.
+fn screenshot_busy(loader_idle: bool, waiting: usize, text_idle: bool, feeds_pending: usize, animating: bool) -> bool {
+    !loader_idle || waiting > 0 || !text_idle || feeds_pending > 0 || animating
+}
+
 fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     let (width, height) = args.size;
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
@@ -1825,7 +1837,7 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
         scene.place_labels(&mut r, (width, height), 1, step);
         r.flush_uploads();
         scene.poll_feeds();
-        if !scene.loader.is_idle() || scene.waiting > 0 || !scene.text.is_idle() || scene.feeds_pending > 0 {
+        if screenshot_busy(scene.loader.is_idle(), scene.waiting, scene.text.is_idle(), scene.feeds_pending, scene.nav.is_animating()) {
             quiet_since = Instant::now();
         } else if quiet_since.elapsed() > Duration::from_millis(300) {
             break;
@@ -2729,6 +2741,15 @@ mod tests {
         };
         assert_eq!(label_id(&label(0.8001, "A")), label_id(&label(0.80011, "A")));
         assert_ne!(label_id(&label(0.8001, "A")), label_id(&label(0.8001, "B")));
+    }
+
+    #[test]
+    fn saved_image_waits_for_a_flight() {
+        assert!(!screenshot_busy(true, 0, true, 0, false));
+        assert!(screenshot_busy(true, 0, true, 0, true));
+        assert!(screenshot_busy(false, 0, true, 0, false));
+        assert!(screenshot_busy(true, 3, true, 0, false));
+        assert!(screenshot_busy(true, 0, true, 1, false));
     }
 
     #[test]
