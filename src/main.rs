@@ -379,6 +379,10 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
                 a.settings.trains = false;
                 continue;
             }
+            "--mark-underlay" => {
+                a.mark_underlay = true;
+                continue;
+            }
             "--no-boundaries" => {
                 a.settings.boundaries = false;
                 continue;
@@ -593,7 +597,6 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
             "--simulate-nav" => a.simulate_nav = Some(navtrace::parse(&value)?),
             "--nav-uploads" => a.nav_uploads = value.parse::<usize>().ok().filter(|n| *n > 0).ok_or_else(|| anyhow!("--nav-uploads expects a positive number"))?,
             "--nav-draw-max-z" => a.nav_draw_max_z = value.parse().context("--nav-draw-max-z expects a zoom level")?,
-            "--mark-underlay" => a.mark_underlay = true,
             "--nav-shots" => a.nav_shots = Some(value.into()),
             "--flight-stop-at" => a.flight_stop_at = Some(value.parse().context("--flight-stop-at expects seconds")?),
             "--simulate-click" => {
@@ -3378,6 +3381,8 @@ mod tests {
         assert!(parse(&[]).unwrap().unwrap().settings.sunlight);
         assert!(parse(&[]).unwrap().unwrap().settings.stars);
         assert!(!parse(&["--no-stars"]).unwrap().unwrap().settings.stars);
+        let marked = parse(&["--mark-underlay", "--no-stars"]).unwrap().unwrap();
+        assert!(marked.mark_underlay && !marked.settings.stars);
         assert_eq!(parse(&["--tilt", "100"]).unwrap().unwrap().cam.sky.to_degrees().round(), 15.0);
     }
 
