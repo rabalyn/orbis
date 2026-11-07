@@ -18,6 +18,7 @@ mod lan;
 mod loader;
 mod moon;
 mod nav;
+mod navtrace;
 mod options;
 mod overlay;
 mod pacing;
@@ -190,6 +191,16 @@ Usage: orbis [options]
   --simulate-double-click X,Y  likewise a double click: flies there smoothly, and the image is taken at the
                           end of the flight (a label under the point is flown to, else the ground)
   --flight-stop-at T      with --simulate-double-click, take the image T seconds into the flight instead
+  --simulate-nav SCRIPT   with --screenshot, drive the view from the start, through the window's wheel
+                          routing, and print what is drawn after each step (a diagnostic). Steps, comma
+                          separated: pX:Y pointer, z+N wheel, a+N Alt-wheel (tilt), fN frames without
+                          waiting for tiles, s wait until loaded, l log, d list tiles, g:NAME picture
+  --nav-uploads N         with --simulate-nav, take only N finished tiles from the loader per frame
+                          (default 12), so that tiles arrive slowly even from a warm cache
+  --nav-draw-max-z Z      with --simulate-nav, draw no tile finer than Z, though they still load and give the
+                          ground height: the moments when finer tiles have come for the camera but not the view
+  --mark-underlay         with --screenshot, paint the base sphere under the tiles magenta, so holes show
+  --nav-shots DIR         where g:NAME steps of --simulate-nav save NAME.png
   --serve-cache           run as a LAN cache server, with no window
   --share-cache           also offer this cache on the LAN, and use others found there
   --cache-server HOST:PORT  use this LAN cache server (repeatable)
@@ -254,6 +265,11 @@ struct Args {
     help_scroll: f64,
     simulate_clicks: Vec<DVec2>,
     simulate_doubles: Vec<DVec2>,
+    simulate_nav: Option<Vec<navtrace::Step>>,
+    nav_shots: Option<PathBuf>,
+    mark_underlay: bool,
+    nav_uploads: usize,
+    nav_draw_max_z: u8,
     flight_stop_at: Option<f64>,
 }
 
@@ -331,6 +347,11 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
         help_scroll: 0.0,
         simulate_clicks: Vec::new(),
         simulate_doubles: Vec::new(),
+        simulate_nav: None,
+        nav_shots: None,
+        mark_underlay: false,
+        nav_uploads: UPLOADS_PER_FRAME,
+        nav_draw_max_z: u8::MAX,
         flight_stop_at: None,
         geocoder_url: geocode::DEFAULT_SERVICE.to_string(),
     };
@@ -569,6 +590,11 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
                 let n = |v: &str| v.trim().parse::<f64>().context("--simulate-double-click expects X,Y");
                 a.simulate_doubles.push(DVec2::new(n(x)?, n(y)?));
             }
+            "--simulate-nav" => a.simulate_nav = Some(navtrace::parse(&value)?),
+            "--nav-uploads" => a.nav_uploads = value.parse::<usize>().ok().filter(|n| *n > 0).ok_or_else(|| anyhow!("--nav-uploads expects a positive number"))?,
+            "--nav-draw-max-z" => a.nav_draw_max_z = value.parse().context("--nav-draw-max-z expects a zoom level")?,
+            "--mark-underlay" => a.mark_underlay = true,
+            "--nav-shots" => a.nav_shots = Some(value.into()),
             "--flight-stop-at" => a.flight_stop_at = Some(value.parse().context("--flight-stop-at expects seconds")?),
             "--simulate-click" => {
                 let (x, y) = value.split_once(',').ok_or_else(|| anyhow!("--simulate-click expects X,Y"))?;
@@ -609,6 +635,10 @@ enum Mode {
 
 struct Scene {
     nav: Nav,
+    /// Finished tiles taken from the loader per frame.
+    uploads_per_frame: usize,
+    /// Tiles finer than this are loaded but not drawn (`--nav-draw-max-z`).
+    draw_max_z: u8,
     mode: Mode,
     map: AtlasNav,
     loader: Loader,
@@ -883,6 +913,8 @@ impl Scene {
         view.match_globe(args.cam.lat, args.cam.lon, args.cam.distance);
         let mut scene = Self {
             nav: Nav::starting_above_ground(args.cam, size),
+            uploads_per_frame: args.nav_uploads,
+            draw_max_z: args.nav_draw_max_z,
             mode: if args.settings.view == ViewKind::Map { Mode::Atlas } else { Mode::Globe },
             map: AtlasNav::new(view),
             loader: Loader::new(fetcher.clone(), args.exaggeration, vector::name_fields(&args.lang)),
@@ -1641,7 +1673,7 @@ impl Scene {
             r.clear_overlays();
             changed = true;
         }
-        for _ in 0..UPLOADS_PER_FRAME {
+        for _ in 0..self.uploads_per_frame {
             match self.loader.try_result() {
                 Some(Outcome::Ready(data)) if data.service_generation != generation => {
                     // Made under an earlier choice of services: it will be asked for again.
@@ -1731,7 +1763,7 @@ impl Scene {
                 height_px: aspect_height.1,
                 max_z: sources::max_tile_z,
             };
-            let mut selection = view.select(&|k| r.has_tile(k));
+            let mut selection = view.select(&|k| k.z <= self.draw_max_z && r.has_tile(k));
             // During a flight only the tiles of the view it lands on are asked for, early; the
             // views passed on the way are drawn from what is there, and cost no downloads.
             if let Some(goal) = self.nav.flight_goal() {
@@ -2355,6 +2387,9 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let samples = render::sample_count(&adapter, format);
     let mut r = Renderer::new(device, queue, format, samples);
+    if args.mark_underlay {
+        r.mark_underlay();
+    }
     let target = r.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("screenshot"),
         size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
@@ -2408,6 +2443,9 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
         if let Some(r) = scene.ui.panels().iter().find(|p| p.id == help::WINDOW).map(|p| p.rect) {
             scene.ui.wheel(-args.help_scroll, DVec2::new(r.x + r.w / 2.0, r.y + r.h / 2.0));
         }
+    }
+    if let Some(script) = &args.simulate_nav {
+        navtrace::run(args, script, &mut scene, &mut r, &target, (width, height))?;
     }
     // Clicks are made once everything has loaded, so they land on what the picture shows: the
     // credits, which dialogs sit above, depend on the tiles that arrived.

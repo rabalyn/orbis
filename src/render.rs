@@ -53,6 +53,15 @@ struct FrameUniform {
 /// Room for the bright planets and the Moon after the stars.
 const SKY_BODIES: usize = 8;
 
+/// See `Renderer::tile_report`.
+pub struct TileReport {
+    pub min: f32,
+    pub max: f32,
+    /// 1 when the imagery is the tile's own, 0.5 when it is a quarter of the parent's, and so on.
+    pub imagery_size: f64,
+    pub height_here: Option<f64>,
+}
+
 struct GpuTile {
     vertices: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -855,6 +864,19 @@ impl Renderer {
         );
     }
 
+    /// The mesh heights of a loaded tile, row by row on the (GRID + 1) squared grid.
+    pub fn tile_heights(&self, k: TileKey) -> Option<&[f32]> {
+        self.tiles.get(&k).map(|t| t.heights.as_slice())
+    }
+
+    /// Paints the base sphere under the tiles magenta, so that holes in the tiles show up
+    /// (`--mark-underlay`).
+    pub fn mark_underlay(&mut self) {
+        let magenta = [255u8, 0, 255, 255].repeat(4);
+        let view = tile_texture_view(&self.device, &self.queue, wgpu::TextureFormat::Rgba8UnormSrgb, &[(1, 4, magenta)]);
+        self.underlay_bind = self.sampled_bind(&view);
+    }
+
     fn sampled_bind(&self, view: &wgpu::TextureView) -> wgpu::BindGroup {
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("tile"),
@@ -1037,6 +1059,19 @@ impl Renderer {
             );
             Some(height_on_grid(&tile.heights, u, v))
         })
+    }
+
+    /// What a loaded tile is made of, for `--simulate-nav`: its lowest and highest mesh height,
+    /// the share of its imagery's tile it covers, and the mesh height at a position.
+    pub fn tile_report(&self, k: TileKey, lat: f64, lon: f64) -> Option<TileReport> {
+        let t = self.tiles.get(&k)?;
+        let (min, max) = t.heights.iter().fold((f32::MAX, f32::MIN), |(a, b), h| (a.min(*h), b.max(*h)));
+        let (u, v) = (
+            crate::geo::lon_to_merc_u(lon) * (1u64 << k.z) as f64 - k.x as f64,
+            crate::geo::lat_to_merc_v(lat) * (1u64 << k.z) as f64 - k.y as f64,
+        );
+        let inside = (0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v);
+        Some(TileReport { min, max, imagery_size: t.uv_rect.2, height_here: inside.then(|| height_on_grid(&t.heights, u, v)) })
     }
 
     fn evict(&mut self, in_use: &HashSet<TileKey>) {
