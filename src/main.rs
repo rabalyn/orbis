@@ -17,6 +17,7 @@ mod pacing;
 mod planetary;
 mod planets;
 mod render;
+mod import;
 mod places;
 mod search;
 mod select;
@@ -113,6 +114,10 @@ Usage: orbis [options]
   --save-place NAME       save the view as a place before anything else (key Ctrl-S names the view in
                           the window; K lists, flies to and deletes saved places)
   --places-panel          with --screenshot, also show the list of saved places
+  --import FILE           show the places, tracks and outlines in a GeoJSON, GPX, KML, KMZ or IGC file
+                          (repeatable; files can also be dropped on the window; key I lists them;
+                          Earth only)
+  --imports-panel         with --screenshot, also show the list of imported items
   --serve-cache           run as a LAN cache server, with no window
   --share-cache           also offer this cache on the LAN, and use others found there
   --cache-server HOST:PORT  use this LAN cache server (repeatable)
@@ -163,6 +168,8 @@ struct Args {
     places_file: Option<PathBuf>,
     save_place: Option<String>,
     places_panel: bool,
+    imports: Vec<PathBuf>,
+    imports_panel: bool,
     geocoder_url: String,
 }
 
@@ -218,6 +225,8 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
         places_file: None,
         save_place: None,
         places_panel: false,
+        imports: Vec::new(),
+        imports_panel: false,
         geocoder_url: geocode::DEFAULT_SERVICE.to_string(),
     };
     while let Some(flag) = it.next() {
@@ -257,6 +266,10 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             }
             "--places-panel" => {
                 a.places_panel = true;
+                continue;
+            }
+            "--imports-panel" => {
+                a.imports_panel = true;
                 continue;
             }
             "--serve-cache" => {
@@ -338,6 +351,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
                 a.lang = value.to_ascii_lowercase();
             }
             "--search" => a.search = Some(value.clone()).filter(|v| !v.trim().is_empty()),
+            "--import" => a.imports.push(value.into()),
             "--places-file" => a.places_file = Some(value.into()),
             "--save-place" => a.save_place = Some(value.clone()),
             "--geocoder-url" => {
@@ -416,6 +430,8 @@ struct Scene {
     search: search::Search,
     places: places::Store,
     place_list: places::Picker,
+    library: import::Library,
+    import_list: places::Picker,
     /// Something to tell the user, shown until the next list is opened or Escape is pressed.
     notice: Option<String>,
     geocoder: geocode::Geocoder,
@@ -586,7 +602,7 @@ impl Scene {
         };
         let mut view = AtlasView::whole(args.atlas.unwrap_or(Projection::EqualEarth), args.central_meridian, (size.x, size.y));
         view.match_globe(args.cam.lat, args.cam.lon, args.cam.distance);
-        Self {
+        let mut scene = Self {
             nav: Nav::starting_above_ground(args.cam, size),
             mode: if args.atlas.is_some() { Mode::Atlas } else { Mode::Globe },
             map: AtlasNav::new(view),
@@ -595,6 +611,8 @@ impl Scene {
             notice: places.notice.clone(),
             places,
             place_list: places::Picker::default(),
+            library: import::Library::default(),
+            import_list: places::Picker::default(),
             geocoder: geocode::Geocoder::new(fetcher.clone(), args.geocoder_url.clone(), args.lang.clone()),
             fetcher,
             last_retry_tick: Instant::now(),
@@ -630,6 +648,52 @@ impl Scene {
             sky_on: args.stars,
             bodies: Vec::new(),
             bodies_time: f64::NEG_INFINITY,
+        };
+        for path in &args.imports {
+            scene.import_path(path, false);
+        }
+        scene
+    }
+
+    /// Reads a file and adds what is in it, saying what happened. With `fly` the view moves to it.
+    fn import_path(&mut self, path: &std::path::Path, fly: bool) {
+        let shown = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        if body::current().id != body::EARTH.id {
+            self.notice = Some(format!("{shown}: imported files are placed on Earth only, and this is {}.", body::current().name));
+            return;
+        }
+        match import::load_file(path) {
+            Ok(doc) => {
+                let target = doc.target();
+                self.notice = Some(format!(
+                    "Imported {shown}: {} items{}",
+                    doc.items.len(),
+                    if doc.truncated { " (the rest was left out, the file is too big)" } else { "" }
+                ));
+                self.library.add(doc);
+                self.import_list.clamp(self.library.item_count());
+                if let Some(t) = target.filter(|_| fly) {
+                    self.fly_to(t);
+                }
+            }
+            Err(e) => self.notice = Some(format!("{shown} could not be imported: {e}.")),
+        }
+        eprintln!("{}", self.notice.as_deref().unwrap_or(""));
+    }
+
+    fn toggle_imports(&mut self) {
+        self.notice = None;
+        self.place_list.close();
+        self.import_list.toggle();
+    }
+
+    fn imports_key(&mut self, key: places::Key) {
+        let pick = self.import_list.key(key, self.library.item_count());
+        self.notice = None;
+        if let places::Pick::Fly(i) = pick {
+            if let Some(t) = self.library.item(i).and_then(|(_, item)| item.target()) {
+                self.fly_to(t);
+            }
         }
     }
 
@@ -1017,12 +1081,28 @@ impl Scene {
             return String::new();
         }
         if self.place_list.is_open() {
-            let rows: Vec<String> = self.places.places().iter().map(|p| self.place_row(p)).collect();
+            let list = self.places.places();
             let mut text = self.place_list.panel_text(
                 "Saved places",
-                &rows,
+                list.len(),
+                |i| self.place_row(&list[i]),
                 "None yet. Ctrl-S saves the view.",
                 "Enter: fly there   Delete: remove   Up/Down: choose   K or Esc: close",
+            );
+            if let Some(n) = &self.notice {
+                text.push('\n');
+                text.push_str(n);
+            }
+            return text;
+        }
+        if self.import_list.is_open() {
+            let library = &self.library;
+            let mut text = self.import_list.panel_text(
+                "Imported items",
+                library.item_count(),
+                |i| library.item(i).map_or_else(String::new, |(d, item)| format!("{}: {}", d.name, item.title())),
+                "Nothing imported. Drop a file on the window, or start with --import FILE.",
+                "Enter: fly there   Up/Down: choose   I or Esc: close",
             );
             if let Some(n) = &self.notice {
                 text.push('\n');
@@ -1044,6 +1124,7 @@ impl Scene {
     /// Opens or closes the list of saved places.
     fn toggle_places(&mut self) {
         self.notice = None;
+        self.import_list.close();
         self.place_list.toggle();
     }
 
@@ -1257,6 +1338,10 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     if let Some(name) = &args.save_place {
         scene.save_view(name);
         eprintln!("{}", scene.notice.as_deref().unwrap_or(""));
+    }
+    if args.imports_panel {
+        scene.import_list.toggle();
+        scene.notice = None;
     }
     if args.places_panel {
         scene.place_list.toggle();
@@ -1720,6 +1805,16 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            WindowEvent::KeyboardInput { event, .. }
+                if gfx.scene.import_list.is_open() && list_key(&event).is_some() =>
+            {
+                if event.state == ElementState::Pressed {
+                    if let Some(key) = list_key(&event) {
+                        gfx.scene.imports_key(key);
+                    }
+                }
+            }
+            WindowEvent::DroppedFile(path) => gfx.scene.import_path(&path, true),
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
                 let pressed = event.state == ElementState::Pressed;
@@ -1755,10 +1850,12 @@ impl ApplicationHandler for App {
                             nav.release_all();
                             gfx.scene.notice = None;
                             gfx.scene.place_list.close();
+                            gfx.scene.import_list.close();
                             gfx.scene.search.open_save();
                             gfx.window.set_ime_allowed(true);
                         }
                         KeyCode::KeyK if !self.mods.ctrl => gfx.scene.toggle_places(),
+                        KeyCode::KeyI if !self.mods.ctrl => gfx.scene.toggle_imports(),
                         KeyCode::KeyM if !self.mods.ctrl => gfx.scene.toggle_mode(),
                         _ if !self.mods.ctrl && sky_time::key_for(code, self.mods.shift).is_some() => {
                             if let Some(key) = sky_time::key_for(code, self.mods.shift) {

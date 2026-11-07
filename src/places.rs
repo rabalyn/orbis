@@ -286,24 +286,24 @@ impl Picker {
         }
     }
 
-    /// The panel's text, with `rows` as the lines to choose from.
-    pub fn panel_text(&self, title: &str, rows: &[String], empty: &str, hint: &str) -> String {
+    /// The panel's text, for `len` rows that `row` makes on demand.
+    pub fn panel_text(&self, title: &str, len: usize, row: impl Fn(usize) -> String, empty: &str, hint: &str) -> String {
         if !self.open {
             return String::new();
         }
         let mut s = String::from(title);
-        if rows.is_empty() {
+        if len == 0 {
             s.push('\n');
             s.push_str(empty);
         }
         // A window of rows that keeps the chosen one in view.
-        let first = self.selected.saturating_sub(ROWS - 1).min(rows.len().saturating_sub(ROWS));
-        for (i, row) in rows.iter().enumerate().skip(first).take(ROWS) {
+        let first = self.selected.saturating_sub(ROWS - 1).min(len.saturating_sub(ROWS));
+        for i in first..len.min(first + ROWS) {
             let mark = if i == self.selected { '>' } else { ' ' };
-            s.push_str(&format!("\n{mark} {}", shorten(row, NAME_COLUMNS)));
+            s.push_str(&format!("\n{mark} {}", shorten(&row(i), NAME_COLUMNS)));
         }
-        if rows.len() > ROWS {
-            s.push_str(&format!("\n({} in all)", rows.len()));
+        if len > ROWS {
+            s.push_str(&format!("\n({len} in all)"));
         }
         s.push('\n');
         s.push_str(hint);
@@ -425,10 +425,10 @@ mod tests {
         for _ in 0..20 {
             p.key(Key::Down, rows.len());
         }
-        let text = p.panel_text("Title", &rows, "none", "hint");
+        let text = p.panel_text("Title", rows.len(), |i| rows[i].clone(), "none", "hint");
         assert!(text.contains("> row 20"));
         assert!(!text.contains("row 0\n"));
         assert!(text.contains("(30 in all)") && text.ends_with("hint"));
-        assert!(p.panel_text("T", &[], "Nothing here.", "h").contains("Nothing here."));
+        assert!(p.panel_text("T", 0, |_| String::new(), "Nothing here.", "h").contains("Nothing here."));
     }
 }

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Invented areas for tests, not real boundaries. -->
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document><name>Alps test areas</name>
+  <Folder><name>Areas</name>
+    <Placemark><name>Test valley area</name>
+      <Polygon><outerBoundaryIs><LinearRing><coordinates>
+        7.20,46.15,0 7.55,46.20,0 7.70,46.05,0 7.45,45.95,0 7.20,46.00,0 7.20,46.15,0
+      </coordinates></LinearRing></outerBoundaryIs>
+      <innerBoundaryIs><LinearRing><coordinates>
+        7.38,46.08,0 7.50,46.10,0 7.48,46.03,0 7.38,46.08,0
+      </coordinates></LinearRing></innerBoundaryIs></Polygon>
+    </Placemark>
+    <Placemark><name>Test summit</name><Point><coordinates>7.35,46.12,3800</coordinates></Point></Placemark>
+    <Placemark><name>Test hut</name><Point><coordinates>7.00,46.02,2500</coordinates></Point></Placemark>
+  </Folder>
+</Document></kml>

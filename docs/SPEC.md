@@ -48,6 +48,7 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | Ctrl-F | Open the search box (see Milestone 7a) |
 | Ctrl-S | Name and save the current view as a place (see Milestone 7b) |
 | K | Show or hide the list of saved places |
+| I | Show or hide the list of imported items |
 | Ctrl-Q | Quit |
 
 An arrow key keeps its meaning while held, even if modifiers change. Moving by hand ends a
@@ -352,6 +353,24 @@ Ctrl-F opens a search box at the top left, under the same text path as the other
   `places.json.bak` (or `.bak.1`, ... if that exists), the list starts empty, and a message on screen says so.
   If it cannot be moved aside, nothing is written, so it is not overwritten.
 - `--save-place NAME` saves the view before a saved image is made and `--places-panel` draws the list.
+
+### File import
+
+- `--import FILE` (repeatable) reads a file at start-up, and a file dropped on the window is read and the view
+  flies to it. The format is recognised from the contents, not the name: GeoJSON (RFC 7946, any geometry,
+  Features and FeatureCollections), GPX 1.1 (waypoints, each track segment, routes), KML 2.2 (Placemarks with
+  Point, LineString, LinearRing, Polygon with holes and MultiGeometry, inside any Folders and Documents), KMZ
+  (a zip; `doc.kml`, else the first `.kml`) and IGC (the B records as one line with the GNSS altitude).
+- Each file gives points, lines and polygons with a name (the placemark, feature or waypoint name; for IGC the
+  pilot and glider from the H records and the date) and the altitude where the file has one.
+- Files are not trusted. A file over 64 MiB is refused, so is a KMZ whose KML would be over 64 MiB once unpacked
+  (the unpacking stops at the limit, whatever the zip claims). A KMZ is only read in memory; its entry names are
+  never used as paths, and names that climb out of a folder are skipped. At most 50 000 items and 3 million
+  positions are kept per file, and the message says if the rest was left out. XML entities other than the
+  predefined and numeric ones are not expanded, nesting is limited, and positions that are not on the globe
+  are skipped. Damaged files give a message on screen, never a crash.
+- I lists the imported items at the top left; Enter flies to the chosen item's bounding box (a point to 4 km).
+- Imports are for Earth. On another body a message says so and nothing is read.
 
 ## Later milestones
 
