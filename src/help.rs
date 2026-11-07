@@ -1,5 +1,5 @@
 //! The help icon and the window listing the keyboard and mouse controls.
-//! The list is one table, which a test compares with the key table in docs/SPEC.md.
+//! The list is one table, which a test compares with the key table in docs/FEATURES.md.
 
 use crate::text;
 use crate::ui::{Body, Metrics, Panel, Rect, Tone, Ui, UiEvent, Widget, WidgetId};
@@ -9,7 +9,7 @@ pub const WINDOW: &str = "help-window";
 const OPEN_BUTTON: WidgetId = 1;
 const CLOSE_BUTTON: WidgetId = 2;
 
-/// Groups of (keys as written in the key table of docs/SPEC.md, what they do).
+/// Groups of (keys as written in the key table of docs/FEATURES.md, what they do).
 pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
     (
         "Mouse",
@@ -175,12 +175,12 @@ mod tests {
     use super::*;
     use glam::DVec2;
 
-    /// The first cell of each row of the key table in docs/SPEC.md.
+    /// The first cell of each row of the key table in docs/FEATURES.md.
     fn spec_keys() -> Vec<String> {
-        let spec = include_str!("../docs/SPEC.md");
-        let navigation = spec.split("### Navigation").nth(1).expect("Navigation section");
-        let navigation = navigation.split("\n## ").next().unwrap();
-        navigation
+        let doc = include_str!("../docs/FEATURES.md");
+        let controls = doc.split("\n## Controls\n").nth(1).expect("Controls section");
+        let controls = controls.split("\n## ").next().unwrap();
+        controls
             .lines()
             .filter(|l| l.starts_with("| "))
             .filter_map(|l| l[2..].split(" | ").next())
@@ -195,7 +195,7 @@ mod tests {
         assert!(keys.len() > 30, "the table was found: {keys:?}");
         let listed: Vec<&str> = SHORTCUTS.iter().flat_map(|g| g.1.iter().map(|i| i.0)).collect();
         for k in &keys {
-            assert!(listed.contains(&k.as_str()), "{k:?} is in docs/SPEC.md but not in the help table");
+            assert!(listed.contains(&k.as_str()), "{k:?} is in docs/FEATURES.md but not in the help table");
         }
     }
 
@@ -205,7 +205,7 @@ mod tests {
         let mut seen = Vec::new();
         for (_, items) in SHORTCUTS {
             for (k, what) in *items {
-                assert!(keys.iter().any(|s| s == k), "{k:?} is not in docs/SPEC.md");
+                assert!(keys.iter().any(|s| s == k), "{k:?} is not in docs/FEATURES.md");
                 assert!(!seen.contains(k), "{k:?} twice");
                 assert!(!what.is_empty());
                 seen.push(k);

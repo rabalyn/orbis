@@ -218,7 +218,7 @@ Usage: orbis [options]
   --timeout SECONDS       longest wait for tiles in a screenshot (default 90)
   --help                  show this text
 
-See docs/SPEC.md for the mouse and keyboard controls.";
+See docs/FEATURES.md for the mouse and keyboard controls.";
 
 struct Args {
     cam: Camera,

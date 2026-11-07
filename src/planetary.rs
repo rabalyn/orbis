@@ -12,7 +12,7 @@
 //! Vesta's published prime meridian (the report's W0 of 285.39 degrees) belongs to the "Claudia
 //! double prime" system that the Dawn team adopted (Archinal 2018); the Trek layer lists only
 //! the IAU code of Vesta as its coordinate system, so whether its longitudes are the same
-//! could only be checked against the picture (see SPEC.md).
+//! could only be checked against the picture (see docs/FEATURES.md).
 
 use crate::planets;
 use glam::{DMat3, DVec3};
@@ -177,7 +177,7 @@ static VESTA_ORBIT: Orbit = Orbit {
 
 impl Orbit {
     /// Heliocentric position in au on the J2000 ecliptic from two-body motion, which drifts
-    /// from the real orbit by the planets' pull (see `docs/SPEC.md`).
+    /// from the real orbit by the planets' pull (see `docs/FEATURES.md`).
     fn position(&self, unix: f64) -> DVec3 {
         let jd = (unix + TT_MINUS_UTC) / 86_400.0 + 2_440_587.5;
         let m = (self.m0 + self.n * (jd - self.epoch)).to_radians().rem_euclid(2.0 * PI);

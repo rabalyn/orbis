@@ -38,7 +38,7 @@ Every public server, identified by its host name, is tracked separately.
 ## Local cache
 
 - Tiles stay on disk until the size limit (10 GiB, `--cache-limit GB`) requires removing the
-  longest-unused ones. Anything used in the last 6 hours is kept.
+  longest-unused ones. Anything used in the last 6 hours is kept. `--cache-dir PATH` moves the cache.
 - **Simultaneous requests for one file become one download.** Neighbouring tiles often
   share one coarser image or terrain file.
 - **"Not available" is remembered for 30 days**, for HTTP 404 and for blank images.
@@ -48,7 +48,7 @@ Every public server, identified by its host name, is tracked separately.
 
 Answers of Wikipedia and Wikidata for the information box (`wikipedia/` in the cache) carry the time they were fetched and are used for a week; when offline or when the service cannot be reached, older ones are used too. Only answers that parse are kept. A click makes at most five such requests, one after another.
 
-Map data does not refresh by itself in this version: a cached tile is used until it is evicted.
+Map data does not refresh by itself: a cached tile is used until it is evicted.
 
 ## LAN cache server
 
@@ -62,7 +62,7 @@ Two ways to share, both off by default because they open a network port:
 - Clients find servers by UDP broadcast with `--share-cache`, or use `--cache-server HOST:PORT`
   directly. A starting app asks who is there and waits briefly for answers before it
   downloads anything, so servers already on the LAN get used from the first tile.
-- Servers speak plain HTTP on TCP port 47813; discovery uses UDP port 47814.
+- Servers speak plain HTTP on TCP port 47813 (`--cache-port PORT` changes it); discovery uses UDP port 47814.
 - Standard tile URLs mean other programs can use it too, such as QGIS:
   `http://HOST:47813/tiles/{source}/{z}/{x}/{y}`.
 - `http://HOST:47813/status` reports servers, timeouts and traffic as JSON.
@@ -93,10 +93,10 @@ The server is meant for a trusted home or office network.
 
 ## Other bodies
 
-The Moon's imagery comes from one NASA Moon Trek layer (`moon-wac`, zoom 0 to 8, plate carrée tiles),
-cached under `nasa-trek-moon-wac/` and requested two at a time from `trek.nasa.gov`, which has its own
-pacing and overload pause. Earth's sources are never asked for while viewing the Moon, and the other way
-round.
+The Moon, Mars, Mercury, Ceres and Vesta each use one NASA Trek layer of plate carrée tiles, cached under
+a folder per body (such as `nasa-trek-moon-wac/`) and requested two at a time from `trek.nasa.gov`, which
+has its own pacing and overload pause. Earth's sources are never asked for while viewing another body, and
+the other way round.
 
 ## Imagery by level of detail
 
@@ -131,7 +131,7 @@ Credits on screen follow the sources in view.
 ### Limitations
 
 - Coverage is partial: most of the world stays at 10 m, including Italy, Poland and the UK.
-  More services fit the same table, and user-added ones belong to M8.
+  More services fit the same table, and users can add their own (see FEATURES.md, Map services).
 - VersaTiles' images are 512 pixels and end at its zoom 17, which gives zoom 18 detail. Each
   tile uses a quarter of its parent image, so four tiles cost one download. Its metadata
   advertises zoom 19, but sampled tiles stopped at 17; recheck if that changes.
