@@ -255,11 +255,23 @@ impl Fetcher {
         }
     }
 
+    pub fn is_offline(&self) -> bool {
+        self.offline
+    }
+
+    /// One request to a web service that is not a tile server (the caller keeps its own rate
+    /// limit), under the same pauses and back-off as tiles. Nothing is cached here.
+    pub fn fetch_service(&self, url: &str) -> Result<Vec<u8>, FetchError> {
+        if self.offline {
+            return Err(FetchError::Transient);
+        }
+        self.download(url, 1, true)
+    }
+
     pub fn server_report(&self) -> Vec<ServerReport> {
         self.servers.report(SystemTime::now())
     }
 
-    #[cfg(test)]
     pub fn cache(&self) -> &DiskCache {
         &self.cache
     }

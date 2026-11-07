@@ -5,6 +5,7 @@ mod buildings;
 mod cache;
 mod camera;
 mod fetcher;
+mod geocode;
 mod geo;
 mod labels;
 mod lan;
@@ -16,6 +17,7 @@ mod pacing;
 mod planetary;
 mod planets;
 mod render;
+mod search;
 mod select;
 mod sky;
 mod sky_time;
@@ -46,9 +48,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::keyboard::{KeyCode, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 /// The data credits. These must remain visible wherever the data is shown.
@@ -58,6 +60,8 @@ Terrain: © Mapterhorn https://mapterhorn.com/attribution\n\
 Map: OpenFreeMap © OpenMapTiles Data from OpenStreetMap";
 /// Shown while the stars are displayed.
 const STARS_CREDIT: &str = "Stars: HYG database by David Nash, CC BY-SA 4.0";
+/// The search panel is no wider than this many characters, and keeps clear of the readout.
+const SEARCH_COLUMNS: usize = 72;
 const GIB: u64 = 1024 * 1024 * 1024;
 const CACHE_LIMIT_GIB: u64 = 10;
 /// A long-running program checks its cache's size this often.
@@ -100,6 +104,10 @@ Usage: orbis [options]
   --cache-limit GB        largest size of the tile cache (default 10)
   --cache-status          print the cache size and server timeouts, then exit
   --offline               send no requests, and use only what is cached
+  --search TEXT           fly to the first place found for TEXT, or to the coordinates in it
+                          (key Ctrl-F opens the search box in the window; Earth only for names)
+  --search-panel          with --screenshot, also show the open search panel with its results
+  --geocoder-url URL      the place search service (default OpenStreetMap's Nominatim)
   --serve-cache           run as a LAN cache server, with no window
   --share-cache           also offer this cache on the LAN, and use others found there
   --cache-server HOST:PORT  use this LAN cache server (repeatable)
@@ -143,6 +151,11 @@ struct Args {
     share_cache: bool,
     cache_servers: Vec<String>,
     cache_port: u16,
+    /// Fly to the first result for this text, or the coordinates in it, before the picture is saved.
+    search: Option<String>,
+    /// Show the open search panel with its results in the saved picture.
+    search_panel: bool,
+    geocoder_url: String,
 }
 
 fn locale_language() -> String {
@@ -192,6 +205,9 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
         share_cache: false,
         cache_servers: Vec::new(),
         cache_port: lan::TCP_PORT,
+        search: None,
+        search_panel: false,
+        geocoder_url: geocode::DEFAULT_SERVICE.to_string(),
     };
     while let Some(flag) = it.next() {
         match flag.as_str() {
@@ -222,6 +238,10 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             }
             "--offline" => {
                 a.offline = true;
+                continue;
+            }
+            "--search-panel" => {
+                a.search_panel = true;
                 continue;
             }
             "--serve-cache" => {
@@ -302,6 +322,13 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
                 }
                 a.lang = value.to_ascii_lowercase();
             }
+            "--search" => a.search = Some(value.clone()).filter(|v| !v.trim().is_empty()),
+            "--geocoder-url" => {
+                if !value.starts_with("http://") && !value.starts_with("https://") {
+                    bail!("--geocoder-url expects an http or https address");
+                }
+                a.geocoder_url = value.clone();
+            }
             "--cache-dir" => a.cache_dir = value.into(),
             "--screenshot" => a.screenshot = Some(value.into()),
             "--size" => {
@@ -369,6 +396,8 @@ struct Scene {
     bodies: Vec<planets::Body>,
     bodies_time: f64,
     fetcher: Arc<Fetcher>,
+    search: search::Search,
+    geocoder: geocode::Geocoder,
     /// Keeps a slow tick going for tiles waiting out a retry delay.
     last_retry_tick: Instant,
 }
@@ -537,6 +566,8 @@ impl Scene {
             mode: if args.atlas.is_some() { Mode::Atlas } else { Mode::Globe },
             map: AtlasNav::new(view),
             loader: Loader::new(fetcher.clone(), args.exaggeration, vector::name_fields(&args.lang)),
+            search: search::Search::new(args.body.surface_data),
+            geocoder: geocode::Geocoder::new(fetcher.clone(), args.geocoder_url.clone(), args.lang.clone()),
             fetcher,
             last_retry_tick: Instant::now(),
             retries: HashMap::new(),
@@ -782,6 +813,7 @@ impl Scene {
             reserved: vec![
                 pad(r.panel_rect(0, Corner::BottomLeft, width, height)),
                 pad(r.panel_rect(1, Corner::TopRight, width, height)),
+                pad(r.panel_rect(2, Corner::TopLeft, width, height)),
             ],
         };
         let mut shown: Vec<(&vector::Label, i32, u64)> = sets
@@ -939,8 +971,80 @@ impl Scene {
             credits.push('\n');
             credits.push_str(STARS_CREDIT);
         }
+        if self.search.credit_due() {
+            credits.push('\n');
+            credits.push_str(search::CREDIT);
+        }
         r.set_panel(0, &credits, columns, scale);
         r.set_panel(1, &self.hud(r), columns, scale);
+        r.set_panel(2, &self.search.panel_text(), (columns * 3 / 5).clamp(20, SEARCH_COLUMNS), scale);
+    }
+
+    /// Carries out what the search box decided.
+    fn search_action(&mut self, action: search::Action) {
+        match action {
+            search::Action::None => {}
+            search::Action::Request(query) => self.geocoder.submit(&query),
+            search::Action::Fly(t) => self.fly_to(t),
+        }
+    }
+
+    fn fly_to(&mut self, t: search::Target) {
+        match self.mode {
+            Mode::Globe => {
+                let c = self.nav.cam;
+                self.nav.fly_to(Camera { lat: t.lat, lon: t.lon, distance: t.distance, heading: 0.0, tilt: 0.0, sky: 0.0, ..c });
+            }
+            Mode::Atlas => self.map.view.match_globe(t.lat, t.lon, t.distance),
+        }
+    }
+
+    /// Types `query` into the search box and presses Enter, as for a saved image: waits for the
+    /// answer, then flies to the first result. With `keep_panel` the box stays open.
+    fn headless_search(&mut self, query: &str, keep_panel: bool, timeout: f64) {
+        self.search.open();
+        let mut action = self.search.key(search::Key::Text(query.to_string()));
+        if action == search::Action::None {
+            action = self.search.key(search::Key::Enter);
+        }
+        self.search_action(action);
+        let deadline = Instant::now() + Duration::from_secs_f64(timeout);
+        while self.search.is_searching() && Instant::now() < deadline {
+            self.poll_search();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // Coordinates have flown already. A named search has its list; the first result is chosen.
+        if self.search.is_open() {
+            eprintln!("search: {}", self.search.panel_text().lines().nth(1).unwrap_or("no answer"));
+            if keep_panel {
+                if let Some(t) = self.search.selected_target() {
+                    self.fly_to(t);
+                }
+            } else {
+                let action = self.search.key(search::Key::Enter);
+                self.search_action(action);
+            }
+        }
+        // The flight is played out here so that the picture shows its end.
+        for _ in 0..1000 {
+            if !self.nav.is_animating() {
+                break;
+            }
+            self.nav.tick(0.05, &|_, _| None);
+        }
+        if keep_panel {
+            self.search.open();
+        }
+    }
+
+    /// Hands answers from the search service to the box. True if something changed.
+    fn poll_search(&mut self) -> bool {
+        let mut changed = false;
+        while let Some(reply) = self.geocoder.poll() {
+            self.search.arrived(&reply.query, reply.answer);
+            changed = true;
+        }
+        changed
     }
 
     /// Switches between the globe and the flat map, keeping the place and the scale.
@@ -1024,6 +1128,9 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     let view = target.create_view(&Default::default());
     let aspect = width as f64 / height as f64;
     let mut scene = Scene::new(args, DVec2::new(width as f64, height as f64));
+    if let Some(query) = &args.search {
+        scene.headless_search(query, args.search_panel, args.timeout);
+    }
 
     let started = Instant::now();
     let mut quiet_since = Instant::now();
@@ -1337,6 +1444,13 @@ impl ApplicationHandler for App {
             if g.scene.retry_tick(now) || g.meter.is_stale(now) {
                 g.redraw_wanted = true;
             }
+            // While a search is out, the answer is looked for often enough to feel instant.
+            if g.scene.search.is_searching() {
+                wake = wake.min(now + Duration::from_millis(100));
+                if g.scene.poll_search() {
+                    g.redraw_wanted = true;
+                }
+            }
             // The Sun moves slowly at real speed, so it asks for a redraw only now and then.
             match g.scene.sky_redraw_in() {
                 Some(s) if s <= 0.0 => g.redraw_wanted = true,
@@ -1450,6 +1564,22 @@ impl ApplicationHandler for App {
                     nav.scroll(lines, self.pointer, self.mods);
                 }
             }
+            WindowEvent::Ime(Ime::Commit(text)) if gfx.scene.search.is_open() => {
+                let action = gfx.scene.search.key(search::Key::Text(text));
+                gfx.scene.search_action(action);
+            }
+            WindowEvent::KeyboardInput { event, .. } if gfx.scene.search.is_open() => {
+                // While the box is open it takes every key.
+                if event.state == ElementState::Pressed {
+                    if let Some(key) = search_key(&event, self.mods) {
+                        let action = gfx.scene.search.key(key);
+                        gfx.scene.search_action(action);
+                        if !gfx.scene.search.is_open() {
+                            gfx.window.set_ime_allowed(false);
+                        }
+                    }
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
                 let pressed = event.state == ElementState::Pressed;
@@ -1473,6 +1603,11 @@ impl ApplicationHandler for App {
                         KeyCode::Escape => nav.stop(),
                         KeyCode::Digit0 if self.mods.ctrl && atlas => map.key(atlas_nav::Key::Whole),
                         KeyCode::Digit0 if self.mods.ctrl => nav.whole_body(),
+                        KeyCode::KeyF if self.mods.ctrl => {
+                            nav.release_all();
+                            gfx.scene.search.open();
+                            gfx.window.set_ime_allowed(true);
+                        }
                         KeyCode::KeyM if !self.mods.ctrl => gfx.scene.toggle_mode(),
                         _ if !self.mods.ctrl && sky_time::key_for(code, self.mods.shift).is_some() => {
                             if let Some(key) = sky_time::key_for(code, self.mods.shift) {
@@ -1509,6 +1644,21 @@ impl ApplicationHandler for App {
             _ => return,
         }
         gfx.redraw_wanted = true;
+    }
+}
+
+/// What a key press means to the search box, if anything.
+fn search_key(event: &KeyEvent, mods: Mods) -> Option<search::Key> {
+    use winit::keyboard::Key;
+    match &event.logical_key {
+        Key::Named(NamedKey::Escape) => Some(search::Key::Escape),
+        Key::Named(NamedKey::Enter) => Some(search::Key::Enter),
+        Key::Named(NamedKey::Backspace) => Some(search::Key::Backspace),
+        Key::Named(NamedKey::ArrowUp) => Some(search::Key::Up),
+        Key::Named(NamedKey::ArrowDown) => Some(search::Key::Down),
+        Key::Named(NamedKey::Space) if !mods.ctrl => Some(search::Key::Text(" ".into())),
+        _ if mods.ctrl => None,
+        _ => event.text.as_ref().map(|t| search::Key::Text(t.to_string())),
     }
 }
 

@@ -106,3 +106,15 @@ Orbital elements of Ceres and Vesta are osculating elements for 2026-11-21 (JD 2
 Database API (`ssd-api.jpl.nasa.gov/sbdb.api`). The tests quote results from the JPL Horizons API
 (`ssd.jpl.nasa.gov/api/horizons.api`) as reference values; they are facts, not data files. Mars's and Mercury's
 orbits use the JPL approximate planet elements already listed above. These are published constants, not data files.
+
+### Place search
+
+| Data | Source | Terms | Credit shown in the app |
+|---|---|---|---|
+| Place names to positions | OpenStreetMap's [Nominatim](https://nominatim.org) at `https://nominatim.openstreetmap.org/search` (`format=jsonv2`, `accept-language` from `--lang`) | Read from the [Nominatim Usage Policy](https://operations.osmfoundation.org/policies/nominatim/): at most one request per second; a valid User-Agent identifying the application (the program sends `orbis-globe/0.1`, which names the program but carries no contact address); attribution; no autocomplete, so a request goes out only when the user presses Enter; repeated queries are cached; the service must be switchable without a new release (`--geocoder-url`); data under the ODbL. Requests are one per 1.1 s at most, one in flight, and each answer is kept on disk | `Search: Nominatim, © OpenStreetMap contributors`, shown in the search panel and in the credits while results are in use, also in saved images |
+
+The policy also says the public API may be used only where the application developer is responsible for it
+and that no-code generators may not offer it; this program is a conventional application with user-triggered
+searches. The policy may change without notice and the service may be withdrawn: recheck before publishing,
+and consider a contact address in the user agent. Typed coordinates are read locally and never sent.
+The JSON answers are read with `serde_json` (MIT or Apache-2.0).

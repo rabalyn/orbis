@@ -45,6 +45,7 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | S | Switch between sunlight and flat, always-lit imagery |
 | O | Show or hide stars, planets and the Moon (globe only) |
 | F | Switch the frame rate limit between 120 and 90 fps |
+| Ctrl-F | Open the search box (see Milestone 7a) |
 | Ctrl-Q | Quit |
 
 An arrow key keeps its meaning while held, even if modifiers change. Moving by hand ends a
@@ -295,13 +296,47 @@ image from NASA's Trek services, a sharp terminator and stars in the sky.
   moons are not drawn, and the Moon is not drawn from Mars. The Sun is a point source with no angular size.
 - The imagery is lit on top of its own illumination, as for the Moon. Ceres' layer is coloured by elevation.
 
+## Milestone 7a: search (done)
+
+Ctrl-F opens a search box at the top left, under the same text path as the other panels.
+
+- While it is open it takes every key: typed text (including non-ASCII letters and input-method
+  commits), Backspace, Up and Down to choose a result, Enter to search or to fly to the chosen
+  result, Escape to close. No other command runs meanwhile; the mouse still works.
+- Coordinates are recognised locally, with no request, on any body: "46.5, 11.8", "46.5N 11.8E",
+  "N 46 30 E 11 48", "46°30'N 11°48'E", with seconds too. Latitude comes first unless letters
+  say otherwise. Enter flies there, to 10 km.
+- Anything else is a place name, sent to OpenStreetMap's Nominatim on Enter only (never while typing).
+  Requests are at least 1.1 s apart, run on a background thread, and go through the same
+  server pauses as tiles. The box says "Searching...", "No place found." or that the server
+  cannot be reached. Answers are cached on disk under the cache directory, by query and language,
+  and an identical query is answered from there; with `--offline` only cached queries work.
+- Up to eight results are listed, in the language of `--lang`. Enter flies to the chosen one with the
+  existing flight, ending at a distance that fits its bounding box, north up, looking straight down.
+  On the flat map the view moves there directly.
+- While results are shown the credit `Search: Nominatim, © OpenStreetMap contributors` is in the panel
+  and in the credits, saved images included. The panel is kept clear of labels.
+- On bodies other than Earth, names are not searched: the box says so and suggests coordinates.
+- `--search TEXT` does the same without a window: it flies to the first result (or the coordinates)
+  before `--screenshot`. `--search-panel` also draws the open panel with its results.
+  `--geocoder-url URL` switches the service.
+
+### Limitations
+
+- The built-in font draws only ASCII and Latin-1; other letters in the box or in results show as `?`,
+  though they are searched for correctly.
+- No editing within the text (no cursor movement, selection or paste); Backspace deletes the last character.
+- Results are cached without an expiry, other than the cache's size limit.
+- The user agent names the program but gives no contact address.
+- The window's key handling was not driven by hand here; the logic is unit-tested.
+
 ## Later milestones
 
 Order and scope are open, and depend on which features are wanted.
 
 | # | Feature | Notes |
 |---|---|---|
-| M7 | Search and saved places | Geocoding, plus KML, KMZ, GeoJSON, GPX and IGC import |
+| M7b | Saved places | KML, KMZ, GeoJSON, GPX and IGC import |
 | M8 | Map service library | User-added WMS, WMTS and XYZ, with an independently built directory |
 | M9 | Events | Computed eclipses, plus earthquakes, eruptions, tsunamis and fireballs |
 | M10 | SpaceMouse | Through HID or `spacenavd` |

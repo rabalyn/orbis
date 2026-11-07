@@ -102,6 +102,7 @@ struct Panel {
 pub enum Corner {
     TopRight,
     BottomLeft,
+    TopLeft,
 }
 
 pub struct Renderer {
@@ -159,7 +160,7 @@ pub struct Renderer {
     instance_capacity: usize,
     depth: Option<(wgpu::TextureView, u32, u32)>,
     tiles: HashMap<TileKey, GpuTile>,
-    panels: [Panel; 2],
+    panels: [Panel; 3],
     frame_no: u64,
 }
 
@@ -694,7 +695,7 @@ impl Renderer {
             max_cols: 0,
             scale: 1,
         };
-        let panels = [panel(), panel()];
+        let panels = [panel(), panel(), panel()];
 
         Self {
             tile_pipeline,
@@ -984,6 +985,7 @@ impl Renderer {
         let (x0, y0) = match corner {
             Corner::TopRight => (sw - pw - margin, margin),
             Corner::BottomLeft => (margin, sh - ph - margin),
+            Corner::TopLeft => (margin, margin),
         };
         [x0, y0, x0 + pw, y0 + ph]
     }
@@ -1049,6 +1051,12 @@ impl Renderer {
     pub fn set_panel(&mut self, i: usize, content: &str, max_cols: usize, scale: usize) {
         let p = &self.panels[i];
         if p.text == content && p.max_cols == max_cols && p.scale == scale {
+            return;
+        }
+        if content.is_empty() {
+            let p = &mut self.panels[i];
+            (p.bind_group, p.texture, p.width, p.height, p.max_cols, p.scale) = (None, None, 0, 0, max_cols, scale);
+            p.text.clear();
             return;
         }
         let lines = text::wrap(content, max_cols);
@@ -1219,6 +1227,7 @@ impl Renderer {
 
         self.place_panel(0, Corner::BottomLeft, width, height);
         self.place_panel(1, Corner::TopRight, width, height);
+        self.place_panel(2, Corner::TopLeft, width, height);
         let depth = self.depth_view(width, height);
         let msaa = self.msaa_view(width, height);
         // With anti-aliasing the target only receives the resolved image.
