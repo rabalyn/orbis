@@ -73,17 +73,14 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
     ("Program", &[("Ctrl-Q", "Quit")]),
 ];
 
-pub fn icon_size(scale: f64) -> f64 {
-    28.0 * scale
-}
-
 pub fn icon_panel() -> Panel {
-    Panel::new(ICON, false, |p, m| {
-        let s = icon_size(m.scale);
-        p.rect = Rect::new(m.screen.x - 8.0 * m.scale - s, m.screen.y - 8.0 * m.scale - s, s, s);
-        p.fixed = vec![Widget::button(OPEN_BUTTON, Rect::new(0.0, 0.0, s, s), "?", 2)];
+    let mut p = Panel::new(ICON, false, |p, m| {
+        p.rect = m.icon_rect(0);
+        p.fixed = vec![Widget::button(OPEN_BUTTON, Rect::new(0.0, 0.0, p.rect.w, p.rect.h), "?", 2)];
         p.visible = true;
-    })
+    });
+    p.in_band = true;
+    p
 }
 
 pub fn window_panel() -> Panel {
@@ -150,11 +147,11 @@ fn layout(p: &mut Panel, m: &Metrics) {
     }
     let content_h = y + pad;
 
-    // Above the icon, at the bottom right; shorter when the screen is.
-    let icon = icon_size(s);
-    let max_h = (m.screen.y - 2.0 * margin - icon - 6.0 * s).max(header + 4.0 * step);
+    // Above the credits and icons, at the bottom right; shorter when the screen is.
+    let bottom = m.floor() - 4.0 * s;
+    let max_h = (bottom - margin).max(header + 4.0 * step);
     let h = (header + content_h).min(max_h);
-    p.rect = Rect::new(m.screen.x - margin - w, m.screen.y - margin - icon - 6.0 * s - h, w, h);
+    p.rect = Rect::new(m.screen.x - margin - w, bottom - h, w, h);
     p.fixed = vec![
         Widget::label(Rect::new(pad, (header - glyph) / 2.0, 20.0 * glyph, glyph), "Keyboard shortcuts", Tone::Heading),
         Widget::button(CLOSE_BUTTON, Rect::new(w - pad - 12.0 * s, 3.0 * s, 12.0 * s, 12.0 * s), "x", 1),
@@ -249,6 +246,12 @@ mod tests {
             assert!(win.y + win.h <= icon.y, "{w}x{h}: window sits above the icon");
             let body = ui.panels()[1].body.as_ref().unwrap();
             assert_eq!(body.scrolls(), h < 800.0, "{w}x{h}: scrolls only when the list does not fit");
+            // Tall credits push the window up and make it scroll, and never lie over them.
+            ui.set_credit_band(90.0);
+            assert!(ui.covering_credits().is_empty(), "{w}x{h}");
+            if h >= 350.0 {
+                assert!(ui.panels()[1].rect.y + ui.panels()[1].rect.h <= h - 90.0, "{w}x{h}");
+            }
         }
     }
 

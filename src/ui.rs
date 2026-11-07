@@ -5,6 +5,11 @@
 //! screen size, and give it to [`Ui::add`]. Show it with [`Ui::set_visible`]. Clicks come back
 //! as [`UiEvent::Clicked`] from [`Ui::release`]. To add a kind of widget, add a [`Kind`]
 //! variant, and handle it in `Widget::clickable`, in `ui_draw` and in the dialog's events.
+//!
+//! The credits at the bottom of the screen are shown while their data is, so no panel may cover
+//! them. The scene reports their height with [`Ui::set_credit_band`]; a layout function keeps its
+//! panel above [`Metrics::floor`], and [`Panel::in_band`] marks the icons that sit in the band
+//! itself, where the credits wrap around them.
 
 use crate::nav::Button;
 use glam::DVec2;
@@ -25,6 +30,10 @@ impl Rect {
         Self { x, y, w, h }
     }
 
+    pub fn intersects(&self, o: &Rect) -> bool {
+        self.x < o.x + o.w && o.x < self.x + self.w && self.y < o.y + o.h && o.y < self.y + self.h
+    }
+
     pub fn contains(&self, p: DVec2) -> bool {
         p.x >= self.x && p.x < self.x + self.w && p.y >= self.y && p.y < self.y + self.h
     }
@@ -43,6 +52,10 @@ pub enum Kind {
     Label { text: String, tone: Tone },
     /// `text_mult` enlarges the label's glyphs.
     Button { label: String, text_mult: usize },
+    /// A box that is ticked or not, with its label. The whole row clicks.
+    Checkbox { label: String, checked: bool, enabled: bool },
+    /// One option of a group of which one is chosen. The whole row clicks.
+    Choice { label: String, chosen: bool, enabled: bool },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -62,8 +75,20 @@ impl Widget {
         Self { id, rect, kind: Kind::Button { label: label.to_string(), text_mult } }
     }
 
+    pub fn checkbox(id: WidgetId, rect: Rect, label: &str, checked: bool, enabled: bool) -> Self {
+        Self { id, rect, kind: Kind::Checkbox { label: label.to_string(), checked, enabled } }
+    }
+
+    pub fn choice(id: WidgetId, rect: Rect, label: &str, chosen: bool, enabled: bool) -> Self {
+        Self { id, rect, kind: Kind::Choice { label: label.to_string(), chosen, enabled } }
+    }
+
     fn clickable(&self) -> bool {
-        matches!(self.kind, Kind::Button { .. })
+        match self.kind {
+            Kind::Label { .. } => false,
+            Kind::Button { .. } => true,
+            Kind::Checkbox { enabled, .. } | Kind::Choice { enabled, .. } => enabled,
+        }
     }
 }
 
@@ -109,6 +134,36 @@ pub struct Metrics {
     pub screen: DVec2,
     /// Whole pixels per glyph pixel, and so per design pixel.
     pub scale: f64,
+    /// Height of the strip at the bottom that the credits and the icons use.
+    pub credit_band: f64,
+}
+
+/// Side of the square icons, and the space around the edge of the screen, in design pixels.
+const ICON: f64 = 28.0;
+const EDGE: f64 = 8.0;
+
+pub fn icon_size(scale: f64) -> f64 {
+    ICON * scale
+}
+
+impl Metrics {
+    /// Where icon number `slot` sits, counting from the bottom right corner. The credits end
+    /// where the row of icons begins.
+    pub fn icon_rect(&self, slot: usize) -> Rect {
+        let (size, edge) = (icon_size(self.scale), EDGE * self.scale);
+        let x = self.screen.x - edge - (slot as f64 + 1.0) * size - slot as f64 * edge / 2.0;
+        Rect::new(x, self.screen.y - edge - size, size, size)
+    }
+
+    /// Width the row of `count` icons takes, with the space before it.
+    pub fn icons_width(&self, count: usize) -> f64 {
+        (self.screen.x - self.icon_rect(count.saturating_sub(1)).x) + EDGE * self.scale
+    }
+
+    /// The bottom of the area panels may use: above the credits, and above the icons.
+    pub fn floor(&self) -> f64 {
+        self.screen.y - self.credit_band.max((ICON + 2.0 * EDGE) * self.scale)
+    }
 }
 
 pub struct Panel {
@@ -118,6 +173,8 @@ pub struct Panel {
     pub visible: bool,
     /// Draws the translucent background and border.
     pub frame: bool,
+    /// An icon in the strip at the bottom, which the credits leave room for.
+    pub in_band: bool,
     pub fixed: Vec<Widget>,
     pub body: Option<Body>,
     /// Sets `rect`, the widgets and the body's size for the screen. Scroll position is kept.
@@ -134,6 +191,7 @@ impl Panel {
             rect: Rect::default(),
             visible: false,
             frame,
+            in_band: false,
             fixed: Vec::new(),
             body: None,
             layout,
@@ -195,7 +253,7 @@ impl Ui {
     pub fn new() -> Self {
         Self {
             panels: Vec::new(),
-            metrics: Metrics { screen: DVec2::new(800.0, 600.0), scale: 1.0 },
+            metrics: Metrics { screen: DVec2::new(800.0, 600.0), scale: 1.0, credit_band: 0.0 },
             hover: None,
             held: [None; 2],
         }
@@ -208,6 +266,18 @@ impl Ui {
         self.panels.len() - 1
     }
 
+    /// Width the row of icons takes at the bottom right, with the space before it.
+    pub fn icons_width(&self) -> f64 {
+        self.metrics.icons_width(self.panels.iter().filter(|p| p.in_band).count())
+    }
+
+    /// Visible panels that reach into the credit strip. Always empty, if layouts keep the rule.
+    pub fn covering_credits(&self) -> Vec<PanelId> {
+        let floor = self.metrics.floor();
+        let eps = 0.01;
+        self.panels.iter().filter(|p| p.visible && !p.in_band && p.rect.y + p.rect.h > floor + eps).map(|p| p.id).collect()
+    }
+
     pub fn panels(&self) -> &[Panel] {
         &self.panels
     }
@@ -216,13 +286,37 @@ impl Ui {
         if self.metrics.screen == screen && self.metrics.scale == scale {
             return;
         }
-        self.metrics = Metrics { screen, scale };
+        self.metrics = Metrics { screen, scale, credit_band: self.metrics.credit_band };
+        self.relayout();
+    }
+
+    /// Tells the interface how tall the credits are. Panels are laid out again if it changed.
+    pub fn set_credit_band(&mut self, height: f64) {
+        if self.metrics.credit_band == height {
+            return;
+        }
+        self.metrics.credit_band = height;
+        self.relayout();
+    }
+
+    fn relayout(&mut self) {
         for p in &mut self.panels {
             (p.layout)(p, &self.metrics);
             if let Some(b) = &mut p.body {
                 b.clamp();
             }
             p.version += 1;
+        }
+    }
+
+    /// Hides each of `others` that overlaps the panel `opened`, for screens too small for both.
+    pub fn close_overlapping(&mut self, opened: PanelId, others: &[PanelId]) {
+        let Some(open) = self.panels.iter().find(|p| p.id == opened && p.visible).map(|p| p.rect) else { return };
+        for id in others {
+            let overlaps = self.panels.iter().any(|p| p.id == *id && p.visible && p.rect.intersects(&open));
+            if overlaps {
+                self.set_visible(id, false);
+            }
         }
     }
 
@@ -453,6 +547,65 @@ mod tests {
 
     fn offset(ui: &Ui) -> f64 {
         ui.panels[0].body.as_ref().unwrap().offset
+    }
+
+    fn low_layout(p: &mut Panel, m: &Metrics) {
+        // A tall panel that asks for the whole bottom, and so has to be cut off at the floor.
+        let h = (300.0f64).min(m.floor() - 10.0);
+        p.rect = Rect::new(10.0, m.floor() - h, 100.0, h);
+    }
+
+    #[test]
+    fn panels_stay_above_the_credits_whatever_their_height() {
+        let mut ui = Ui::new();
+        ui.resize(DVec2::new(500.0, 350.0), 1.0);
+        ui.add(Panel::new("low", true, low_layout));
+        ui.set_visible("low", true);
+        assert!(ui.covering_credits().is_empty());
+        for band in [0.0, 36.0, 120.0, 200.0] {
+            ui.set_credit_band(band);
+            assert!(ui.covering_credits().is_empty(), "band {band}");
+            let r = ui.panels()[0].rect;
+            assert!(r.y + r.h <= 350.0 - band.max(36.0) + 0.01);
+        }
+        // A panel that ignores the rule is reported.
+        ui.panels[0].rect.h += 50.0;
+        assert_eq!(ui.covering_credits(), vec!["low"]);
+        ui.panels[0].in_band = true;
+        assert!(ui.covering_credits().is_empty(), "icons in the strip are exempt");
+    }
+
+    #[test]
+    fn the_row_of_icons_leaves_the_credits_the_rest_of_the_width() {
+        let mut ui = Ui::new();
+        ui.resize(DVec2::new(1000.0, 500.0), 1.0);
+        let m = &ui.metrics;
+        let (a, b) = (m.icon_rect(0), m.icon_rect(1));
+        assert!(b.x + b.w < a.x, "icons do not touch");
+        assert!(a.x + a.w <= 992.0 && a.y + a.h <= 492.0);
+        assert!(m.icons_width(2) > m.icons_width(1));
+        assert!(1000.0 - m.icons_width(2) <= b.x);
+    }
+
+    #[test]
+    fn opening_a_second_dialog_closes_the_first_only_when_they_overlap() {
+        fn left(p: &mut Panel, _: &Metrics) {
+            p.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+        }
+        fn right(p: &mut Panel, m: &Metrics) {
+            p.rect = Rect::new(m.screen.x - 100.0, 0.0, 100.0, 100.0);
+        }
+        for (w, both) in [(400.0, true), (150.0, false)] {
+            let mut ui = Ui::new();
+            ui.resize(DVec2::new(w, 300.0), 1.0);
+            ui.add(Panel::new("a", true, left));
+            ui.add(Panel::new("b", true, right));
+            ui.set_visible("a", true);
+            ui.set_visible("b", true);
+            ui.close_overlapping("b", &["a"]);
+            assert_eq!(ui.is_visible("a"), both, "{w}");
+            assert!(ui.is_visible("b"));
+        }
     }
 
     #[test]

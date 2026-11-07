@@ -59,6 +59,19 @@ impl Canvas {
         }
     }
 
+    /// A ring, or a disc when `filled`, inside the square `r`.
+    fn disc(&mut self, r: Rect, filled: bool, c: Color) {
+        let (cx, cy, rad) = (r.x + r.w / 2.0, r.y + r.h / 2.0, r.w.min(r.h) / 2.0);
+        for y in r.y.floor() as i64..(r.y + r.h).ceil() as i64 {
+            for x in r.x.floor() as i64..(r.x + r.w).ceil() as i64 {
+                let d = ((x as f64 + 0.5 - cx).powi(2) + (y as f64 + 0.5 - cy).powi(2)).sqrt();
+                if d <= rad && (filled || d > rad - 1.2) {
+                    self.put(x, y, c);
+                }
+            }
+        }
+    }
+
     fn text(&mut self, x: f64, y: f64, text: &str, scale: usize, c: Color) {
         for (col, ch) in text.chars().enumerate() {
             for (gy, byte) in glyph(ch).iter().enumerate() {
@@ -79,9 +92,48 @@ impl Canvas {
     }
 }
 
+/// The row of a checkbox or a choice: the mark in front, then the label.
+fn row(cv: &mut Canvas, r: Rect, label: &str, scale: usize, enabled: bool, hover: bool, pressed: bool, mark: impl Fn(&mut Canvas, Rect, Color)) {
+    if enabled && (hover || pressed) {
+        cv.fill(r, if pressed { BUTTON_PRESSED } else { BUTTON });
+    }
+    let c = if enabled { tone(Tone::Normal) } else { tone(Tone::Dim) };
+    let side = (8 * scale) as f64;
+    let top = r.y + (r.h - side) / 2.0;
+    mark(cv, Rect::new(r.x + 2.0 * scale as f64, top, side, side), c);
+    cv.text(r.x + side + 6.0 * scale as f64, r.y + (r.h - side) / 2.0, label, scale, c);
+}
+
 fn widget(cv: &mut Canvas, w: &Widget, origin: (f64, f64), scale: usize, hover: bool, pressed: bool) {
     let r = Rect::new(origin.0 + w.rect.x, origin.1 + w.rect.y, w.rect.w, w.rect.h);
     match &w.kind {
+        Kind::Checkbox { label, checked, enabled } => {
+            let checked = *checked;
+            row(cv, r, label, scale, *enabled, hover, pressed, |cv, b, c| {
+                let t = scale.max(1) as f64;
+                for edge in [
+                    Rect::new(b.x, b.y, b.w, t),
+                    Rect::new(b.x, b.y + b.h - t, b.w, t),
+                    Rect::new(b.x, b.y, t, b.h),
+                    Rect::new(b.x + b.w - t, b.y, t, b.h),
+                ] {
+                    cv.fill(edge, c);
+                }
+                if checked {
+                    cv.fill(Rect::new(b.x + 2.0 * t, b.y + 2.0 * t, b.w - 4.0 * t, b.h - 4.0 * t), c);
+                }
+            });
+        }
+        Kind::Choice { label, chosen, enabled } => {
+            let chosen = *chosen;
+            row(cv, r, label, scale, *enabled, hover, pressed, |cv, b, c| {
+                cv.disc(b, false, c);
+                if chosen {
+                    let q = b.w / 4.0;
+                    cv.disc(Rect::new(b.x + q, b.y + q, b.w - 2.0 * q, b.h - 2.0 * q), true, c);
+                }
+            });
+        }
         Kind::Label { text, tone: t } => cv.text(r.x, r.y, text, scale, tone(*t)),
         Kind::Button { label, text_mult } => {
             let bg = if pressed { BUTTON_PRESSED } else if hover { BUTTON_HOVER } else { BUTTON };
@@ -158,5 +210,31 @@ mod tests {
         ui.pointer_moved(DVec2::new(15.0, 15.0));
         let (_, _, b) = render(&ui, 0, 1);
         assert_ne!(a, b);
+    }
+
+    fn boxes(p: &mut Panel, _: &Metrics) {
+        p.rect = Rect::new(0.0, 0.0, 120.0, 40.0);
+        p.fixed = vec![
+            Widget::checkbox(1, Rect::new(0.0, 0.0, 120.0, 12.0), "a", false, true),
+            Widget::checkbox(2, Rect::new(0.0, 14.0, 120.0, 12.0), "b", true, true),
+            Widget::choice(3, Rect::new(0.0, 28.0, 120.0, 12.0), "c", true, false),
+        ];
+    }
+
+    #[test]
+    fn a_ticked_box_differs_from_an_empty_one_and_a_disabled_row_cannot_be_hit() {
+        let mut ui = Ui::new();
+        ui.add(Panel::new("t", false, boxes));
+        ui.set_visible("t", true);
+        let (w, _, px) = render(&ui, 0, 1);
+        let at = |x: usize, y: usize| px[(y * w as usize + x) * 4 + 3];
+        // The middle of the 8x8 box is filled when ticked and clear when not.
+        assert_eq!(at(6, 6), 0);
+        assert_eq!(at(6, 20), 255);
+        assert!(ui.press(crate::nav::Button::Left, DVec2::new(5.0, 6.0)).consumed);
+        let r = ui.release(crate::nav::Button::Left, DVec2::new(5.0, 6.0));
+        assert!(r.event.is_some());
+        ui.press(crate::nav::Button::Left, DVec2::new(5.0, 34.0));
+        assert_eq!(ui.release(crate::nav::Button::Left, DVec2::new(5.0, 34.0)).event, None);
     }
 }

@@ -1626,9 +1626,9 @@ impl Scene {
     fn set_panels(&mut self, r: &mut Renderer, width: u32, height: u32, scale: usize) {
         self.ui.resize(DVec2::new(width as f64, height as f64), scale as f64);
         let columns = ((width as usize).saturating_sub(40) / (8 * scale)).max(20);
-        // The help icon sits at the bottom right, so the credits leave room for it.
-        let icon = help::icon_size(scale as f64) as usize + 8 * scale;
-        let credit_columns = ((width as usize).saturating_sub(40 + icon) / (8 * scale)).max(20);
+        // The icons sit at the bottom right, so the credits wrap in the space left of them.
+        let icons = self.ui.icons_width() as usize;
+        let credit_columns = ((width as usize).saturating_sub(32 + icons) / (8 * scale)).max(20);
         let mut credits = credits_for(self.draw.iter().map(|k| r.tile_credit(*k)));
         if self.sky_on && self.mode == Mode::Globe {
             credits.push('\n');
@@ -1643,6 +1643,10 @@ impl Scene {
             credits.push_str(search::CREDIT);
         }
         r.set_panel(0, &credits, credit_columns, scale);
+        // Panels keep above the credits: they are as tall as the credits turned out to be.
+        let top = r.panel_rect(0, Corner::BottomLeft, width, height)[1];
+        let band = if credits.is_empty() { 0.0 } else { height as f64 - top + 4.0 * scale as f64 };
+        self.ui.set_credit_band(band);
         r.set_panel(1, &self.hud(r), columns, scale);
         let wide = (columns * 3 / 5).clamp(20, SEARCH_COLUMNS);
         r.set_panel(2, &self.search.panel_text(), wide, scale);
