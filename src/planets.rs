@@ -321,4 +321,19 @@ mod tests {
         let quarter = separation(find(&bodies(t), "Moon"), sun(t));
         assert!((quarter - 90.0).abs() < 8.0, "{quarter}");
     }
+
+    #[test]
+    fn the_discs_in_the_sky_have_their_true_angular_size() {
+        // The Moon from the Earth is about half a degree across (0.49 to 0.56 degrees over its orbit),
+        // the Earth from the Moon about 1.9 degrees (1.8 to 2.1). The shader draws these radii unchanged.
+        for s in ["2025-05-12T16:56:00Z", "2025-12-04T12:00:00Z", "2026-03-01T00:00:00Z"] {
+            let t = at(s);
+            let moon = bodies(t).into_iter().find(|b| b.name == "Moon").unwrap();
+            let width = 2.0 * moon.radius.to_degrees();
+            assert!((0.49..0.56).contains(&width), "{s}: {width}");
+            let earth = bodies_from_moon(t).into_iter().find(|b| b.name == "Earth").unwrap();
+            let width = 2.0 * earth.radius.to_degrees();
+            assert!((1.8..2.1).contains(&width), "{s}: {width}");
+        }
+    }
 }
