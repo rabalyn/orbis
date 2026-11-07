@@ -25,6 +25,12 @@ impl PlacedLabel {
         Self { center, half, angle, name: label.text.clone(), style: label.style, priority: label.priority, lat: label.lat, lon: label.lon }
     }
 
+    /// Half the size of the text itself, from the size of its raster, which has `pad` pixels
+    /// of room for the outline on every side. The hit area follows the text, not the room.
+    pub fn text_half(raster: DVec2, pad: f64) -> DVec2 {
+        (raster / 2.0 - DVec2::splat(pad)).max(DVec2::ZERO)
+    }
+
     fn contains(&self, p: DVec2) -> bool {
         // A little slack, so small text is not hard to hit.
         const SLACK: f64 = 3.0;
@@ -111,6 +117,26 @@ mod tests {
             lat: 0.5,
             lon: 0.25,
         }
+    }
+
+    #[test]
+    fn the_hit_area_follows_the_text_not_its_padding() {
+        // A raster 68 x 28 with 4 px of padding holds text 60 x 20.
+        let half = PlacedLabel::text_half(DVec2::new(68.0, 28.0), 4.0);
+        assert_eq!(half, DVec2::new(30.0, 10.0));
+        let l = PlacedLabel { half, ..label("Nigeria", 100, 631.0, 495.0) };
+        assert!(l.contains(DVec2::new(602.0, 495.0)));
+        assert!(l.contains(DVec2::new(631.0, 486.0)));
+        assert!(!l.contains(DVec2::new(631.0, 495.0 + 14.0)));
+        assert!(!l.contains(DVec2::new(631.0 - 36.0, 495.0)));
+        assert_eq!(PlacedLabel::text_half(DVec2::new(6.0, 6.0), 4.0), DVec2::ZERO);
+    }
+
+    #[test]
+    fn a_turned_label_is_hit_along_its_own_axis() {
+        let l = PlacedLabel { angle: std::f64::consts::FRAC_PI_2, half: DVec2::new(30.0, 5.0), ..label("Rhine", 100, 100.0, 100.0) };
+        assert!(l.contains(DVec2::new(100.0, 125.0)));
+        assert!(!l.contains(DVec2::new(125.0, 100.0)));
     }
 
     #[test]

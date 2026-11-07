@@ -1170,7 +1170,7 @@ impl Scene {
     fn poll_clicks(&mut self) -> Option<Instant> {
         let now = self.started.elapsed().as_secs_f64();
         if let Some(click) = self.clicks.poll(now) {
-            self.map_click(click);
+                self.map_click(click);
         }
         self.clicks.deadline().map(|t| self.started + Duration::from_secs_f64(t))
     }
@@ -1875,7 +1875,7 @@ impl Scene {
             .iter()
             .map(|p| {
                 let rect = details[p.index].0;
-                let half = DVec2::new(rect.w as f64, rect.h as f64) / 2.0;
+                let half = pick::PlacedLabel::text_half(DVec2::new(rect.w as f64, rect.h as f64), (text::PAD * scale as usize) as f64);
                 pick::PlacedLabel::new(candidates[p.index].0, p.center, half, p.angle)
             })
             .collect();
@@ -1908,6 +1908,24 @@ impl Scene {
         self.labels_shown = instances.len();
         self.label_alpha = alpha;
         r.set_labels(&instances);
+    }
+
+    /// For saved images: waits for all label text, then chooses the labels afresh and fully
+    /// faded in. Labels on screen otherwise keep their place, so which ones won depends on the
+    /// order their text arrived; this makes images repeatable, and simulated clicks use the same
+    /// choice as the image they end up in.
+    fn settle_labels(&mut self, r: &mut Renderer, size: (u32, u32), step: f64) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            self.place_labels(r, size, 1, step);
+            r.flush_uploads();
+            if !self.labels_changing() || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        self.label_alpha.clear();
+        self.place_labels(r, size, 1, 1.0);
     }
 
     /// Names for the planets and the Moon where they are seen, above the ground and bright
@@ -2426,6 +2444,8 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
             if pending.is_empty() && double.is_empty() {
                 break;
             }
+            // Clicks land on the labels the picture will show, not on an earlier choice.
+            scene.settle_labels(&mut r, (width, height), step);
             for pos in pending {
                 scene.simulate_click(pos);
             }
@@ -2447,20 +2467,7 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
         scene.update(&mut r, step, (aspect, height as f64));
     }
     scene.set_panels(&mut r, width, height, 1);
-    let text_deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        scene.place_labels(&mut r, (width, height), 1, step);
-        r.flush_uploads();
-        if !scene.labels_changing() || Instant::now() > text_deadline {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-
-    // Labels on screen keep their place, so which ones won so far depends on the order their
-    // text arrived. Choosing afresh, fully faded in, makes saved images repeatable.
-    scene.label_alpha.clear();
-    scene.place_labels(&mut r, (width, height), 1, 1.0);
+    scene.settle_labels(&mut r, (width, height), step);
 
     let frame_started = Instant::now();
     scene.update(&mut r, 0.0, (aspect, height as f64));
