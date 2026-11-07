@@ -375,7 +375,7 @@ pub static DETAIL: [TileSource; 11] = [
 ];
 
 impl TileSource {
-    fn covers(&self, k: TileKey) -> bool {
+    pub fn covers(&self, k: TileKey) -> bool {
         if self.bounds.is_empty() {
             return true;
         }
@@ -394,7 +394,7 @@ impl TileSource {
     }
 
     /// Which of this source's images holds a tile. Its images may be coarser than the tile.
-    fn source_key(&self, k: TileKey) -> TileKey {
+    pub fn source_key(&self, k: TileKey) -> TileKey {
         let same_detail = if self.pixels > 256 { k.z.saturating_sub(1) } else { k.z };
         k.ancestor(same_detail.min(self.max_z))
     }
@@ -416,7 +416,7 @@ impl TileSource {
 
     /// Whether a blank answer means "no data here", rather than a tile of plain ocean.
     pub fn blank_means_missing(&self) -> bool {
-        !self.bounds.is_empty()
+        !self.bounds.is_empty() && !crate::service_lib::is_service(self)
     }
 }
 
@@ -452,6 +452,11 @@ pub fn imagery_for(k: TileKey) -> Vec<(&'static TileSource, TileKey)> {
     if !body.surface_data {
         return vec![(body.imagery, body.imagery.source_key(k))];
     }
+    // A chosen map service replaces the imagery wherever it has tiles; elsewhere the usual
+    // imagery stays, rather than leaving holes.
+    if let Some(base) = serving(k) {
+        return vec![(base, base.source_key(k))];
+    }
     let mut out: Vec<_> = DETAIL
         .iter()
         .filter(|s| k.z >= s.min_z && s.covers(k))
@@ -459,6 +464,11 @@ pub fn imagery_for(k: TileKey) -> Vec<(&'static TileSource, TileKey)> {
         .collect();
     out.push((&EOX, EOX.source_key(k)));
     out
+}
+
+/// The chosen map service, if it has a picture for this tile.
+fn serving(k: TileKey) -> Option<&'static TileSource> {
+    crate::service_lib::active().base.filter(|b| k.z >= b.min_z && b.covers(k))
 }
 
 /// How far a tile may be split at this place, given the imagery available there.
@@ -474,6 +484,7 @@ pub fn max_tile_z(k: TileKey) -> u8 {
         .iter()
         .filter(|s| s.covers(k))
         .map(TileSource::detail_z)
+        .chain(serving(k).map(TileSource::detail_z))
         .max()
         .unwrap_or(BASE_TILE_MAX_Z)
         .max(BASE_TILE_MAX_Z)

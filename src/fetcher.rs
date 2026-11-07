@@ -371,7 +371,9 @@ impl Fetcher {
         if self.offline {
             return Err(FetchError::Transient);
         }
-        match self.ask_peers(source, k) {
+        // Cache servers know only the built-in sources, and must not learn what a user views.
+        let asked = if crate::service_lib::is_service(source) { None } else { self.ask_peers(source, k) };
+        match asked {
             Some(Ok(data)) => {
                 self.store(name, &data);
                 self.lan_hits.fetch_add(1, Relaxed);

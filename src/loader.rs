@@ -6,6 +6,7 @@ use crate::geo::{geodetic_to_ecef, radius, TileKey};
 use crate::import::Imported;
 use crate::overlay::{self, OVERLAY_SIZE};
 use crate::sources;
+use crate::{blend, service_lib};
 use crate::vector::{self, Label, VectorTile};
 use bytemuck::{Pod, Zeroable};
 use glam::DVec3;
@@ -52,6 +53,8 @@ pub struct TileData {
     pub mips: Vec<(u32, u32, Vec<u8>)>,
     /// What to credit for this tile's imagery, beyond the credits always shown.
     pub credit: &'static str,
+    /// Which choice of map services this was made under, as `service_lib::Active` counts.
+    pub service_generation: u64,
 }
 
 pub struct OverlayData {
@@ -425,23 +428,43 @@ impl Shared {
         } else {
             Arc::new(Dem::flat())
         };
+        let active = service_lib::active();
         // Best imagery first. While a better source is unavailable for a moment the tile
         // waits, with a coarser one staying on screen, so nothing gets stuck on poor imagery.
         for (source, source_key) in sources::imagery_for(k) {
             if source.blank_means_missing() && self.fetcher.empty_above(source, source_key) {
                 continue;
             }
+            let user = service_lib::is_service(source);
             let bytes = match self.fetcher.try_fetch(source, source_key) {
                 Ok(bytes) => bytes,
                 Err(FetchError::Missing) => continue,
-                Err(e) => return after_failure(e, k, Outcome::Retry),
+                Err(e) => {
+                    if user {
+                        note_fetch_trouble(source, &e);
+                    }
+                    return after_failure(e, k, Outcome::Retry);
+                }
             };
             let Ok(img) = image::load_from_memory(&bytes) else {
                 eprintln!("{}: tile {}/{}/{} is damaged", source.id, source_key.z, source_key.x, source_key.y);
                 self.fetcher.discard(source, source_key);
+                if user {
+                    // A web page or error text instead of a picture: do not ask again this run.
+                    service_lib::note_problem(source, "sent something that is not a picture, such as an error page".into());
+                    return Outcome::Missing(k);
+                }
                 return Outcome::Retry(k, None);
             };
             let img = img.to_rgba8();
+            if user {
+                if let Err(why) = service_lib::check_size(source, img.width(), img.height()) {
+                    self.fetcher.discard(source, source_key);
+                    service_lib::note_problem(source, why);
+                    return Outcome::Missing(k);
+                }
+                service_lib::note_good(source);
+            }
             if source.blank_means_missing() && is_blank(img.as_raw()) {
                 self.fetcher.mark_missing(source, source_key);
                 continue;
@@ -450,6 +473,10 @@ impl Shared {
             if source.blank_means_missing() && is_blank(img.as_raw()) {
                 continue; // Others may still have this part, so the image stays known.
             }
+            let (img, uv_rect, credit) = match self.with_service_overlay(k, &active, img, uv_rect, source.credit) {
+                Ok(x) => x,
+                Err(outcome) => return outcome,
+            };
             let (w, h) = img.dimensions();
             let (center, vertices, heights) = build_mesh(k, &dem, dem_rect, uv_rect, self.exaggeration);
             return Outcome::Ready(Box::new(TileData {
@@ -458,11 +485,73 @@ impl Shared {
                 vertices,
                 heights,
                 mips: build_mips(w, h, img.into_raw()),
-                credit: source.credit,
+                credit,
+                service_generation: active.generation,
             }));
         }
         Outcome::Missing(k)
     }
+}
+
+/// A tile's picture with its position in the image and the credit it is owed.
+type Imagery = (image::RgbaImage, (f64, f64, f64), &'static str);
+
+impl Shared {
+    /// Lays the chosen map service over a tile's imagery, if there is one with a picture for it.
+    /// A service that fails leaves the imagery as it is; only a wait for its turn is passed on.
+    fn with_service_overlay(
+        &self,
+        k: TileKey,
+        active: &service_lib::Active,
+        base: image::RgbaImage,
+        base_rect: (f64, f64, f64),
+        credit: &'static str,
+    ) -> Result<Imagery, Outcome> {
+        let Some(over) = active.overlay.filter(|o| k.z >= o.min_z && o.covers(k)) else { return Ok((base, base_rect, credit)) };
+        let key = over.source_key(k);
+        let bytes = match self.fetcher.try_fetch(over, key) {
+            Ok(bytes) => bytes,
+            Err(FetchError::Missing) => return Ok((base, base_rect, credit)),
+            Err(FetchError::Busy(wait)) => return Err(Outcome::Deferred(wait)),
+            Err(e) => {
+                note_fetch_trouble(over, &e);
+                return Ok((base, base_rect, credit));
+            }
+        };
+        let picture = image::load_from_memory(&bytes).map(|i| i.to_rgba8());
+        let picture = match picture {
+            Ok(p) => p,
+            Err(_) => {
+                self.fetcher.discard(over, key);
+                service_lib::note_problem(over, "sent something that is not a picture, such as an error page".into());
+                return Ok((base, base_rect, credit));
+            }
+        };
+        if let Err(why) = service_lib::check_size(over, picture.width(), picture.height()) {
+            self.fetcher.discard(over, key);
+            service_lib::note_problem(over, why);
+            return Ok((base, base_rect, credit));
+        }
+        service_lib::note_good(over);
+        let (picture, over_rect) = keep_tile_part(picture, k.rect_in(key));
+        let mixed = blend::composite(&base, base_rect, &picture, over_rect, active.opacity);
+        let credit = if credit.is_empty() {
+            over.credit
+        } else {
+            service_lib::intern(format!("{credit}{}{}", service_lib::CREDIT_SEP, over.credit))
+        };
+        Ok((mixed, (0.0, 0.0, 1.0), credit))
+    }
+}
+
+/// Tells the panel why a map service's tiles are not arriving.
+fn note_fetch_trouble(source: &sources::TileSource, e: &FetchError) {
+    let why = match e {
+        FetchError::Paused(_) => "is being left alone for a while after errors",
+        FetchError::Transient => "did not answer or sent an error",
+        _ => return,
+    };
+    service_lib::note_problem(source, why.into());
 }
 
 pub struct Loader {
@@ -933,5 +1022,82 @@ mod tests {
         assert_eq!(tile.key, ready);
         assert!(!loader.is_idle(), "the blocked jobs are still waiting");
         loader.set_wanted(&[], &[], &[]);
+    }
+
+    fn png(n: u32, colour: [u8; 4]) -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(n, n, image::Rgba(colour));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        bytes.into_inner()
+    }
+
+    /// An XYZ service with 64-pixel tiles, and a cache holding the terrain note and base tile.
+    fn service_setup(tag: &str, name: &str) -> (DiskCache, TileKey, crate::services::Service) {
+        let cache = crate::fetcher::tests::temp_cache(tag);
+        let k = TileKey::new(5, 1, 1);
+        cache.mark_missing(&sources::TERRAIN.cache_name(k.ancestor(3)));
+        cache.put(&sources::EOX.cache_name(k), &png(16, [10, 20, 60, 255])).unwrap();
+        let mut s = crate::services::xyz_service(&format!("https://{name}.example/{{z}}/{{x}}/{{y}}.png"), false).unwrap();
+        s.tile_size = 64;
+        s.credit = "Credit".into();
+        s.name = name.into();
+        s.assign_id();
+        (cache, k, s)
+    }
+
+    #[test]
+    fn a_chosen_service_replaces_the_imagery_and_is_credited() {
+        let (cache, k, s) = service_setup("svc-base", "base-ok");
+        let src = service_lib::source_for(&s);
+        cache.put(&src.cache_name(k), &png(64, [200, 0, 0, 255])).unwrap();
+        service_lib::select_base(Some(&s));
+        let Outcome::Ready(tile) = load_with(&cache, k) else { panic!("no tile") };
+        assert_eq!(&tile.mips[0].2[..4], &[200, 0, 0, 255]);
+        assert_eq!(tile.credit, "\u{2}Credit");
+        assert_eq!(tile.service_generation, service_lib::active().generation);
+        service_lib::select_base(None);
+        let Outcome::Ready(tile) = load_with(&cache, k) else { panic!("no tile") };
+        assert_eq!(&tile.mips[0].2[..4], &[10, 20, 60, 255], "the usual imagery is back");
+        assert_eq!(tile.credit, "");
+    }
+
+    #[test]
+    fn a_service_that_sends_web_pages_or_wrong_sizes_gives_no_tile_and_a_reason() {
+        let (cache, k, s) = service_setup("svc-bad", "bad-answers");
+        let src = service_lib::source_for(&s);
+        service_lib::select_base(Some(&s));
+        cache.put(&src.cache_name(k), b"<html><body>Error 500</body></html>").unwrap();
+        assert!(matches!(load_with(&cache, k), Outcome::Missing(_)));
+        assert!(service_lib::problem_text(src).unwrap().contains("not a picture"));
+        assert!(cache.get(&src.cache_name(k)).is_none(), "the bad answer is not kept");
+        cache.put(&src.cache_name(k), &png(32, [1, 2, 3, 255])).unwrap();
+        assert!(matches!(load_with(&cache, k), Outcome::Missing(_)));
+        assert!(service_lib::problem_text(src).unwrap().contains("32 by 32"));
+    }
+
+    #[test]
+    fn an_overlay_is_mixed_into_the_tile_with_its_opacity_and_credit() {
+        let (cache, k, s) = service_setup("svc-over", "over-ok");
+        let src = service_lib::source_for(&s);
+        cache.put(&src.cache_name(k), &png(64, [250, 250, 250, 255])).unwrap();
+        service_lib::select_overlay(Some(&s));
+        service_lib::set_opacity(0.5);
+        let Outcome::Ready(tile) = load_with(&cache, k) else { panic!("no tile") };
+        let px = &tile.mips[0].2[..4];
+        assert_eq!(px, &[130, 135, 155, 255], "half way between the base and the overlay");
+        assert_eq!(tile.credit, "\u{2}Credit");
+        service_lib::select_overlay(None);
+    }
+
+    #[test]
+    fn a_failing_overlay_leaves_the_base_as_it_was() {
+        let (cache, k, s) = service_setup("svc-over-bad", "over-bad");
+        let src = service_lib::source_for(&s);
+        cache.put(&src.cache_name(k), b"oops").unwrap();
+        service_lib::select_overlay(Some(&s));
+        let Outcome::Ready(tile) = load_with(&cache, k) else { panic!("no tile") };
+        assert_eq!(&tile.mips[0].2[..4], &[10, 20, 60, 255]);
+        assert!(service_lib::problem_text(src).is_some());
+        service_lib::select_overlay(None);
     }
 }

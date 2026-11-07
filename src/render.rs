@@ -897,6 +897,11 @@ impl Renderer {
         self.tiles.get(&k).is_some_and(|t| t.overlay.is_some())
     }
 
+    /// Forgets every tile, as when they are to be made again from other imagery.
+    pub fn clear_tiles(&mut self) {
+        self.tiles.clear();
+    }
+
     /// Drops every tile's overlay, as when what they were drawn from has changed.
     pub fn clear_overlays(&mut self) {
         for tile in self.tiles.values_mut() {

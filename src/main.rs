@@ -1,5 +1,6 @@
 mod atlas;
 mod atlas_nav;
+mod blend;
 mod body;
 mod buildings;
 mod cache;
@@ -22,10 +23,12 @@ mod import;
 mod import_draw;
 mod places;
 mod search;
+mod service_ui;
 mod select;
 mod sky;
 mod sky_time;
 mod servers;
+mod service_lib;
 mod services;
 mod sources;
 mod text;
@@ -123,6 +126,22 @@ Usage: orbis [options]
                           (repeatable; files can also be dropped on the window; key I lists them;
                           Earth only)
   --imports-panel         with --screenshot, also show the list of imported items
+  --add-service ADDRESS   add a map service to your library and exit: an XYZ address with {z}/{x}/{y}
+                          (or {-y}), or the address of a WMTS or WMS service (services are shown
+                          on Earth only). Tiles are fetched only when the service is chosen
+  --service-name TEXT     with --add-service: the name to show
+  --service-credit TEXT   with --add-service: the credit to show while the service is in view
+                          (default: what the service asks for, else its host name)
+  --service-layer NAME    with --add-service: the layer of a WMTS or WMS service (default: the first usable)
+  --service-tms           with --add-service: the XYZ address counts rows from the south
+  --service-max-zoom N    with --add-service: ask for no finer tiles than this (default 19 for XYZ)
+  --services-file PATH    where the library is kept (default: orbis/services.json in the config folder)
+  --list-services         list your library and the built-in directory, then exit
+  --service NAME          use this map service instead of the usual Earth imagery
+                          (key G lists services, picks the base layer and overlay)
+  --service-overlay NAME  lay this map service over the imagery
+  --service-opacity N     opacity of the overlay, 0 to 1 (default 0.6; keys + and - in the list)
+  --services-panel        with --screenshot, also show the list of map services
   --serve-cache           run as a LAN cache server, with no window
   --share-cache           also offer this cache on the LAN, and use others found there
   --cache-server HOST:PORT  use this LAN cache server (repeatable)
@@ -176,6 +195,7 @@ struct Args {
     imports: Vec<PathBuf>,
     imports_panel: bool,
     geocoder_url: String,
+    services: service_ui::Cli,
 }
 
 fn locale_language() -> String {
@@ -232,6 +252,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
         places_panel: false,
         imports: Vec::new(),
         imports_panel: false,
+        services: Default::default(),
         geocoder_url: geocode::DEFAULT_SERVICE.to_string(),
     };
     while let Some(flag) = it.next() {
@@ -275,6 +296,18 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             }
             "--imports-panel" => {
                 a.imports_panel = true;
+                continue;
+            }
+            "--service-tms" => {
+                a.services.tms = true;
+                continue;
+            }
+            "--services-panel" => {
+                a.services.panel = true;
+                continue;
+            }
+            "--list-services" => {
+                a.services.list = true;
                 continue;
             }
             "--serve-cache" => {
@@ -358,6 +391,23 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Option<Args>> {
             "--search" => a.search = Some(value.clone()).filter(|v| !v.trim().is_empty()),
             "--import" => a.imports.push(value.into()),
             "--places-file" => a.places_file = Some(value.into()),
+            "--add-service" => a.services.add = Some(value.clone()),
+            "--service-name" => a.services.name = Some(value.clone()),
+            "--service-credit" => a.services.credit = Some(value.clone()),
+            "--service-layer" => a.services.layer = Some(value.clone()),
+            "--service-max-zoom" => {
+                a.services.max_zoom = Some(value.parse().ok().filter(|z| *z <= sources::ABSOLUTE_MAX_Z).ok_or_else(|| anyhow!("--service-max-zoom expects a zoom level from 0 to {}", sources::ABSOLUTE_MAX_Z))?);
+            }
+            "--services-file" => a.services.file = Some(value.into()),
+            "--service" => a.services.base = Some(value.clone()),
+            "--service-overlay" => a.services.overlay = Some(value.clone()),
+            "--service-opacity" => {
+                let v = num()?;
+                if !(0.0..=1.0).contains(&v) {
+                    bail!("--service-opacity expects a number from 0 to 1");
+                }
+                a.services.opacity = Some(v as f32);
+            }
             "--save-place" => a.save_place = Some(value.clone()),
             "--geocoder-url" => {
                 if !value.starts_with("http://") && !value.starts_with("https://") {
@@ -435,6 +485,9 @@ struct Scene {
     search: search::Search,
     places: places::Store,
     place_list: places::Picker,
+    services: service_ui::Control,
+    /// The choice of map services the drawn tiles were made under.
+    services_seen: u64,
     library: import::Library,
     /// Names of imported points, placed like map labels.
     import_labels: Arc<Vec<vector::Label>>,
@@ -561,12 +614,18 @@ fn next_retry(retries: &mut HashMap<TileKey, (Instant, u32)>, k: TileKey, until:
 /// The credits for what is on screen: those always shown, then any aerial imagery in view.
 fn credits_for<'a>(detail: impl Iterator<Item = &'a str>) -> String {
     let credits = body::current().credit;
-    let names: BTreeSet<&str> = detail.filter(|c| !c.is_empty()).collect();
-    if names.is_empty() {
-        return credits.to_string();
+    // Map services' credits start with a mark and are listed apart from the aerial images.
+    let parts: BTreeSet<&str> = detail.flat_map(|c| c.split(service_lib::CREDIT_SEP)).filter(|c| !c.is_empty()).collect();
+    let (services, names): (Vec<&str>, Vec<&str>) = parts.into_iter().partition(|c| c.starts_with(service_lib::CREDIT_MARK));
+    let mut out = credits.to_string();
+    if !names.is_empty() {
+        out.push_str(&format!("\nAerial images: {}", names.join(", ")));
     }
-    let list: Vec<&str> = names.into_iter().collect();
-    format!("{credits}\nAerial images: {}", list.join(", "))
+    if !services.is_empty() {
+        let list: Vec<&str> = services.iter().map(|c| c.trim_start_matches(service_lib::CREDIT_MARK)).collect();
+        out.push_str(&format!("\nMap service: {}", list.join(", ")));
+    }
+    out
 }
 
 /// Says whether more is coming: a finished view and a stuck one otherwise look the same.
@@ -596,6 +655,15 @@ fn network_status(fetcher: &Fetcher, now: SystemTime) -> Vec<String> {
     lines
 }
 
+/// The map service list, with what the command line chose already in use.
+fn make_services(args: &Args) -> service_ui::Control {
+    let mut c = service_ui::Control::new(args.services.library(), args.body.surface_data);
+    if let Err(e) = c.choose_at_start(args.services.base.as_deref(), args.services.overlay.as_deref(), args.services.opacity) {
+        eprintln!("{e}");
+    }
+    c
+}
+
 impl Scene {
     fn new(args: &Args, size: DVec2) -> Self {
         let fetcher = make_fetcher(args);
@@ -620,6 +688,8 @@ impl Scene {
             notice: places.notice.clone(),
             places,
             place_list: places::Picker::default(),
+            services: make_services(args),
+            services_seen: service_lib::active().generation,
             clear_overlays: false,
             library: import::Library::default(),
             import_labels: Arc::default(),
@@ -718,6 +788,7 @@ impl Scene {
     fn toggle_imports(&mut self) {
         self.notice = None;
         self.place_list.close();
+        self.services.picker.close();
         self.import_list.toggle();
     }
 
@@ -782,12 +853,25 @@ impl Scene {
 
     fn collect_results(&mut self, r: &mut Renderer) -> bool {
         let mut changed = false;
+        let generation = service_lib::active().generation;
+        if generation != self.services_seen {
+            // Another map service: the tiles drawn from the old choice are made again.
+            self.services_seen = generation;
+            r.clear_tiles();
+            self.missing.clear();
+            self.retries.clear();
+            changed = true;
+        }
         if std::mem::take(&mut self.clear_overlays) {
             r.clear_overlays();
             changed = true;
         }
         for _ in 0..UPLOADS_PER_FRAME {
             match self.loader.try_result() {
+                Some(Outcome::Ready(data)) if data.service_generation != generation => {
+                    // Made under an earlier choice of services: it will be asked for again.
+                    changed = true;
+                }
                 Some(Outcome::Ready(data)) => {
                     r.insert_tile(&data);
                     self.retries.remove(&data.key);
@@ -1126,6 +1210,9 @@ impl Scene {
         if self.search.is_open() {
             return String::new();
         }
+        if self.services.is_open() {
+            return self.services.panel_text();
+        }
         if self.place_list.is_open() {
             let list = self.places.places();
             let mut text = self.place_list.panel_text(
@@ -1167,10 +1254,19 @@ impl Scene {
         }
     }
 
+    /// Opens or closes the list of map services.
+    fn toggle_services(&mut self) {
+        self.notice = None;
+        self.import_list.close();
+        self.place_list.close();
+        self.services.toggle();
+    }
+
     /// Opens or closes the list of saved places.
     fn toggle_places(&mut self) {
         self.notice = None;
         self.import_list.close();
+        self.services.picker.close();
         self.place_list.toggle();
     }
 
@@ -1236,6 +1332,10 @@ impl Scene {
             search::Action::Request(query) => self.geocoder.submit(&query),
             search::Action::Fly(t) => self.fly_to(t),
             search::Action::Save(name) => self.save_view(&name),
+            search::Action::AddService(typed) => {
+                self.services.start_add(&self.fetcher, &typed);
+                self.services.picker.open_at(0);
+            }
         }
     }
 
@@ -1392,6 +1492,9 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     if args.places_panel {
         scene.place_list.toggle();
         scene.notice = None;
+    }
+    if args.services.panel {
+        scene.services.toggle();
     }
 
     let started = Instant::now();
@@ -1713,6 +1816,12 @@ impl ApplicationHandler for App {
                     g.redraw_wanted = true;
                 }
             }
+            if g.scene.services.is_adding() {
+                wake = wake.min(now + Duration::from_millis(100));
+                if g.scene.services.poll() {
+                    g.redraw_wanted = true;
+                }
+            }
             // The Sun moves slowly at real speed, so it asks for a redraw only now and then.
             match g.scene.sky_redraw_in() {
                 Some(s) if s <= 0.0 => g.redraw_wanted = true,
@@ -1852,6 +1961,19 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
+                if gfx.scene.services.is_open() && service_key(&event).is_some() =>
+            {
+                if event.state == ElementState::Pressed {
+                    if let Some(cmd) = service_key(&event) {
+                        if let service_ui::Done::OpenAddBox = gfx.scene.services.key(cmd) {
+                            nav.release_all();
+                            gfx.scene.search.open_add();
+                            gfx.window.set_ime_allowed(true);
+                        }
+                    }
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. }
                 if gfx.scene.import_list.is_open() && list_key(&event).is_some() =>
             {
                 if event.state == ElementState::Pressed {
@@ -1901,6 +2023,7 @@ impl ApplicationHandler for App {
                             gfx.window.set_ime_allowed(true);
                         }
                         KeyCode::KeyK if !self.mods.ctrl => gfx.scene.toggle_places(),
+                        KeyCode::KeyG if !self.mods.ctrl => gfx.scene.toggle_services(),
                         KeyCode::KeyI if !self.mods.ctrl => gfx.scene.toggle_imports(),
                         KeyCode::KeyM if !self.mods.ctrl => gfx.scene.toggle_mode(),
                         _ if !self.mods.ctrl && sky_time::key_for(code, self.mods.shift).is_some() => {
@@ -1954,6 +2077,26 @@ fn list_key(event: &KeyEvent) -> Option<places::Key> {
     }
 }
 
+/// What a key press means to the list of map services, if anything.
+fn service_key(event: &KeyEvent) -> Option<service_ui::Cmd> {
+    use winit::keyboard::Key;
+    use service_ui::Cmd;
+    if let Some(key) = list_key(event) {
+        return Some(Cmd::List(key));
+    }
+    match &event.logical_key {
+        Key::Character(c) => match c.as_str() {
+            "o" | "O" => Some(Cmd::ToggleOverlay),
+            "+" | "=" => Some(Cmd::Louder),
+            "-" | "_" => Some(Cmd::Quieter),
+            "a" | "A" => Some(Cmd::Add),
+            "g" | "G" => Some(Cmd::List(places::Key::Escape)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// What a key press means to the search box, if anything.
 fn search_key(event: &KeyEvent, mods: Mods) -> Option<search::Key> {
     use winit::keyboard::Key;
@@ -1982,6 +2125,19 @@ fn main() -> Result<()> {
         cache_status(&args);
         return Ok(());
     }
+    if args.services.list {
+        print!("{}", args.services.list_text());
+        return Ok(());
+    }
+    if args.services.add.is_some() {
+        let fetcher = make_fetcher(&args);
+        println!("{}", args.services.run_add(&fetcher).map_err(|e| anyhow!(e))?);
+        return Ok(());
+    }
+    // A service name that fits nothing is reported before any window or picture.
+    service_ui::Control::new(args.services.library(), body::current().surface_data)
+        .choose_at_start(args.services.base.as_deref(), args.services.overlay.as_deref(), args.services.opacity)
+        .map_err(|e| anyhow!(e))?;
     if args.serve_cache {
         return serve_cache(&args);
     }

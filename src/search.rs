@@ -9,6 +9,7 @@ use std::f64::consts::PI;
 pub const CREDIT: &str = "Search: Nominatim, © OpenStreetMap contributors";
 const MAX_RESULTS: usize = 8;
 const MAX_QUERY_CHARS: usize = 200;
+const MAX_ADDRESS_CHARS: usize = crate::services::MAX_URL_CHARS;
 const NAME_COLUMNS: usize = 60;
 /// How far from a point the view stops when nothing says how big the place is, in metres.
 const POINT_DISTANCE: f64 = 4000.0;
@@ -73,6 +74,8 @@ pub enum Action {
     Fly(Target),
     /// Save the current view under this name; empty asks for a default.
     Save(String),
+    /// Add the map service at this address (and optional layer name) to the library.
+    AddService(String),
 }
 
 pub struct Search {
@@ -85,12 +88,14 @@ pub struct Search {
     can_name: bool,
     /// The box asks for a name for the view instead of searching.
     saving: bool,
+    /// The box asks for the address of a map service instead of searching.
+    adding: bool,
 }
 
 impl Search {
     /// `can_name` is false on bodies the service knows nothing about.
     pub fn new(can_name: bool) -> Self {
-        Self { open: false, text: String::new(), state: State::Editing, selected: 0, used_service: false, can_name, saving: false }
+        Self { open: false, text: String::new(), state: State::Editing, selected: 0, used_service: false, can_name, saving: false, adding: false }
     }
 
     pub fn is_open(&self) -> bool {
@@ -100,12 +105,23 @@ impl Search {
     pub fn open(&mut self) {
         self.open = true;
         self.saving = false;
+        self.adding = false;
+    }
+
+    /// Opens the box to type the address of a map service.
+    pub fn open_add(&mut self) {
+        self.open = true;
+        self.saving = false;
+        self.adding = true;
+        self.text.clear();
+        self.state = State::Editing;
     }
 
     /// Opens the box to name the current view.
     pub fn open_save(&mut self) {
         self.open = true;
         self.saving = true;
+        self.adding = false;
         self.text.clear();
         self.state = State::Editing;
     }
@@ -138,7 +154,7 @@ impl Search {
         match key {
             Key::Text(s) => {
                 for c in s.chars().filter(|c| !c.is_control()) {
-                    if self.text.chars().count() < MAX_QUERY_CHARS {
+                    if self.text.chars().count() < if self.adding { MAX_ADDRESS_CHARS } else { MAX_QUERY_CHARS } {
                         self.text.push(c);
                     }
                 }
@@ -153,6 +169,7 @@ impl Search {
             Key::Escape => {
                 self.open = false;
                 self.saving = false;
+                self.adding = false;
                 Action::None
             }
             Key::Up | Key::Down => {
@@ -167,6 +184,11 @@ impl Search {
     }
 
     fn enter(&mut self) -> Action {
+        if self.adding {
+            self.open = false;
+            self.adding = false;
+            return Action::AddService(self.text.trim().to_string());
+        }
         if self.saving {
             self.open = false;
             self.saving = false;
@@ -218,6 +240,9 @@ impl Search {
     pub fn panel_text(&self) -> String {
         if !self.open {
             return String::new();
+        }
+        if self.adding {
+            return format!("Map service address (then a layer name, if it has layers): {}_\nEnter: add   Esc: cancel", self.text);
         }
         if self.saving {
             return format!("Save place as: {}_\nEnter: save (empty: name it by position)   Esc: cancel", self.text);

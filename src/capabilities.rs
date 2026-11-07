@@ -4,7 +4,7 @@
 //! Only what Orbis needs is read: layers, formats, styles, matrix sets, coordinate systems,
 //! bounding boxes and the addresses to ask. Everything else is ignored, and anything missing
 //! or odd makes a layer unusable rather than stopping the whole document.
-#![allow(dead_code)] // Used from the next commit on.
+
 
 
 use crate::import::{walk, Tok};

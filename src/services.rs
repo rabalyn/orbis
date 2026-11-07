@@ -6,7 +6,7 @@
 //! EPSG:3857 pictures with GetMap). Standards: OGC 07-057r7 (WMTS), OGC 06-042 (WMS 1.3.0),
 //! OGC 01-068r3 (WMS 1.1.1). Tile numbering for XYZ is the usual "slippy map" one, and TMS
 //! counts rows from the south.
-#![allow(dead_code)] // Used from the next commit on.
+
 
 
 use crate::capabilities::{Document, MatrixSet, Wms, WmsLayer, Wmts, WmtsLayer};

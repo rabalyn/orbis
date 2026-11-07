@@ -177,7 +177,7 @@ impl Store {
     }
 }
 
-fn read_limited(path: &Path) -> Result<Option<Vec<u8>>, String> {
+pub(crate) fn read_limited(path: &Path) -> Result<Option<Vec<u8>>, String> {
     let meta = match fs::metadata(path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -203,7 +203,7 @@ fn parse(bytes: &[u8]) -> Result<Vec<SavedPlace>, String> {
     list.iter().map(|v| SavedPlace::from_json(v).ok_or_else(|| "an entry is damaged".to_string())).collect()
 }
 
-fn write_atomically(path: &Path, data: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_atomically(path: &Path, data: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
@@ -252,6 +252,17 @@ impl Picker {
     pub fn toggle(&mut self) {
         self.open = !self.open;
         self.selected = 0;
+    }
+
+    /// Where the choice is now.
+    pub fn selected_index(&self) -> usize {
+        self.selected
+    }
+
+    /// Opens the list with a row chosen.
+    pub fn open_at(&mut self, row: usize) {
+        self.open = true;
+        self.selected = row;
     }
 
     pub fn close(&mut self) {
