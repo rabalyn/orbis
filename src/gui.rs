@@ -392,13 +392,18 @@ fn visuals(dark: bool) -> egui::Visuals {
 }
 
 /// A window of the interface in the house style: a title bar with a close button, not
-/// collapsible, placed at `pos` (points) until the user moves it.
+/// collapsible, resizable by its edges and corners. The content should fill the width it is
+/// given rather than set a width of its own, or the window cannot be made narrower.
 pub fn window(title: &str, id: PanelId) -> egui::Window<'_> {
     egui::Window::new(egui::RichText::new(title).text_style(TextStyle::Heading))
         .id(egui::Id::unique(id))
         .collapsible(false)
-        .resizable(false)
+        .resizable(true)
+        .min_width(MIN_WIDTH)
 }
+
+/// The narrowest a window may be made.
+pub const MIN_WIDTH: f32 = 200.0;
 
 /// A heading inside a window.
 pub fn section(ui: &mut egui::Ui, text: &str) {

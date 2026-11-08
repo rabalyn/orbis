@@ -80,14 +80,15 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, scroll: Option<f32>) {
         return;
     }
     let screen = ctx.content_rect();
-    let width = (screen.width() - 40.0).clamp(260.0, 600.0);
+    let start = (screen.width() - 40.0).clamp(260.0, 600.0);
     let shown = gui::window("Keyboard and mouse", WINDOW)
         .open(&mut open)
-        .default_pos(egui::pos2(screen.right() - width - 30.0, screen.top() + 60.0))
-        .default_width(width)
+        .default_pos(egui::pos2(screen.right() - start - 30.0, screen.top() + 60.0))
+        .default_width(start)
+        .default_height((screen.height() - 200.0).max(150.0))
         .show(ctx, |ui| {
-            ui.set_width(width);
-            let mut area = egui::ScrollArea::vertical().max_height((screen.height() - 200.0).max(150.0));
+            let width = ui.available_width();
+            let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
             if let Some(dy) = scroll {
                 area = area.vertical_scroll_offset(dy);
             }

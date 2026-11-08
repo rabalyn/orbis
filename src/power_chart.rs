@@ -89,14 +89,14 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Option<Event> 
     }
     let mut event = None;
     let screen = ctx.content_rect();
-    let width = (screen.width() - 40.0).clamp(260.0, 440.0);
     let shown = gui::window(&model.title, WINDOW)
         .open(&mut open)
         // Low on the left, above the credits, clear of the view options at the top.
         .pivot(egui::Align2::LEFT_BOTTOM)
         .default_pos(egui::pos2(screen.left() + 12.0, screen.bottom() - 150.0))
+        .default_width((screen.width() - 40.0).clamp(260.0, 440.0))
         .show(ctx, |ui| {
-            ui.set_width(width);
+            let width = ui.available_width();
             if let Some(c) = &model.chart {
                 let height = (screen.height() * 0.25).clamp(110.0, 170.0);
                 plot(ui, c, Vec2::new(width, height));

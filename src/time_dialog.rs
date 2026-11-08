@@ -59,14 +59,14 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Vec<Action> {
         return actions;
     }
     let screen = ctx.content_rect();
-    let width = 340.0f32.min(screen.width() - 40.0).max(220.0);
     let shown = gui::window("Time", WINDOW)
         .open(&mut open)
         // Above its icon at the bottom right.
         .pivot(egui::Align2::RIGHT_BOTTOM)
         .default_pos(egui::pos2(screen.right() - 10.0, screen.bottom() - 2.0 * crate::compass::MARGIN - crate::compass::ICON - 6.0))
+        .default_width(340.0f32.min(screen.width() - 40.0).max(220.0))
         .show(ctx, |ui| {
-            ui.set_width(width);
+            let width = ui.available_width();
             ui.label(egui::RichText::new(&model.reading).strong());
             ui.add_space(4.0);
             for (track, name) in TRACKS {

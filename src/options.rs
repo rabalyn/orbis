@@ -126,9 +126,10 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Option<Action>
     let shown = gui::window("View options", WINDOW)
         .open(&mut open)
         .default_pos(egui::pos2(screen.left() + 12.0, screen.top() + 60.0))
+        .default_width(300.0)
+        .default_height((screen.height() - 160.0).max(150.0))
         .show(ctx, |ui| {
-            ui.set_width(300.0);
-            egui::ScrollArea::vertical().max_height((screen.height() - 160.0).max(150.0)).show(ui, |ui| {
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 let mut n = 0;
                 for (name, group) in TOGGLES {
                     gui::section(ui, name);

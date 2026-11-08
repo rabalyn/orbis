@@ -825,6 +825,8 @@ struct Scene {
     lookup: wikilookup::Lookup,
     info_id: u64,
     info_pending: bool,
+    /// Whether the energy bars were on last frame: switching them on opens their card again.
+    energy_card_was_on: bool,
     /// The box was opened or closed by a click that no event of the window announced.
     info_changed: bool,
     /// Keeps a slow tick going for tiles waiting out a retry delay.
@@ -1113,6 +1115,7 @@ impl Scene {
             lookup: wikilookup::Lookup::new(fetcher.clone(), &args.lang),
             info_id: 0,
             info_pending: false,
+            energy_card_was_on: false,
             info_changed: false,
             fetcher,
             last_retry_tick: Instant::now(),
@@ -2716,6 +2719,10 @@ impl Scene {
         let below = readout::text_box(ctx, &mut self.gui, "search-box", &search, 10.0);
         let side = self.side_panel_text();
         readout::text_box(ctx, &mut self.gui, "side-box", &side, if below > 0.0 { below + 18.0 } else { 10.0 });
+        if self.view.energy != self.energy_card_was_on {
+            self.energy_card_was_on = self.view.energy;
+            self.gui.set_visible(energy_panel::WINDOW, self.view.energy);
+        }
         if let Some(card) = self.energy_card() {
             done.energy = energy_panel::show(ctx, &mut self.gui, &card);
         }

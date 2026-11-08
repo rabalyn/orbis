@@ -95,8 +95,8 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Option<Action>
     let shown = gui::window("Energy display", WINDOW)
         .open(&mut open)
         .default_pos(egui::pos2(screen.right() - 360.0, screen.top() + 220.0))
+        .default_width(310.0)
         .show(ctx, |ui| {
-            ui.set_width(310.0);
             gui::section(ui, "Colours");
             for palette in Palette::ALL {
                 if ui.radio(style.palette == palette, palette.name()).clicked() {

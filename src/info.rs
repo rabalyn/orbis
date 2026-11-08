@@ -225,16 +225,15 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> (bool, Option<Acti
     }
     let mut action = None;
     let screen = ctx.content_rect();
-    let width = (screen.width() - 40.0).clamp(240.0, 420.0);
     let title = wiki::shorten(&m.title, 60);
     let coords = m.at.map(|(lat, lon)| wiki::coords_text(lat, lon));
     let shown = gui::window(&title, WINDOW)
         .open(&mut open)
         .default_pos(egui::pos2(screen.left() + 12.0, screen.bottom() - 120.0 - (screen.height() * 0.55).min(480.0)))
+        .default_width((screen.width() - 40.0).clamp(240.0, 420.0))
+        .default_height((screen.height() * 0.55).min(480.0))
         .show(ctx, |ui| {
-            ui.set_width(width);
-            egui::ScrollArea::vertical().max_height((screen.height() * 0.55).min(480.0)).show(ui, |ui| {
-                ui.set_width(width);
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 let facts = |ui: &mut egui::Ui, rows: &[(String, String)]| {
                     egui::Grid::new("facts").num_columns(2).spacing([12.0, 3.0]).show(ui, |ui| {
                         for (k, v) in rows {

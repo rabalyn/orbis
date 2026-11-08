@@ -35,14 +35,19 @@ pub enum Action {
 }
 
 /// The card, while the bars are on.
+/// The card can be closed on its own; it comes back when the bars are switched on again.
 pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> Option<Action> {
+    let mut open = gui.is_visible(WINDOW);
+    if !open {
+        return None;
+    }
     let mut action = None;
     let screen = ctx.content_rect();
     let shown = gui::window("Renewable energy, Germany", WINDOW)
-        .title_bar(true)
+        .open(&mut open)
         .default_pos(egui::pos2(screen.right() - 330.0, screen.top() + 50.0))
+        .default_width(290.0)
         .show(ctx, |ui| {
-            ui.set_width(290.0);
             ui.horizontal(|ui| {
                 ui.label("Detail");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -93,6 +98,7 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> Option<Action> {
     if let Some(r) = shown {
         gui.cover(r.response.rect);
     }
+    gui.set_visible(WINDOW, open);
     action
 }
 
