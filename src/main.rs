@@ -1450,12 +1450,19 @@ impl Scene {
     /// The hook for what a click on the map means (picking a place, flying there). It is
     /// called for single clicks after the double-click window and for double clicks.
     fn on_map_click(&mut self, click: clicks::Click) {
-        // With the box open, a click on the map only closes it; a double click still flies.
+        // With the box open, a single click on a bar or a label opens that one at once; a
+        // click on blank ground only closes the box. A double click closes it and flies.
         if self.gui.is_visible(info::WINDOW) {
+            if click.kind == clicks::ClickKind::Single && self.energy_click(click.pos) {
+                return;
+            }
             self.gui.set_visible(info::WINDOW, false);
             self.info_id += 1;
             self.info_pending = false;
             self.info_changed = true;
+            if click.kind == clicks::ClickKind::Single && self.view.info_on_click && self.label_at(click.pos) {
+                self.start_info(click.pos);
+            }
             return;
         }
         if click.kind == clicks::ClickKind::Single && self.energy_click(click.pos) {
@@ -1466,12 +1473,46 @@ impl Scene {
         }
     }
 
+    /// Whether a name is under a point: a placed label on the globe, or on the flat map a
+    /// name the imagery shows there.
+    fn label_at(&self, pos: DVec2) -> bool {
+        if self.mode == Mode::Atlas {
+            self.flat_name_at(pos).is_some()
+        } else {
+            self.placed_labels.iter().any(|l| l.contains(pos))
+        }
+    }
+
+    /// The place whose name the flat map's imagery shows under a point. The imagery's text is
+    /// only pixels, so the places of the drawn tiles stand in for it: those of a kind shown at
+    /// this scale, found around where their point lies in the window.
+    fn flat_name_at(&self, pos: DVec2) -> Option<pick::Target> {
+        if self.mode != Mode::Atlas || body::current().id != body::EARTH.id {
+            return None;
+        }
+        let view = &self.map.view;
+        let altitude = view.distance_for_scale();
+        let sources: HashSet<TileKey> = self.draw.iter().map(|k| vector_source(*k)).collect();
+        let candidates: Vec<(&vector::Label, DVec2)> = sources
+            .iter()
+            .filter_map(|k| self.label_sets.get(k))
+            .flat_map(|set| set.iter())
+            .filter(|l| altitude <= body::scaled(labels::max_distance(l)))
+            .map(|l| {
+                let (x, y) = view.screen_of(view.project(l.lat, l.lon));
+                (l, DVec2::new(x, y))
+            })
+            .collect();
+        let l = pick::named_near(pos, &candidates)?;
+        Some(pick::Target::Label { name: l.text.clone(), style: l.style, priority: l.priority, lat: l.lat, lon: l.lon })
+    }
+
     /// Opens the information box for the label or the ground under a point, and asks for its
     /// content. Nothing is asked for other bodies, whose places Wikipedia does not locate.
     fn start_info(&mut self, pos: DVec2) {
         let (target, altitude) = if self.mode == Mode::Atlas {
-            let ground = self.map.view.lat_lon_at(pos.x, pos.y).map(|(lat, lon)| pick::Target::Ground { lat, lon });
-            (ground, self.map.view.distance_for_scale())
+            let ground = || self.map.view.lat_lon_at(pos.x, pos.y).map(|(lat, lon)| pick::Target::Ground { lat, lon });
+            (self.flat_name_at(pos).or_else(ground), self.map.view.distance_for_scale())
         } else {
             (pick::pick(pos, &self.placed_labels, self.nav.ground_at(pos)), self.nav.cam.distance)
         };
@@ -2366,8 +2407,9 @@ impl Scene {
         self.draw = selection.draw;
 
         let mut overlays = Vec::new();
-        // Labels are placed on the globe only.
-        let labels_wanted = self.names_on() && !atlas && !flying;
+        // Labels are placed on the globe only. On the flat map their places tell which name
+        // in the imagery a click hit, so they are loaded there for information on click.
+        let labels_wanted = !flying && if atlas { self.view.info_on_click } else { self.names_on() };
         if body::current().surface_data && ((self.lines_on() && !flying) || labels_wanted) {
             for &k in &self.draw {
                 let lines_needed = !r.has_overlay(k) && !self.overlay_empty.contains(&k);
@@ -2458,6 +2500,10 @@ impl Scene {
         }
         self.labels_shown = 0;
         if !self.names_on() || self.mode == Mode::Atlas {
+            if self.label_sets.len() > LABEL_SETS {
+                let sources: HashSet<TileKey> = self.draw.iter().map(|k| vector_source(*k)).collect();
+                self.label_sets.retain(|k, _| sources.contains(k));
+            }
             r.set_labels(&[]);
             self.label_alpha.clear();
             self.placed_labels.clear();

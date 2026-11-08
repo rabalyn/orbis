@@ -594,7 +594,9 @@ never confused:
 - The article box shows the title, the one-line description, facts from Wikidata where there are some (type, country or countries, population with the year, elevation, area, official website, time zone), then the article's introduction as plain text, scrollable, and the credit. Text only: no images.
 - A button opens the article in the default browser (`xdg-open`, with the address from the API checked to be a Wikipedia address and started without a shell). A failure is shown in the box.
 - A click makes at most five requests, one after another and at least 0.3 s apart. All answers are kept on disk for a week. With `--offline` only kept answers are used, and otherwise the box says so. A stale answer is used when the service cannot be reached.
-- On other bodies the box shows the coordinates and says that information is available for Earth only; nothing is asked. On the flat map a click gives the ground list.
+- On other bodies the box shows the coordinates and says that information is available for Earth only; nothing is asked. On the flat map a click on a name in the imagery looks up that place, and elsewhere gives the ground list.
+- The flat map's names are part of the imagery, so the places of the shown tiles stand in for them: a click within a box around a place's point, as wide as its name is long, counts as a click on that name, for the kinds of place shown at that scale (not streets). Close to a long name's ends or right beside a short one it can miss or hit wrongly. For this the places are loaded on the flat map while information on click is on.
+- With the box open, a click on a name or an energy bar opens that one at once; a click on open ground only closes the box.
 
 ### Limitations
 - The box uses the built-in font (ASCII and Latin-1, with accents of Latin Extended-A folded to plain letters and common punctuation simplified). Other scripts (Cyrillic, Greek, CJK, Arabic, Hebrew, Vietnamese and so on) show as `?`, so articles in those languages are largely unreadable. Pronunciation guides are dropped.
