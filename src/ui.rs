@@ -66,14 +66,19 @@ pub enum Kind {
     ClockFace,
     /// A chart over one day, drawn into the rect; see [`Chart`].
     Chart(Box<Chart>),
+    /// A patch of colour for a legend, with straight alpha, hatched for a fossil source.
+    Swatch { colour: [u8; 4], hatched: bool },
 }
+
+/// One stacked area of a [`Chart`]: colour, name, values, and whether it is hatched rather than solid.
+pub type ChartLayer = ([u8; 3], String, Vec<Option<f32>>, bool);
 
 /// A day of stacked areas with a line over them, as drawn by [`Kind::Chart`]: values per equal
 /// step from midnight to midnight, `None` where there is none.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Chart {
-    /// Stacked from the bottom: colour, name, values.
-    pub layers: Vec<([u8; 3], String, Vec<Option<f32>>)>,
+    /// Stacked from the bottom.
+    pub layers: Vec<ChartLayer>,
     /// Drawn over the areas in white: name and values.
     pub line: (String, Vec<Option<f32>>),
     /// Where a vertical marker stands, from 0 (midnight) to 1 (the next midnight).
@@ -126,13 +131,17 @@ impl Widget {
         Self { id, rect, kind: Kind::ClockFace }
     }
 
+    pub fn swatch(rect: Rect, colour: [u8; 4], hatched: bool) -> Self {
+        Self { id: 0, rect, kind: Kind::Swatch { colour, hatched } }
+    }
+
     pub fn chart(rect: Rect, chart: Chart) -> Self {
         Self { id: 0, rect, kind: Kind::Chart(Box::new(chart)) }
     }
 
     fn clickable(&self) -> bool {
         match self.kind {
-            Kind::Label { .. } | Kind::Chart(_) => false,
+            Kind::Label { .. } | Kind::Chart(_) | Kind::Swatch { .. } => false,
             Kind::Button { .. } | Kind::Slider { .. } | Kind::ClockFace => true,
             Kind::Checkbox { enabled, .. } | Kind::Choice { enabled, .. } => enabled,
         }

@@ -165,6 +165,12 @@ fn widget(cv: &mut Canvas, w: &Widget, origin: (f64, f64), scale: usize, hover: 
         }
         Kind::Label { text, tone: t } => cv.text(r.x, r.y, text, scale, tone(*t)),
         Kind::Chart(c) => chart(cv, r, c, scale),
+        Kind::Swatch { colour, hatched } => {
+            cv.fill(r, *colour);
+            if *hatched {
+                hatch(cv, r, [colour[0], colour[1], colour[2]], scale.max(1) as f64);
+            }
+        }
         Kind::Button { label, text_mult } => {
             let bg = if pressed { BUTTON_PRESSED } else if hover { BUTTON_HOVER } else { BUTTON };
             cv.fill(r, bg);
@@ -205,10 +211,14 @@ fn chart(cv: &mut Canvas, r: Rect, c: &Chart, scale: usize) {
     for px in 0..px_w {
         let i = ((px as f64 + 0.5) / plot.w * steps as f64) as usize;
         let mut base = 0.0f64;
-        for (colour, _, values) in &c.layers {
+        for (colour, _, values, hatched) in &c.layers {
             let Some(v) = values.get(i).copied().flatten() else { continue };
             let (y0, y1) = (y_of(base + v as f64), y_of(base));
-            cv.fill(Rect::new(plot.x + px as f64, y0, 1.0, (y1 - y0).max(0.0)), [colour[0], colour[1], colour[2], 235]);
+            let x = plot.x + px as f64;
+            cv.fill(Rect::new(x, y0, 1.0, (y1 - y0).max(0.0)), [colour[0], colour[1], colour[2], 235]);
+            if *hatched {
+                hatch(cv, Rect::new(x, y0, 1.0, (y1 - y0).max(0.0)), *colour, s);
+            }
             base += v as f64;
         }
     }
@@ -237,19 +247,46 @@ fn chart(cv: &mut Canvas, r: Rect, c: &Chart, scale: usize) {
         cv.text(x - glyph, plot.y + plot.h + 4.0 * s, &label, scale, dim);
     }
     // The legend: the line first, then the areas from the top of the stack down.
-    let mut items: Vec<([u8; 4], &str)> = vec![([255, 255, 255, 255], c.line.0.as_str())];
-    items.extend(c.layers.iter().rev().map(|l| ([l.0[0], l.0[1], l.0[2], 255], l.1.as_str())));
+    let mut items: Vec<([u8; 4], &str, bool)> = vec![([255, 255, 255, 255], c.line.0.as_str(), false)];
+    items.extend(c.layers.iter().rev().map(|l| ([l.0[0], l.0[1], l.0[2], 255], l.1.as_str(), l.3)));
     let ly = r.y + r.h - legend_h;
-    for (k, (colour, name)) in items.iter().enumerate() {
+    for (k, (colour, name, hatched)) in items.iter().enumerate() {
         let x = r.x + (k % per_row) as f64 * CHART_LEGEND_COLS as f64 * glyph;
         let y = ly + (k / per_row) as f64 * 11.0 * s;
         if k == 0 {
             cv.fill(Rect::new(x, y + glyph / 2.0 - s, glyph, 2.0 * s), *colour);
         } else {
             cv.fill(Rect::new(x, y, glyph, glyph), *colour);
+            if *hatched {
+                hatch(cv, Rect::new(x, y, glyph, glyph), [colour[0], colour[1], colour[2]], s);
+            }
         }
         let name: String = name.chars().take(CHART_LEGEND_COLS - 2).collect();
         cv.text(x + glyph * 1.5, y, &name, scale, tone(Tone::Normal));
+    }
+}
+
+/// Darkens diagonal stripes of `r`, as the hatching of a fossil area: the stripes lie on lines of
+/// equal x + y on the canvas, so neighbouring columns join up into one pattern.
+fn hatch(cv: &mut Canvas, r: Rect, colour: [u8; 3], s: f64) {
+    let step = (5.0 * s).round().max(3.0) as i64;
+    let on = (2.0 * s).round().max(1.0) as i64;
+    let dark = colour.map(|c| (c as f32 * 0.4) as u8);
+    let (x0, x1) = (r.x.round() as i64, (r.x + r.w).round() as i64);
+    let (y0, y1) = (r.y.round() as i64, (r.y + r.h).round() as i64);
+    for x in x0..x1 {
+        let mut y = y0;
+        while y < y1 {
+            // Runs of `on` pixels out of each `step`, down the column.
+            let phase = (x + y).rem_euclid(step);
+            if phase < on {
+                let run = (on - phase).min(y1 - y);
+                cv.fill(Rect::new(x as f64, y as f64, 1.0, run as f64), [dark[0], dark[1], dark[2], 255]);
+                y += run;
+            } else {
+                y += step - phase;
+            }
+        }
     }
 }
 

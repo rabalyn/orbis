@@ -259,6 +259,8 @@ struct BuildingOut {
     @location(0) colour: vec3<f32>,
     // Position relative to the camera.
     @location(1) rel: vec3<f32>,
+    // Opacity, for the see-through parts of the energy bars.
+    @location(2) alpha: f32,
 }
 
 @vertex
@@ -271,6 +273,7 @@ fn vs_building(
     out.rel = pos + origin;
     out.clip = frame.view_proj * vec4<f32>(out.rel, 1.0);
     out.colour = srgb_to_linear(colour.rgb);
+    out.alpha = colour.a;
     return out;
 }
 
@@ -283,6 +286,19 @@ fn fs_building(in: BuildingOut) -> @location(0) vec4<f32> {
     }
     let g = normalize(in.rel + frame.cam.xyz * frame.sky.y);
     return vec4<f32>(in.colour * sun_light(n, g, in.rel), 1.0);
+}
+
+// The see-through parts of the energy bars: lit like buildings, but never darker than half the
+// flat colour, so that they stay legible at night, and blended by their opacity.
+@fragment
+fn fs_building_ghost(in: BuildingOut) -> @location(0) vec4<f32> {
+    var n = normalize(cross(dpdx(in.rel), dpdy(in.rel)));
+    if (dot(n, in.rel) > 0.0) {
+        n = -n;
+    }
+    let g = normalize(in.rel + frame.cam.xyz * frame.sky.y);
+    let lit = max(in.colour * sun_light(n, g, in.rel), in.colour * 0.5);
+    return vec4<f32>(lit, in.alpha);
 }
 
 // Text labels

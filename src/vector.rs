@@ -81,6 +81,97 @@ pub struct Building {
     pub min_height: f32,
     /// sRGB colour, when the data has one.
     pub colour: Option<[u8; 3]>,
+    /// The zoned land use it stands in, if any.
+    pub zone: Option<Zone>,
+}
+
+/// What land is zoned for, from the `landuse` layer's `class`, in the three kinds a city
+/// builder knows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Zone {
+    Residential,
+    Commercial,
+    Industrial,
+}
+
+impl Zone {
+    fn parse(class: &str) -> Option<Zone> {
+        Some(match class {
+            "residential" => Zone::Residential,
+            "commercial" | "retail" => Zone::Commercial,
+            "industrial" => Zone::Industrial,
+            _ => return None,
+        })
+    }
+}
+
+/// A zoned area of a tile: its rings in tile coordinates, and their bounding box
+/// (west, north, east, south).
+struct ZoneArea {
+    zone: Zone,
+    rings: Vec<Line>,
+    bbox: [f32; 4],
+}
+
+fn read_zones(layer: &Layer, out: &mut Vec<ZoneArea>) {
+    let class_key = Fields { layer }.index("class");
+    for bytes in &layer.features {
+        let Some(f) = parse_feature(bytes) else { continue };
+        if f.kind != 3 {
+            continue;
+        }
+        let Some(Value::Text(class)) = get(layer, &f, class_key) else { continue };
+        let Some(zone) = Zone::parse(class) else { continue };
+        let rings: Vec<Line> = parse_geometry(f.geometry, layer.extent).into_iter().filter(|r| r.len() >= 4).collect();
+        let mut bbox = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for p in rings.iter().flatten() {
+            bbox = [bbox[0].min(p[0]), bbox[1].min(p[1]), bbox[2].max(p[0]), bbox[3].max(p[1])];
+        }
+        if !rings.is_empty() {
+            out.push(ZoneArea { zone, rings, bbox });
+        }
+    }
+}
+
+/// Even-odd test over all rings, so that holes count.
+fn in_rings(rings: &[Line], p: [f32; 2]) -> bool {
+    let mut hit = false;
+    for ring in rings {
+        for w in ring.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1]) {
+                hit = !hit;
+            }
+        }
+    }
+    hit
+}
+
+/// Gives each building the zone its middle stands in. Where zones overlap, as shops within a
+/// residential area, the smaller one is taken.
+fn zone_buildings(zones: &[ZoneArea], buildings: &mut [Building]) {
+    if zones.is_empty() {
+        return;
+    }
+    for b in buildings {
+        let Some(outer) = b.rings.first() else { continue };
+        let corners = &outer[..outer.len().saturating_sub(1)];
+        if corners.is_empty() {
+            continue;
+        }
+        let n = corners.len() as f32;
+        let (sx, sy) = corners.iter().fold((0.0, 0.0), |s, p| (s.0 + p[0], s.1 + p[1]));
+        let p = [sx / n, sy / n];
+        b.zone = zones
+            .iter()
+            .filter(|z| p[0] >= z.bbox[0] && p[1] >= z.bbox[1] && p[0] <= z.bbox[2] && p[1] <= z.bbox[3])
+            .filter(|z| in_rings(&z.rings, p))
+            .min_by(|a, b| {
+                let size = |z: &ZoneArea| (z.bbox[2] - z.bbox[0]) * (z.bbox[3] - z.bbox[1]);
+                size(a).total_cmp(&size(b))
+            })
+            .map(|z| z.zone);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -199,6 +290,7 @@ fn read_buildings(layer: &Layer, out: &mut Vec<Building>) {
                     height: height as f32,
                     min_height: min_height as f32,
                     colour,
+                    zone: None,
                 });
             } else if area < 0.0 {
                 if let Some(building) = &mut current {
@@ -481,6 +573,7 @@ fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
 pub fn decode(data: &[u8], key: TileKey, names: &[String]) -> Option<VectorTile> {
     let mut tile = VectorTile::default();
     let mut labels = Vec::new();
+    let mut zones = Vec::new();
     let mut r = Reader::new(data);
     while r.pos < data.len() {
         let (n, wire) = r.field()?;
@@ -490,6 +583,7 @@ pub fn decode(data: &[u8], key: TileKey, names: &[String]) -> Option<VectorTile>
             "transportation" => read_roads(&layer, &mut tile.roads),
             "boundary" => read_boundaries(&layer, &mut tile.boundaries),
             "building" if key.z >= BUILDING_Z => read_buildings(&layer, &mut tile.buildings),
+            "landuse" if key.z >= BUILDING_Z => read_zones(&layer, &mut zones),
             "place" => read_places(&layer, key, names, &mut labels),
             "water_name" => read_water_names(&layer, key, names, &mut labels),
             "mountain_peak" => read_peaks(&layer, key, names, &mut labels),
@@ -497,6 +591,7 @@ pub fn decode(data: &[u8], key: TileKey, names: &[String]) -> Option<VectorTile>
             _ => {}
         }
     }
+    zone_buildings(&zones, &mut tile.buildings);
     tile.labels = Arc::new(labels);
     Some(tile)
 }
@@ -951,6 +1046,27 @@ pub mod tests {
         let t = decode(&data, CITY, &names()).unwrap();
         let heights: Vec<f32> = t.buildings.iter().map(|b| b.height).collect();
         assert_eq!(heights, [6.0, 1000.0], "hidden and inverted are skipped, the rest defaulted or capped");
+    }
+
+    #[test]
+    fn buildings_take_the_zone_they_stand_in_and_the_smaller_of_two() {
+        // A residential square over most of the tile with shops in its middle, and an industrial
+        // estate in the far corner.
+        let mut tile = layer(
+            "landuse",
+            &[
+                (3, vec![("class", V::S("residential"))], square(0, 0, 3000, true)),
+                (3, vec![("class", V::S("retail"))], square(1000, 1000, 500, true)),
+                (3, vec![("class", V::S("industrial"))], square(3500, 3500, 500, true)),
+                (3, vec![("class", V::S("school"))], square(100, 100, 300, true)),
+            ],
+        );
+        let houses = [(200, 200), (1100, 1100), (3600, 3600), (3200, 100)];
+        let features: Vec<_> = houses.iter().map(|&(x, y)| (3, vec![("render_height", V::Sint(10))], square(x, y, 50, true))).collect();
+        tile.extend(layer("building", &features));
+        let t = decode(&tile, CITY, &names()).unwrap();
+        let zones: Vec<Option<Zone>> = t.buildings.iter().map(|b| b.zone).collect();
+        assert_eq!(zones, [Some(Zone::Residential), Some(Zone::Commercial), Some(Zone::Industrial), None]);
     }
 
     #[test]

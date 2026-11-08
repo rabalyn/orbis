@@ -54,13 +54,14 @@ pub struct Mark {
     pub colour: [u8; 4],
 }
 
-/// How an area is drawn when it is not the plain yellow one: edge and fill colours, and the
-/// edge's width in pixels.
+/// How an area is drawn when it is not the plain yellow one: edge and fill colours, the
+/// edge's width in pixels, and whether the edge is dashed and the fill hatched instead of solid.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Outline {
     pub edge: [u8; 4],
     pub fill: [u8; 4],
     pub width: f32,
+    pub dashed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

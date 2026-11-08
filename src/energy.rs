@@ -562,7 +562,7 @@ impl Energy {
     /// it does not redraw the ground. Close up: every municipality with units without a position,
     /// outlined and shaded by their capacity per km² at `month`. The selected area is emphasised,
     /// or a selected site ringed.
-    pub fn outlines(&self, level: Level, shown: [bool; SOURCES], selected: Option<Subject>, month: u16) -> Imported {
+    pub fn outlines(&self, level: Level, shown: [bool; SOURCES], selected: Option<Subject>, month: u16, palette: Palette) -> Imported {
         let mut items = Vec::new();
         let has = |series: &[Series; SOURCES]| series.iter().zip(shown).any(|(s, on)| on && s.steps.iter().any(|st| st.1 > 0.0));
         let (outline_level, series) = match level {
@@ -573,6 +573,7 @@ impl Energy {
             Some(Subject::Area(i) | Subject::Unplaced(i)) => Some(i as usize),
             _ => None,
         };
+        let chosen = selected.map(|subject| self.selected_outline(subject, month, shown, palette));
         for (i, a) in self.areas.iter().enumerate() {
             if a.level != outline_level || (!has(&series[i]) && chosen_area != Some(i)) {
                 continue;
@@ -580,7 +581,7 @@ impl Energy {
             let rings = a.rings.iter().map(|r| r.iter().map(|&(lat, lon)| Pos { lat, lon, alt: None }).collect()).collect();
             let mut item = Item::new("", Shape::Polygon(rings));
             item.outline = Some(if chosen_area == Some(i) {
-                SELECTED
+                chosen.unwrap_or(SELECTED)
             } else if level == Level::Plants {
                 let d = self.unplaced_density(i as u32, month, shown).unwrap_or(0.0);
                 let mut o = UNPLACED_EDGE;
@@ -596,13 +597,18 @@ impl Energy {
                 if a.level == Level::Districts && a.kind == AreaKind::Admin && (has(&self.unplaced[i]) || chosen_area == Some(i)) {
                     let rings = a.rings.iter().map(|r| r.iter().map(|&(lat, lon)| Pos { lat, lon, alt: None }).collect()).collect();
                     let mut item = Item::new("", Shape::Polygon(rings));
-                    item.outline = Some(if chosen_area == Some(i) { SELECTED } else { DISTRICT_ONLY_EDGE });
+                    item.outline = Some(if chosen_area == Some(i) {
+                        chosen.unwrap_or(SELECTED)
+                    } else {
+                        let kw = |r: std::ops::Range<usize>| r.filter(|&s| shown[s]).map(|s| self.unplaced[i][s].at(month)).sum::<f32>();
+                        Outline { dashed: kw(FIRST_FOSSIL..SOURCES) > kw(0..FIRST_FOSSIL), ..DISTRICT_ONLY_EDGE }
+                    });
                     items.push(item);
                 }
             }
         }
         // The chosen one last, so that it is drawn over its neighbours' edges.
-        items.sort_by_key(|i| i.outline == Some(SELECTED));
+        items.sort_by_key(|i| chosen.is_some() && i.outline == chosen);
         if let Some(Subject::Site(i)) = selected {
             let s = &self.sites[i as usize];
             let mut item = Item::new("", Shape::Point(Pos { lat: s.lat, lon: s.lon, alt: None }));
@@ -636,6 +642,45 @@ impl Energy {
         }
     }
 
+    /// The capacity of one source in what a bar stands for, in kW.
+    fn subject_kw(&self, subject: Subject, source: Source, month: u16) -> f32 {
+        match subject {
+            Subject::Area(i) => self.totals[i as usize][source as usize].at(month),
+            Subject::Unplaced(i) => self.unplaced[i as usize][source as usize].at(month),
+            Subject::Site(i) => {
+                let site = &self.sites[i as usize];
+                if site.source == source {
+                    site.kw(month)
+                } else {
+                    0.0
+                }
+            }
+        }
+    }
+
+    /// The source with the most capacity in what a bar stands for, among those in `shown`.
+    pub fn main_source(&self, subject: Subject, month: u16, shown: [bool; SOURCES]) -> Option<Source> {
+        Source::ALL
+            .into_iter()
+            .filter(|&s| shown[s as usize])
+            .map(|s| (s, self.subject_kw(subject, s, month)))
+            .filter(|&(_, kw)| kw > 0.0)
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(s, _)| s)
+    }
+
+    /// The chosen area's outline: filled in the colour of its main source, hatched and with a
+    /// dashed edge when that is fossil or nuclear.
+    fn selected_outline(&self, subject: Subject, month: u16, shown: [bool; SOURCES], palette: Palette) -> Outline {
+        match self.main_source(subject, month, shown) {
+            Some(main) => {
+                let [r, g, b] = palette.colour(main);
+                Outline { fill: [r, g, b, SELECTED_FILL_ALPHA], dashed: main.fossil(), ..SELECTED }
+            }
+            None => SELECTED,
+        }
+    }
+
     /// What the information box says about a bar.
     pub fn describe(&self, subject: Subject, month: u16, shown: [bool; SOURCES], output: Option<(&[f32; SOURCES], &str)>) -> String {
         let mut text = String::new();
@@ -666,18 +711,7 @@ impl Energy {
             if !shown[s as usize] {
                 continue;
             }
-            let kw = match subject {
-                Subject::Area(i) => self.totals[i as usize][s as usize].at(month),
-                Subject::Unplaced(i) => self.unplaced[i as usize][s as usize].at(month),
-                Subject::Site(i) => {
-                    let site = &self.sites[i as usize];
-                    if site.source == s {
-                        site.kw(month)
-                    } else {
-                        0.0
-                    }
-                }
-            };
+            let kw = self.subject_kw(subject, s, month);
             if kw > 0.0 {
                 match output {
                     Some((shares, _)) => text.push_str(&format!("{}: {} of {}\n", s.name(), format_power(kw * shares[s as usize]), format_power(kw))),
@@ -728,12 +762,16 @@ pub fn format_power(kw: f32) -> String {
     }
 }
 
-const AREA_EDGE: Outline = Outline { edge: [255, 80, 200, 230], fill: [255, 80, 200, 0], width: 1.6 };
-const UNPLACED_EDGE: Outline = Outline { edge: [255, 80, 200, 170], fill: [255, 80, 200, 0], width: 1.2 };
-const DISTRICT_ONLY_EDGE: Outline = Outline { edge: [255, 150, 30, 230], fill: [255, 150, 30, 0], width: 2.0 };
+const AREA_EDGE: Outline = Outline { edge: [255, 80, 200, 230], fill: [255, 80, 200, 0], width: 1.6, dashed: false };
+const UNPLACED_EDGE: Outline = Outline { edge: [255, 80, 200, 170], fill: [255, 80, 200, 0], width: 1.2, dashed: false };
+/// Dashed where most of the district's own units are fossil or nuclear.
+const DISTRICT_ONLY_EDGE: Outline = Outline { edge: [255, 150, 30, 230], fill: [255, 150, 30, 0], width: 2.0, dashed: false };
 /// The opacity of the densest shade.
 const SHADE_ALPHA: u8 = 110;
-const SELECTED: Outline = Outline { edge: [255, 240, 120, 250], fill: [255, 240, 120, 55], width: 2.4 };
+/// The chosen area's edge; it is filled in the colour of its main source, hatched for a fossil one.
+const SELECTED: Outline = Outline { edge: [255, 240, 120, 250], fill: [255, 240, 120, 55], width: 2.4, dashed: false };
+/// The opacity of the chosen area's fill.
+const SELECTED_FILL_ALPHA: u8 = 95;
 
 /// The size of an area in km², for rings in radians whose holes run the other way round.
 fn area_km2(rings: &[Vec<(f64, f64)>]) -> f64 {
@@ -788,14 +826,159 @@ impl Scale {
     }
 }
 
+/// The colours of the sources: a set of palettes to choose from in the energy display window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Palette {
+    Standard,
+    /// After Okabe and Ito: told apart with any common colour vision deficiency.
+    ColourBlind,
+    /// The standard colours, softened, for a calmer picture over busy imagery.
+    Muted,
+}
+
+impl Palette {
+    pub const ALL: [Palette; 3] = [Palette::Standard, Palette::ColourBlind, Palette::Muted];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Palette::Standard => "Standard",
+            Palette::ColourBlind => "Colour-blind safe",
+            Palette::Muted => "Muted",
+        }
+    }
+
+    /// The identifier in the settings file.
+    pub fn key(self) -> &'static str {
+        match self {
+            Palette::Standard => "standard",
+            Palette::ColourBlind => "colour_blind",
+            Palette::Muted => "muted",
+        }
+    }
+
+    pub fn parse(key: &str) -> Option<Palette> {
+        Palette::ALL.into_iter().find(|p| p.key() == key)
+    }
+
+    pub fn colour(self, source: Source) -> [u8; 3] {
+        match self {
+            Palette::Standard => source.colour(),
+            Palette::ColourBlind => match source {
+                Source::Solar => [240, 228, 66],
+                Source::WindOnshore => [86, 180, 233],
+                Source::WindOffshore => [0, 114, 178],
+                Source::Hydro => [0, 158, 115],
+                Source::Biomass => [150, 200, 90],
+                Source::Lignite => [150, 100, 55],
+                Source::HardCoal => [80, 80, 86],
+                Source::Gas => [213, 94, 0],
+                Source::Oil => [204, 121, 167],
+                Source::OtherFossil => [165, 165, 165],
+                Source::Nuclear => [230, 159, 0],
+            },
+            Palette::Muted => source.colour().map(|c| (c as f32 * 0.6 + 190.0 * 0.4) as u8),
+        }
+    }
+}
+
+/// How capacity that is not running at the clock's quarter hour is shown, above the output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Idle {
+    /// In its source's colour, see-through.
+    Source,
+    /// In white, see-through.
+    White,
+    /// Not at all: the bars show output only.
+    Hidden,
+}
+
+impl Idle {
+    pub const ALL: [Idle; 3] = [Idle::Source, Idle::White, Idle::Hidden];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Idle::Source => "Source colour, see-through",
+            Idle::White => "White, see-through",
+            Idle::Hidden => "Hidden (output only)",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Idle::Source => "source",
+            Idle::White => "white",
+            Idle::Hidden => "hidden",
+        }
+    }
+
+    pub fn parse(key: &str) -> Option<Idle> {
+        Idle::ALL.into_iter().find(|p| p.key() == key)
+    }
+}
+
+/// How the bars and the day chart look, as set in the energy display window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Style {
+    pub palette: Palette,
+    pub idle: Idle,
+    /// The opacity of unused capacity, 0 to 1.
+    pub idle_opacity: f64,
+    /// Factors on the usual height and width of the bars.
+    pub height: f64,
+    pub width: f64,
+}
+
+/// The limits of the factors on the bars' height and width.
+pub const HEIGHT_RANGE: (f64, f64) = (0.25, 4.0);
+pub const WIDTH_RANGE: (f64, f64) = (0.5, 3.0);
+pub const OPACITY_RANGE: (f64, f64) = (0.08, 0.9);
+
+impl Default for Style {
+    fn default() -> Self {
+        Style { palette: Palette::Standard, idle: Idle::Source, idle_opacity: 0.3, height: 1.0, width: 1.0 }
+    }
+}
+
+impl Style {
+    pub fn colour(&self, source: Source) -> [u8; 3] {
+        self.palette.colour(source)
+    }
+
+    /// The colour and opacity (0 to 255) of a source's unused capacity, if it is shown.
+    pub fn idle_colour(&self, source: Source) -> Option<([u8; 3], u8)> {
+        let alpha = (self.idle_opacity.clamp(OPACITY_RANGE.0, OPACITY_RANGE.1) * 255.0).round() as u8;
+        match self.idle {
+            Idle::Source => Some((self.colour(source), alpha)),
+            Idle::White => Some((IDLE_WHITE, alpha)),
+            Idle::Hidden => None,
+        }
+    }
+
+    /// The scale for a view with these factors applied.
+    pub fn apply(&self, scale: Scale) -> Scale {
+        Scale {
+            width: scale.width * self.width.clamp(WIDTH_RANGE.0, WIDTH_RANGE.1),
+            per_kw: scale.per_kw * self.height.clamp(HEIGHT_RANGE.0, HEIGHT_RANGE.1),
+        }
+    }
+}
+
+const IDLE_WHITE: [u8; 3] = [236, 238, 244];
+
 /// The bars as one mesh round `center`, standing on the ground that `ground` gives (metres).
-/// The colour of capacity that is not running, above the output.
-const IDLE: [u8; 3] = [62, 62, 68];
+/// Its indices hold the solid faces first, then the see-through ones from `solid` on, which are
+/// drawn blended after everything solid.
+pub struct BarMesh {
+    pub mesh: BuildingMesh,
+    pub solid: u32,
+}
 
 /// With `shares` (the part of each source's capacity running), each column shows the output in
-/// the sources' colours and the rest of its capacity in grey above it.
-pub fn mesh(bars: &[Bar], scale: Scale, center: DVec3, ground: &dyn Fn(f64, f64) -> f64, shares: Option<&[f32; SOURCES]>) -> BuildingMesh {
+/// the sources' colours and above it the rest of each source's capacity as `style` says;
+/// without, the whole capacity in the sources' colours.
+pub fn mesh(bars: &[Bar], scale: Scale, center: DVec3, ground: &dyn Fn(f64, f64) -> f64, shares: Option<&[f32; SOURCES]>, style: &Style) -> BarMesh {
     let mut out = BuildingMesh { center, vertices: Vec::new(), indices: Vec::new() };
+    let mut ghost: Vec<u32> = Vec::new();
     for bar in bars {
         let (sides, width) = match bar.subject {
             Subject::Site(_) => (8, scale.width * 0.7),
@@ -811,26 +994,56 @@ pub fn mesh(bars: &[Bar], scale: Scale, center: DVec3, ground: &dyn Fn(f64, f64)
                 continue;
             }
             let shift = if both { east * (width * if n == 0 { -0.55 } else { 0.55 }) } else { DVec3::ZERO };
-            let mut segments: Vec<([u8; 3], f64)> = Vec::new();
-            let mut idle = 0.0;
+            let mut segments: Vec<Segment> = Vec::new();
+            let mut idle: Vec<Segment> = Vec::new();
             for s in range.filter(|&s| bar.kw[s] > 0.0) {
-                let share = shares.map_or(1.0, |sh| sh[s] as f64);
-                segments.push((Source::ALL[s].colour(), bar.kw[s] as f64 * share * scale.per_kw));
-                idle += bar.kw[s] as f64 * (1.0 - share) * scale.per_kw;
+                let source = Source::ALL[s];
+                let share = shares.map_or(1.0, |sh| (sh[s] as f64).clamp(0.0, 1.0));
+                segments.push(Segment { colour: style.colour(source), alpha: 255, height: bar.kw[s] as f64 * share * scale.per_kw });
+                if let Some((colour, alpha)) = style.idle_colour(source) {
+                    idle.push(Segment { colour, alpha, height: bar.kw[s] as f64 * (1.0 - share) * scale.per_kw });
+                }
             }
-            segments.retain(|s| s.1 > 0.0);
-            if idle > 0.0 {
-                segments.push((IDLE, idle));
+            segments.extend(idle);
+            segments.retain(|s| s.height > 0.0);
+            if segments.is_empty() {
+                continue;
             }
-            column(&mut out, base + shift, (east, north, up), sides, width, scale.width * 0.3, &segments);
+            // The fossil and nuclear column is dashed all the way up, so that it never reads as
+            // one of the renewable ones, whatever the colours.
+            let dash = (n == 1).then_some(width * 0.6);
+            column(&mut out, &mut ghost, base + shift, (east, north, up), sides, width, scale.width * 0.3, &segments, dash);
         }
     }
-    out
+    let solid = out.indices.len() as u32;
+    out.indices.extend(ghost);
+    BarMesh { mesh: out, solid }
 }
 
-/// One column of stacked segments (source, height in metres) standing at `base`, reaching
-/// `below` metres into the ground.
-fn column(out: &mut BuildingMesh, base: DVec3, (east, north, up): (DVec3, DVec3, DVec3), sides: usize, width: f64, below: f64, segments: &[([u8; 3], f64)]) {
+/// A part of a column: its colour, opacity (255 solid) and height in metres.
+#[derive(Clone, Copy, Debug)]
+struct Segment {
+    colour: [u8; 3],
+    alpha: u8,
+    height: f64,
+}
+
+/// One column of stacked segments standing at `base`, reaching `below` metres into the ground.
+/// Solid faces go to the mesh's indices, see-through ones to `ghost`. With `dash`, its walls are
+/// cut into bands that tall, every second one darkened, counted from the ground so that the
+/// bands run on across segments.
+#[allow(clippy::too_many_arguments)]
+fn column(
+    out: &mut BuildingMesh,
+    ghost: &mut Vec<u32>,
+    base: DVec3,
+    (east, north, up): (DVec3, DVec3, DVec3),
+    sides: usize,
+    width: f64,
+    below: f64,
+    segments: &[Segment],
+    dash: Option<f64>,
+) {
     let corners: Vec<DVec3> = (0..sides)
         .map(|k| {
             // Squares are turned to face north; octagons have a flat side to the north too.
@@ -839,35 +1052,59 @@ fn column(out: &mut BuildingMesh, base: DVec3, (east, north, up): (DVec3, DVec3,
             east * (a.cos() * r) + north * (a.sin() * r)
         })
         .collect();
+    let colour = |c: [u8; 3], alpha: u8, shade: f32| {
+        let [r, g, b] = [0, 1, 2].map(|i| (c[i] as f32 * shade).min(255.0) as u8);
+        [r, g, b, alpha]
+    };
     // Below the ground a little, to meet it on slopes and where the terrain is not loaded.
     let mut z0 = -below;
-    let last = segments.len().saturating_sub(1);
-    for (n, &(c, h)) in segments.iter().enumerate() {
-        let z1 = z0.max(0.0) + h;
-        let colour = |shade: f32| {
-            let [r, g, b] = [0, 1, 2].map(|i| (c[i] as f32 * shade).min(255.0) as u8);
-            [r, g, b, 255]
-        };
-        for k in 0..sides {
-            let (a, b) = (corners[k], corners[(k + 1) % sides]);
-            let first = out.vertices.len() as u32;
-            for (p, z, shade) in [(a, z0, 0.8), (b, z0, 0.8), (b, z1, 1.0), (a, z1, 1.0)] {
-                out.vertices.push(BuildingVertex { pos: (base + p + up * z).as_vec3().to_array(), colour: colour(shade) });
+    for (n, seg) in segments.iter().enumerate() {
+        let z1 = z0.max(0.0) + seg.height;
+        let indices = if seg.alpha == 255 { &mut out.indices } else { &mut *ghost };
+        // The walls' pieces: from, to, and whether darkened.
+        let mut pieces: Vec<(f64, f64, bool)> = Vec::new();
+        match dash.filter(|&d| d > 0.0 && (z1 - z0) / d < 2000.0) {
+            Some(d) => {
+                let mut z = z0;
+                while z < z1 {
+                    let band = (z.max(0.0) / d + 1e-9).floor();
+                    let to = if z < 0.0 { 0.0f64.min(z1).max(z + 1e-6) } else { ((band + 1.0) * d).min(z1) };
+                    pieces.push((z, to, z >= 0.0 && band as i64 % 2 == 1));
+                    z = to;
+                }
             }
-            out.indices.extend_from_slice(&[first, first + 1, first + 2, first, first + 2, first + 3]);
+            None => pieces.push((z0, z1, false)),
         }
-        if n == last {
+        for (a0, a1, dark) in pieces {
+            // Shaded from 0.8 at the segment's foot to 1.0 at its top, as without bands.
+            let shade = |z: f64| (0.8 + 0.2 * ((z - z0) / (z1 - z0).max(1e-9))) as f32 * if dark { DASH_SHADE } else { 1.0 };
+            for k in 0..sides {
+                let (a, b) = (corners[k], corners[(k + 1) % sides]);
+                let first = out.vertices.len() as u32;
+                for (p, z) in [(a, a0), (b, a0), (b, a1), (a, a1)] {
+                    out.vertices.push(BuildingVertex { pos: (base + p + up * z).as_vec3().to_array(), colour: colour(seg.colour, seg.alpha, shade(z)) });
+                }
+                indices.extend_from_slice(&[first, first + 1, first + 2, first, first + 2, first + 3]);
+            }
+        }
+        // A lid on the top, and on the last solid segment below see-through ones, so that the
+        // solid part does not look hollow through them.
+        let next_alpha = segments.get(n + 1).map(|s| s.alpha);
+        if next_alpha.is_none() || (seg.alpha == 255 && next_alpha != Some(255)) {
             let first = out.vertices.len() as u32;
             for p in &corners {
-                out.vertices.push(BuildingVertex { pos: (base + *p + up * z1).as_vec3().to_array(), colour: colour(1.1) });
+                out.vertices.push(BuildingVertex { pos: (base + *p + up * z1).as_vec3().to_array(), colour: colour(seg.colour, seg.alpha, 1.1) });
             }
             for k in 1..sides as u32 - 1 {
-                out.indices.extend_from_slice(&[first, first + k, first + k + 1]);
+                indices.extend_from_slice(&[first, first + k, first + k + 1]);
             }
         }
         z0 = z1;
     }
 }
+
+/// How dark the gaps between the dashes of a fossil column are.
+const DASH_SHADE: f32 = 0.42;
 
 /// The bar under a screen position: the nearest one whose drawn box holds it.
 pub fn hit(bars: &[Bar], scale: Scale, ground: &dyn Fn(f64, f64) -> f64, project: &dyn Fn(DVec3) -> Option<glam::DVec2>, at: glam::DVec2) -> Option<Subject> {
@@ -1002,16 +1239,30 @@ pub(crate) mod tests {
     fn outlines_follow_the_level_and_the_choice() {
         let e = Energy::parse(&sample()).unwrap();
         let all = [true; SOURCES];
-        assert_eq!(e.outlines(Level::Towns, all, None, 126 * 12).items.len(), 3, "and the district of the plant");
+        assert_eq!(e.outlines(Level::Towns, all, None, 126 * 12, Palette::Standard).items.len(), 3, "and the district of the plant");
         // Close up only municipalities with unplaced units are outlined, and shaded fully when they
         // are the densest.
-        let close = e.outlines(Level::Plants, all, None, 126 * 12);
+        let close = e.outlines(Level::Plants, all, None, 126 * 12, Palette::Standard);
         assert_eq!(close.items.len(), 2);
         assert_eq!(close.items[0].outline.unwrap().fill[3], SHADE_ALPHA);
-        assert_eq!(e.outlines(Level::Plants, all, None, 100 * 12).items[0].outline.unwrap().fill[3], 0, "nothing yet in 2000");
-        let chosen = e.outlines(Level::Towns, all, Some(Subject::Area(3)), 126 * 12);
+        assert_eq!(e.outlines(Level::Plants, all, None, 100 * 12, Palette::Standard).items[0].outline.unwrap().fill[3], 0, "nothing yet in 2000");
+        let chosen = e.outlines(Level::Towns, all, Some(Subject::Area(3)), 126 * 12, Palette::Standard);
         assert_eq!(chosen.items.last().unwrap().outline, Some(SELECTED));
-        let site = e.outlines(Level::Plants, all, Some(Subject::Site(0)), 126 * 12);
+        // A chosen area is filled in its main source's colour: "Nord" in solar's, solid, and the
+        // district of the lignite plant (given only by district) hatched.
+        let nord = e.outlines(Level::Towns, all, Some(Subject::Area(2)), 126 * 12, Palette::Standard).items.last().unwrap().outline.unwrap();
+        let [r, g, b] = Source::Solar.colour();
+        assert_eq!((nord.fill, nord.dashed, nord.edge), ([r, g, b, SELECTED_FILL_ALPHA], false, SELECTED.edge));
+        assert_eq!(e.main_source(Subject::Unplaced(1), 126 * 12, all), Some(Source::Lignite));
+        let plant = e.outlines(Level::Towns, all, Some(Subject::Unplaced(1)), 126 * 12, Palette::Standard).items.last().unwrap().outline.unwrap();
+        assert!(plant.dashed && plant.fill[..3] == Source::Lignite.colour());
+        // Unchosen, that district's outline is dashed too, unless lignite is hidden.
+        let district = |shown| e.outlines(Level::Towns, shown, None, 126 * 12, Palette::Standard).items.into_iter().find(|i| i.outline.unwrap().edge == DISTRICT_ONLY_EDGE.edge).unwrap();
+        assert!(district(all).outline.unwrap().dashed);
+        let mut no_lignite = all;
+        no_lignite[Source::Lignite as usize] = false;
+        assert_eq!(e.main_source(Subject::Unplaced(1), 126 * 12, no_lignite), None);
+        let site = e.outlines(Level::Plants, all, Some(Subject::Site(0)), 126 * 12, Palette::Standard);
         assert!(matches!(site.items.last().unwrap().shape, Shape::Point(_)));
         let ring = &e.areas[0].rings[0];
         assert!((ring[2].0.to_degrees() - 49.0).abs() < 1e-5 && (ring[2].1.to_degrees() - 12.0).abs() < 1e-5);
@@ -1034,6 +1285,28 @@ pub(crate) mod tests {
 
     fn sky_time_unix(year: i64, month: i64) -> f64 {
         crate::sky_time::days_from_civil(year, month, 15) as f64 * 86_400.0
+    }
+
+    #[test]
+    fn the_fossil_column_is_dashed_and_the_renewable_one_solid() {
+        let mut kw = [0.0; SOURCES];
+        kw[Source::Solar as usize] = 100.0;
+        kw[Source::Gas as usize] = 100.0;
+        let bar = Bar { lat: 0.8, lon: 0.2, kw, subject: Subject::Area(0) };
+        let scale = Scale { width: 10.0, per_kw: 1.0 };
+        let m = mesh(&[bar], scale, geodetic_to_ecef(0.8, 0.2, 0.0), &|_, _| 0.0, None, &Style::default()).mesh;
+        // Each colour comes in one shade of wall per height; the dark bands give gas a second set.
+        let (east, ..) = enu(0.8, 0.2);
+        let shades = |west: bool| {
+            let mut v: Vec<[u8; 4]> = m.vertices.iter().filter(|v| (glam::Vec3::from_array(v.pos).as_dvec3().dot(east) < 0.0) == west).map(|v| v.colour).collect();
+            v.sort();
+            v.dedup();
+            v.len()
+        };
+        let (solar, gas) = (shades(true), shades(false));
+        // A gas column 100 m tall in bands of 6 m: about 17 bands, half of them dark.
+        assert!(gas > solar * 5, "solar {solar} shades, gas {gas}");
+        assert!(m.indices.iter().all(|&i| (i as usize) < m.vertices.len()));
     }
 
     #[test]

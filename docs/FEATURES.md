@@ -136,8 +136,12 @@ and they appear once the server answers again.
 
 ## 3D buildings
 
-- Buildings rise from OpenStreetMap footprints with their mapped heights, colours, courtyards and raised parts such as
-  stepped towers.
+- Buildings rise from OpenStreetMap footprints with their mapped heights, courtyards and raised parts such as stepped towers.
+- They are coloured by the zoned land use they stand in, as a city builder shows its zones: **green** in residential areas,
+  **blue** in commercial and retail ones, **yellow** in industrial ones. The shade gives the density, from light for low
+  buildings (5 m and less) to dark for towers (40 m and more), on a log scale of the height. Where areas overlap, as shops within
+  a residential area, the smaller one counts. Buildings outside these areas (old town centres, schools, hospitals, stations,
+  open country) keep their mapped colour or the default off-white.
 - They stand on the terrain: roofs stay level, and walls reach down to the low side of a slope.
 - In an 800-pixel-high view looking straight down, they appear somewhere between 25 and 15 km from the ground. Larger
   windows load detail, and so buildings, from further away.
@@ -148,6 +152,10 @@ and they appear once the server answers again.
 ### Limitations
 - Flat roofs and plain colours: no textures, windows or real roof shapes.
 - Height and colour are only as good as the map data, and buildings without a height get a default.
+- The land use is the OpenMapTiles `landuse` layer's `class` (residential, commercial, retail, industrial), so a building is
+  zoned by the area it stands in, not by its own use: a shop in a residential area is green, and much of a city centre, which
+  is often mapped without a land use, is not coloured. Density is read from the height alone, as the data has neither floor
+  area nor residents.
 - Buildings end along a line in the far distance, because height data exists only at one zoom level.
 - The camera does not collide with buildings, and labels show through them.
 - A building crossing a tile edge can show a small step if the ground differs between its two parts.
@@ -447,7 +455,9 @@ G lists map services, for use as the Earth's imagery or laid over it.
 W, the view options or `--energy` show bars of the generating capacity registered in Germany. Renewable sources (solar, wind
 on land, wind at sea, hydro, biomass) stack in one column, and for comparison fossil and nuclear sources (lignite, hard coal,
 natural gas, oil, other fossil, nuclear) in a second column just east of it, at the same scale. Each part's colour is its
-source, stacked in the order of the view options, which have a switch for each.
+source, stacked in the order of the view options, which have a switch for each. Everything fossil or nuclear is drawn dashed
+rather than solid, so that it never reads as renewable: its column in bands with every second one darkened, its areas in the
+day chart and their legend swatches hatched, and on the ground hatched fills and dashed edges.
 
 ### What a bar stands for
 Every bar stands for one clearly bounded thing, and that thing is marked on the ground, so that bars of different detail are
@@ -466,11 +476,23 @@ never confused:
   always a place or an area that stands alone, and nothing is drawn at a position the register does not give. A click on the
   shaded ground opens the municipality's figures.
 - Most large power plants are given **only by district**, with no municipality or position. Where the bars are finer than
-  districts, these stand as one square bar per district, at the district's point, with the district outlined in orange. They
-  are counted in their district and state, and in no municipality.
+  districts, these stand as one square bar per district, at the district's point, with the district outlined in orange,
+  dashed where most of these units' shown capacity at the clock's month is fossil or nuclear. They are counted in their district
+  and state, and in no municipality.
 - A click on a bar outlines its area in yellow (or rings its site) and opens the information box: what the bar stands for, its
-  capacity by source at the clock's month, and the register's date. A click elsewhere clears the choice.
+  capacity by source at the clock's month, and the register's date. The area is filled in the colour of its main source, the
+  shown source with the most capacity at the clock's month; for a fossil or nuclear one the fill is hatched and the edge dashed.
+  A click elsewhere clears the choice.
 - Square bars (areas) and round bars (sites) never appear together: areas from far away, sites and shading close up.
+
+### Energy display window
+"Colours and bar size..." in the view options, or "Style" on the day chart, opens a small window at the bottom right:
+- **Colours**: the standard palette, a colour-blind safe one (after Okabe and Ito) or a muted one, used on the bars, the chosen
+  area's fill and the day chart. A legend shows each source running and not running, fossil and nuclear ones hatched.
+- **Capacity not running**: in the source's colour or in white, both see-through, or hidden so that the bars show output only,
+  with a slider for its opacity.
+- **Bar size**: sliders for the bars' height (x0.25 to x4) and width (x0.5 to x3); the display's scale follows. The wheel steps
+  a slider, and Reset brings back the usual look. Every change is saved with the other options.
 
 ### Size and time
 - Height is linear in capacity. A bar taller than 98% of a level's bars at the register's date reaches about 40% of the view's
@@ -481,7 +503,8 @@ never confused:
 
 ### Output and consumption
 - With "Output at the clock's time" in the view options (on by default), each column shows the estimated output at the clock's
-  quarter hour in its sources' colours, and the rest of its capacity in grey above it. The status line gives Germany's
+  quarter hour solid in its sources' colours, and above it the rest of each source's capacity see-through in the same colour,
+  so that capacity standing idle never looks like a source of its own. The status line gives Germany's
   generation, its renewable share, consumption, and the surplus or shortfall between them at that quarter hour, which
   goes into exports, imports and storage.
 - The figures are SMARD's (Bundesnetzagentur): public net generation by source and total consumption (Netzlast) for Germany,

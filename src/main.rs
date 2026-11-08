@@ -33,6 +33,7 @@ mod power_chart;
 mod power_feed;
 mod eclipse;
 mod energy;
+mod energy_style;
 mod event_feeds;
 mod events;
 mod flight;
@@ -197,6 +198,7 @@ Usage: orbis [options]
   --services-panel        with --screenshot, also show the list of map services
   --show-help             with --screenshot, also show the help window (key H)
   --show-options          with --screenshot, also show the view options dialog (key V)
+  --show-energy-style     with --screenshot, also show the energy display window (colours and size of the bars)
   --show-time             with --screenshot, also show the time dialog (key C)
   --help-scroll N         with --screenshot, scroll the help window down by N wheel notches (implies --show-help)
   --simulate-click X,Y    with --screenshot, click there (pixels from the top left) before the image is taken,
@@ -281,6 +283,7 @@ struct Args {
     services: service_ui::Cli,
     show_help: bool,
     show_options: bool,
+    show_energy_style: bool,
     show_time: bool,
     simulate_drags: Vec<(DVec2, DVec2)>,
     help_scroll: f64,
@@ -367,6 +370,7 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
         services: Default::default(),
         show_help: false,
         show_options: false,
+        show_energy_style: false,
         show_time: false,
         simulate_drags: Vec::new(),
         help_scroll: 0.0,
@@ -494,6 +498,10 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
             }
             "--show-options" => {
                 a.show_options = true;
+                continue;
+            }
+            "--show-energy-style" => {
+                a.show_energy_style = true;
                 continue;
             }
             "--show-time" => {
@@ -736,6 +744,7 @@ struct Scene {
     lines_version: u64,
     /// What the view options dialog shows; filled from the live state before each frame.
     options: options::Shared,
+    energy_style: energy_style::Shared,
     time_model: time_dialog::Shared,
     eclipse_watch: time_slider::EclipseWatch,
     /// The planets and the Moon as of `bodies_time`.
@@ -830,6 +839,8 @@ struct EnergyLayer {
     power: PowerState,
     /// What the day chart shows.
     chart: power_chart::Shared,
+    /// The look the bars and outlines were built with; a change rebuilds them.
+    style: Option<energy::Style>,
 }
 
 /// Sets up tile fetching, including sharing on the LAN if asked for.
@@ -1083,6 +1094,7 @@ impl Scene {
             lines_drawn: LineKinds::of(&args.settings),
             lines_version: 0,
             options: Default::default(),
+            energy_style: Default::default(),
             time_model: Default::default(),
             eclipse_watch: Default::default(),
             bodies: Vec::new(),
@@ -1105,6 +1117,9 @@ impl Scene {
         scene.ui.add(time_dialog::icon_panel());
         scene.ui.add(time_dialog::window_panel(scene.time_model.clone()));
         scene.ui.add(power_chart::window_panel(scene.energy.chart.clone()));
+        scene.ui.add(energy_style::window_panel(scene.energy_style.clone()));
+        // The renderer has a fixed number of places for the interface's panels; one beyond them is never drawn.
+        assert!(scene.ui.panels().len() <= Renderer::ui_panel_count(), "more panels than the renderer draws");
         scene
     }
 
@@ -1162,6 +1177,7 @@ impl Scene {
         match action {
             Action::Set(index, value) => {
                 options::set_toggle(&mut self.view, index, value);
+                self.sync_energy_style();
                 if !self.view.info_on_click {
                     self.ui.set_visible(info::WINDOW, false);
                     self.info_id += 1;
@@ -1177,6 +1193,7 @@ impl Scene {
             Action::Body(id) => self.view.body = id.to_string(),
             Action::Base(id) => self.services.choose_base(id.as_deref()),
             Action::FrameRate(limit) => self.view.frame_rate = limit,
+            Action::EnergyStyle => self.toggle_dialog(energy_style::WINDOW),
         }
     }
 
@@ -1189,7 +1206,8 @@ impl Scene {
     fn separate_dialogs(&mut self, opened: ui::PanelId) {
         self.sync_options();
         self.sync_time_dialog();
-        self.ui.close_overlapping(opened, &[help::WINDOW, options::WINDOW, info::WINDOW, time_dialog::WINDOW]);
+        self.sync_energy_style();
+        self.ui.close_overlapping(opened, &[help::WINDOW, options::WINDOW, info::WINDOW, time_dialog::WINDOW, energy_style::WINDOW]);
     }
 
     /// Keeps the time dialog true to the clock, whatever moved it. A drag that ended without the
@@ -1262,6 +1280,33 @@ impl Scene {
         action.is_some_and(|a| self.time_action(a))
     }
 
+    /// An event from a slider, which the time dialog or the energy display window may own.
+    fn slider_event(&mut self, event: ui::UiEvent) -> bool {
+        let time = self.time_event(event);
+        self.energy_style_event(event) || time
+    }
+
+    /// An event the energy display window may own. True if the picture changes.
+    fn energy_style_event(&mut self, event: ui::UiEvent) -> bool {
+        let (handled, action) = energy_style::handle(&mut self.ui, &self.energy_style, event);
+        if handled && matches!(event, ui::UiEvent::Clicked { .. }) {
+            self.separate_dialogs(energy_style::WINDOW);
+        }
+        let Some(energy_style::Action::Set(style)) = action else { return false };
+        self.view.set_energy_style(style);
+        self.sync_energy_style();
+        true
+    }
+
+    /// Keeps the energy display window true to the settings.
+    fn sync_energy_style(&mut self) {
+        let model = energy_style::Model { style: self.view.energy_style(), output: self.view.energy_output };
+        if *self.energy_style.borrow() != model {
+            *self.energy_style.borrow_mut() = model;
+            self.ui.refresh(energy_style::WINDOW);
+        }
+    }
+
     /// Notes what the user changed since the last call, and saves it. A value that only the
     /// command line set is not a change, so it is not saved.
     fn persist(&mut self) {
@@ -1284,7 +1329,7 @@ impl Scene {
         self.pointer = pos;
         let r = self.ui.pointer_moved(pos);
         if let Some(e) = r.event {
-            return self.time_event(e);
+            return self.slider_event(e);
         }
         if r.consumed {
             return r.redraw;
@@ -1301,7 +1346,7 @@ impl Scene {
     fn mouse_pressed(&mut self, b: Button, mods: Mods) -> bool {
         let r = self.ui.press(b, self.pointer);
         if let Some(e) = r.event {
-            self.time_event(e);
+            self.slider_event(e);
         }
         if r.consumed {
             return true;
@@ -1342,8 +1387,11 @@ impl Scene {
             if let (true, Some(a)) = info::handle(&mut self.ui, event) {
                 self.info_action(a);
             }
-            if power_chart::handle(&mut self.ui, event) {
-                self.view.energy_chart = false;
+            self.energy_style_event(event);
+            match power_chart::handle(&mut self.ui, event) {
+                Some(power_chart::Event::Closed) => self.view.energy_chart = false,
+                Some(power_chart::Event::Style) => self.toggle_dialog(energy_style::WINDOW),
+                None => {}
             }
         }
         let bit = 1 << (b == Button::Right) as u8;
@@ -1368,7 +1416,7 @@ impl Scene {
     fn mouse_wheel(&mut self, lines: f64, mods: Mods) -> bool {
         let r = self.ui.wheel(lines, self.pointer);
         if let Some(e) = r.event {
-            return self.time_event(e);
+            return self.slider_event(e);
         }
         if r.consumed {
             return r.redraw;
@@ -1976,13 +2024,22 @@ impl Scene {
             }
             return;
         };
+        let style = self.view.energy_style();
+        if self.energy.style != Some(style) {
+            self.energy.style = Some(style);
+            self.energy.outlines_from = None;
+            self.energy.built_from = None;
+        }
         let level = energy::Level::for_altitude(self.nav.altitude, self.energy.level);
         self.energy.level = Some(level);
         let shown = self.energy_sources();
         let month = energy::month_of(self.clock.time());
-        let wanted = (level, shown, self.energy.selected, (level == energy::Level::Plants).then_some(month));
+        // Close up the shade, finer down the dashing of district outlines and with a choice its fill
+        // follow the clock's month.
+        let monthly = level >= energy::Level::Towns || self.energy.selected.is_some();
+        let wanted = (level, shown, self.energy.selected, monthly.then_some(month));
         if self.energy.outlines_from != Some(wanted) {
-            self.energy.outlines = Some(Arc::new(data.outlines(level, shown, self.energy.selected, month)));
+            self.energy.outlines = Some(Arc::new(data.outlines(level, shown, self.energy.selected, month, style.palette)));
             self.energy.outlines_from = Some(wanted);
             self.energy.version += 1;
             self.imports_changed();
@@ -1990,7 +2047,7 @@ impl Scene {
         self.update_power(data, energy::month_of(self.clock.time()));
         self.sync_power_chart();
         let cam = &self.nav.cam;
-        let scale = energy::Scale::for_view(data, level, cam.distance, aspect_height.1);
+        let scale = style.apply(energy::Scale::for_view(data, level, cam.distance, aspect_height.1));
         // The centre in steps of a tenth of the bars' reach, so that panning rebuilds only now and then.
         let reach = (self.nav.altitude * 6.0 / geo::radius()).clamp(0.02, std::f64::consts::PI);
         let step = reach / 10.0;
@@ -2010,8 +2067,8 @@ impl Scene {
         self.energy.bars = data.bars(level, month, shown, near);
         let ground = |lat: f64, lon: f64| r.ground(lat, lon).unwrap_or(0.0);
         let shares = self.energy.power.shown.as_ref().map(|m| m.1);
-        let mesh = energy::mesh(&self.energy.bars, scale, geo::geodetic_to_ecef(cam.lat, cam.lon, 0.0), &ground, shares.as_ref());
-        r.set_energy(Some(&mesh));
+        let bars = energy::mesh(&self.energy.bars, scale, geo::geodetic_to_ecef(cam.lat, cam.lon, 0.0), &ground, shares.as_ref(), &style);
+        r.set_energy(Some((&bars.mesh, bars.solid)));
         self.energy.scale = Some(scale);
         self.energy.built_from = Some(key);
         self.energy.built_at = Some(Instant::now());
@@ -2087,7 +2144,7 @@ impl Scene {
         let date = &sky_time::format_utc(day, false)[..10];
         let model = power_chart::Model {
             title: format!("Germany {date} UTC, GW: generation, use"),
-            chart: (have > 0).then(|| power_chart::chart(&moments, Some((time - day) / 86_400.0))),
+            chart: (have > 0).then(|| power_chart::chart(&moments, Some((time - day) / 86_400.0), self.view.energy_palette)),
             note: if have > 0 {
                 "Generation stacked by source, consumption in white, the clock in yellow. Area above the line: surplus; line above the areas: shortfall.".to_string()
             } else if self.feeds_pending > 0 {
@@ -2212,7 +2269,7 @@ impl Scene {
         let (generation, consumption) = (m.generation(), m.consumption());
         let balance = generation - consumption;
         format!(
-            "Germany {}: generation {} ({:.0}% renewable), consumption {}, {} {}\nBars: estimated output in colour, idle capacity grey",
+            "Germany {}: generation {} ({:.0}% renewable), consumption {}, {} {}\nBars: estimated output solid, capacity not running see-through",
             &sky_time::format_utc(m.time, false)[..16].replace('T', " "),
             gw(generation),
             100.0 * m.renewable() / generation.max(1.0),
@@ -3008,6 +3065,10 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     }
     if args.show_options {
         scene.ui.set_visible(options::WINDOW, true);
+    }
+    if args.show_energy_style {
+        scene.sync_energy_style();
+        scene.ui.set_visible(energy_style::WINDOW, true);
     }
     if args.show_time {
         scene.ui.set_visible(time_dialog::WINDOW, true);

@@ -2,7 +2,7 @@
 //! and a marker at the clock, for the clock's day (UTC), from SMARD. It shows while the energy
 //! bars show output; its close button turns it off in the view options.
 
-use crate::energy::Source;
+use crate::energy::{Palette, Source};
 use crate::power_feed::{Moment, FILTERS};
 use crate::ui::{Chart, Metrics, Panel, Rect, Tone, Ui, UiEvent, Widget};
 use std::cell::RefCell;
@@ -10,6 +10,7 @@ use std::rc::Rc;
 
 pub const WINDOW: &str = "power-chart";
 const CLOSE_BUTTON: u32 = 2;
+const STYLE_BUTTON: u32 = 3;
 const COLS: usize = 50;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -22,34 +23,35 @@ pub struct Model {
 
 pub type Shared = Rc<RefCell<Model>>;
 
-/// The areas from the bottom up: index into `FILTERS`, colour and name. Steady sources first, so
-/// that the day's swings of wind and sun ride on top.
-fn layers() -> [(usize, [u8; 3], &'static str); 12] {
-    let c = |s: Source| s.colour();
+/// The areas from the bottom up: index into `FILTERS`, colour, name, and whether hatched (the
+/// fossil and nuclear ones, as their bars are dashed). Steady sources first, so that the day's
+/// swings of wind and sun ride on top.
+fn layers(palette: Palette) -> [(usize, [u8; 3], &'static str, bool); 12] {
+    let c = |s: Source| palette.colour(s);
     [
-        (9, c(Source::Nuclear), "Nuclear"),
-        (5, c(Source::Lignite), "Lignite"),
-        (6, c(Source::HardCoal), "Hard coal"),
-        (7, c(Source::Gas), "Natural gas"),
-        (8, c(Source::Oil), "Oil, other"),
-        (4, c(Source::Biomass), "Biomass"),
-        (3, c(Source::Hydro), "Hydro"),
-        (2, c(Source::WindOffshore), "Wind at sea"),
-        (1, c(Source::WindOnshore), "Wind on land"),
-        (0, c(Source::Solar), "Solar"),
-        (10, [150, 215, 140], "Other renew."),
-        (11, [210, 160, 220], "Pump storage"),
+        (9, c(Source::Nuclear), "Nuclear", true),
+        (5, c(Source::Lignite), "Lignite", true),
+        (6, c(Source::HardCoal), "Hard coal", true),
+        (7, c(Source::Gas), "Natural gas", true),
+        (8, c(Source::Oil), "Oil, other", true),
+        (4, c(Source::Biomass), "Biomass", false),
+        (3, c(Source::Hydro), "Hydro", false),
+        (2, c(Source::WindOffshore), "Wind at sea", false),
+        (1, c(Source::WindOnshore), "Wind on land", false),
+        (0, c(Source::Solar), "Solar", false),
+        (10, [150, 215, 140], "Other renew.", false),
+        (11, [210, 160, 220], "Pump storage", false),
     ]
 }
 
 /// The chart for a day of quarter hours, `None` where SMARD has none, with the marker at
 /// `marker` (0 to 1) if the clock is in the day.
-pub fn chart(moments: &[Option<Moment>], marker: Option<f64>) -> Chart {
+pub fn chart(moments: &[Option<Moment>], marker: Option<f64>, palette: Palette) -> Chart {
     let values = |i: usize| moments.iter().map(|m| m.as_ref().map(|m| m.mw[i])).collect::<Vec<_>>();
     // Series SMARD does not have for the day are left out of the legend.
-    let layers = layers()
+    let layers = layers(palette)
         .into_iter()
-        .map(|(i, colour, name)| (colour, name.to_string(), values(i)))
+        .map(|(i, colour, name, hatched)| (colour, name.to_string(), values(i), hatched))
         .filter(|l| l.2.iter().flatten().any(|&v| v > 0.0))
         .collect();
     Chart { layers, line: ("Consumption".to_string(), values(FILTERS.len() - 1)), marker, unit: ("GW".to_string(), 1000.0) }
@@ -59,13 +61,24 @@ pub fn window_panel(model: Shared) -> Panel {
     Panel::new(WINDOW, true, move |p, m| layout(p, m, &model.borrow()))
 }
 
-/// Returns whether the event was the close button.
-pub fn handle(ui: &mut Ui, event: UiEvent) -> bool {
-    if let UiEvent::Clicked { panel: WINDOW, widget: CLOSE_BUTTON } = event {
-        ui.set_visible(WINDOW, false);
-        return true;
+/// What a click on the chart's buttons asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Event {
+    /// The close button: the chart is hidden and is to stay off.
+    Closed,
+    /// The style button: open the energy display window.
+    Style,
+}
+
+pub fn handle(ui: &mut Ui, event: UiEvent) -> Option<Event> {
+    match event {
+        UiEvent::Clicked { panel: WINDOW, widget: CLOSE_BUTTON } => {
+            ui.set_visible(WINDOW, false);
+            Some(Event::Closed)
+        }
+        UiEvent::Clicked { panel: WINDOW, widget: STYLE_BUTTON } => Some(Event::Style),
+        _ => None,
     }
-    false
 }
 
 fn layout(p: &mut Panel, m: &Metrics, model: &Model) {
@@ -85,9 +98,12 @@ fn layout(p: &mut Panel, m: &Metrics, model: &Model) {
     let h = header + chart_h + note.len() as f64 * step + 2.0 * pad;
     // At the top left, below where the search box opens.
     p.rect = Rect::new(margin, margin + 22.0 * s, w, h);
-    let title: String = model.title.chars().take(cols.saturating_sub(3)).collect();
+    let style = "Style";
+    let style_w = (style.chars().count() + 2) as f64 * glyph;
+    let title: String = model.title.chars().take(cols.saturating_sub(10)).collect();
     p.fixed = vec![
         Widget::label(Rect::new(pad, (header - glyph) / 2.0, title.chars().count() as f64 * glyph, glyph), &title, Tone::Heading),
+        Widget::button(STYLE_BUTTON, Rect::new(w - pad - 16.0 * s - style_w, 3.0 * s, style_w, 12.0 * s), style, 1),
         Widget::button(CLOSE_BUTTON, Rect::new(w - pad - 12.0 * s, 3.0 * s, 12.0 * s, 12.0 * s), "x", 1),
     ];
     let mut y = header + pad;
@@ -119,7 +135,7 @@ mod tests {
     #[test]
     fn the_chart_holds_the_sources_that_ran_and_the_consumption() {
         let day: Vec<Option<Moment>> = (0..96).map(|i| (i < 60).then(|| moment(i as f32 * 100.0, 40_000.0))).collect();
-        let c = chart(&day, Some(0.5));
+        let c = chart(&day, Some(0.5), Palette::Standard);
         let names: Vec<&str> = c.layers.iter().map(|l| l.1.as_str()).collect();
         assert_eq!(names, ["Lignite", "Solar"], "stacked steady first, and only what ran");
         assert_eq!(c.line.1.len(), 96);
@@ -132,7 +148,7 @@ mod tests {
     fn the_window_draws_and_closes() {
         let model: Shared = Rc::new(RefCell::new(Model {
             title: "Germany".into(),
-            chart: Some(chart(&vec![Some(moment(20_000.0, 50_000.0)); 96], Some(0.25))),
+            chart: Some(chart(&vec![Some(moment(20_000.0, 50_000.0)); 96], Some(0.25), Palette::Standard)),
             note: "A note".into(),
         }));
         let mut ui = Ui::new();
@@ -149,7 +165,7 @@ mod tests {
         let close = DVec2::new(r.x + r.w - 6.0 - 6.0, r.y + 9.0);
         ui.press(Button::Left, close);
         let e = ui.release(Button::Left, close).event.unwrap();
-        assert!(handle(&mut ui, e));
+        assert_eq!(handle(&mut ui, e), Some(Event::Closed));
         assert!(!ui.is_visible(WINDOW));
     }
 }
