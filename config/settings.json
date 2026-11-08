@@ -10,6 +10,7 @@
   "energy_bar_width": 1.0,
   "energy_biomass": true,
   "energy_chart": true,
+  "energy_demand": true,
   "energy_detail": "auto",
   "energy_gas": true,
   "energy_hard_coal": true,

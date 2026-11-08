@@ -50,6 +50,7 @@ const TOGGLES: &[(&str, &[Toggle])] = &[
             ("Capacity bars", |s| s.energy, |s, v| s.energy = v),
             ("Output at the clock's time", |s| s.energy_output, |s, v| s.energy_output = v),
             ("Day chart of output and use", |s| s.energy_chart, |s, v| s.energy_chart = v),
+            ("Estimated use beside the bars", |s| s.energy_demand, |s, v| s.energy_demand = v),
             ("Solar", |s| s.energy_solar, |s, v| s.energy_solar = v),
             ("Wind on land", |s| s.energy_wind_onshore, |s, v| s.energy_wind_onshore = v),
             ("Wind at sea", |s| s.energy_wind_offshore, |s, v| s.energy_wind_offshore = v),

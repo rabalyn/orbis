@@ -11,7 +11,7 @@
 use crate::buildings::{BuildingMesh, BuildingVertex};
 use crate::geo::{enu, geodetic_to_ecef};
 use crate::import::{Imported, Item, Mark, Outline, Pos, Shape};
-use crate::info::Card;
+use crate::info::{Card, Meter, Meters, Segment as Part};
 use crate::sky_time::civil_from_days;
 use glam::DVec3;
 use std::collections::HashMap;
@@ -21,7 +21,7 @@ pub const SOURCES: usize = 11;
 pub const FIRST_FOSSIL: usize = 5;
 
 /// The credit while the bars are shown.
-pub const CREDIT: &str = "Plants: Marktstammdatenregister, Bundesnetzagentur, dl-de/by-2-0 (summed)\nAreas: © BKG (2026) dl-de/by-2-0 (simplified), Datenquellen: https://sgx.geodatenzentrum.de/web_public/gdz/datenquellen/datenquellen_vg_nuts.pdf";
+pub const CREDIT: &str = "Plants: Marktstammdatenregister, Bundesnetzagentur, dl-de/by-2-0 (summed)\nAreas and population: © BKG (2026) dl-de/by-2-0 (simplified, summed), Datenquellen: https://sgx.geodatenzentrum.de/web_public/gdz/datenquellen/datenquellen_vg_nuts.pdf";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -291,6 +291,8 @@ pub struct Bar {
     pub lon: f64,
     pub kw: [f32; SOURCES],
     pub subject: Subject,
+    /// The estimated demand in kW, drawn as a slim column beside the others; 0 for none.
+    pub demand: f32,
 }
 
 impl Bar {
@@ -336,6 +338,10 @@ pub struct Energy {
     km2: Vec<f64>,
     /// The density of units without a position, in kW per km², that gets the full shade.
     dense: f32,
+    /// Each area's population (states, districts and municipalities; 0 for others), and all of
+    /// Germany's; empty without the population file.
+    people: Vec<u32>,
+    people_total: f64,
 }
 
 pub fn month_of(unix: f64) -> u16 {
@@ -399,12 +405,64 @@ impl<'a> Reader<'a> {
 }
 
 const MAGIC: &[u8; 8] = b"ORBE\x01\0\0\0";
+const POPULATION_MAGIC: &[u8; 8] = b"ORBP\x01\0\0\0";
 
 impl Energy {
     /// The data built into the program.
     pub fn bundled() -> Option<&'static Energy> {
         static DATA: std::sync::OnceLock<Option<Energy>> = std::sync::OnceLock::new();
-        DATA.get_or_init(|| Energy::parse(include_bytes!("../data/energy_de.bin"))).as_ref()
+        DATA.get_or_init(|| {
+            let mut e = Energy::parse(include_bytes!("../data/energy_de.bin"))?;
+            if !e.attach_population(include_bytes!("../data/population_de.bin")) {
+                eprintln!("energy: the population file does not fit the areas; no demand is estimated");
+            }
+            Some(e)
+        })
+        .as_ref()
+    }
+
+    /// Takes in the population of the areas from `tools/gen_population.py`. Returns whether it
+    /// fits: one figure for each area before the seas and parks.
+    pub fn attach_population(&mut self, data: &[u8]) -> bool {
+        let mut r = Reader { data, at: 0 };
+        let read = |r: &mut Reader| -> Option<Vec<u32>> {
+            if r.bytes(8)? != POPULATION_MAGIC {
+                return None;
+            }
+            r.u32()?;
+            let n = r.u32()? as usize;
+            let admin = self.areas.iter().take_while(|a| a.kind == AreaKind::Admin).count();
+            if n != admin {
+                return None;
+            }
+            let mut out = vec![0; self.areas.len()];
+            for p in out.iter_mut().take(n) {
+                *p = u32::try_from(r.varint()?).ok()?;
+            }
+            Some(out)
+        };
+        let Some(people) = read(&mut r) else { return false };
+        self.people_total = self.areas.iter().zip(&people).filter(|(a, _)| a.level == Level::States).map(|(_, &p)| p as f64).sum();
+        self.people = people;
+        self.people_total > 0.0
+    }
+
+    /// The population of an area, if known.
+    pub fn people(&self, area: u32) -> Option<u32> {
+        self.people.get(area as usize).copied().filter(|&p| p > 0)
+    }
+
+    /// The estimated demand of what a bar stands for, in kW, from Germany's consumption in MW:
+    /// its share of the population. For the units of a municipality without a position, the
+    /// municipality's; nothing for sites, seas and parks, where hardly anyone lives.
+    pub fn demand_kw(&self, subject: Subject, consumption_mw: f32) -> Option<f32> {
+        let area = match subject {
+            Subject::Area(i) => i,
+            Subject::Unplaced(i) => i,
+            Subject::Site(_) => return None,
+        };
+        let p = self.people(area)?;
+        Some((consumption_mw as f64 * 1000.0 * p as f64 / self.people_total) as f32)
     }
 
     pub fn parse(data: &[u8]) -> Option<Energy> {
@@ -500,7 +558,7 @@ impl Energy {
             cells.entry(cell_of(s.lat, s.lon)).or_default().push(i as u32);
         }
         let km2 = areas.iter().map(|a| if a.level == Level::Towns { area_km2(&a.rings) } else { 0.0 }).collect();
-        let mut energy = Energy { exported, areas, sites, totals, unplaced, cells, largest: [1.0; 4], widths: [PLANT_WIDTH; 4], counts: [0; 4], km2, dense: 1.0 };
+        let mut energy = Energy { exported, areas, sites, totals, unplaced, cells, largest: [1.0; 4], widths: [PLANT_WIDTH; 4], counts: [0; 4], km2, dense: 1.0, people: Vec::new(), people_total: 0.0 };
         for level in [Level::States, Level::Districts, Level::Towns] {
             let mut sides: Vec<f64> = energy
                 .areas
@@ -548,7 +606,7 @@ impl Energy {
         if level != Level::Plants {
             for (i, a) in self.areas.iter().enumerate() {
                 if a.level == level && close(a.label.0, a.label.1) {
-                    bars.push(Bar { lat: a.label.0, lon: a.label.1, kw: pick(&self.totals[i]), subject: Subject::Area(i as u32) });
+                    bars.push(Bar { lat: a.label.0, lon: a.label.1, kw: pick(&self.totals[i]), subject: Subject::Area(i as u32), demand: 0.0 });
                 }
             }
         } else {
@@ -558,7 +616,7 @@ impl Energy {
                 if shown[s.source as usize] && close(s.lat, s.lon) {
                     let mut kw = [0.0; SOURCES];
                     kw[s.source as usize] = s.kw(month);
-                    bars.push(Bar { lat: s.lat, lon: s.lon, kw, subject: Subject::Site(i) });
+                    bars.push(Bar { lat: s.lat, lon: s.lon, kw, subject: Subject::Site(i), demand: 0.0 });
                 }
             };
             match near {
@@ -580,7 +638,7 @@ impl Energy {
         if level >= Level::Towns {
             for (i, a) in self.areas.iter().enumerate() {
                 if a.level == Level::Districts && a.kind == AreaKind::Admin && close(a.label.0, a.label.1) {
-                    bars.push(Bar { lat: a.label.0, lon: a.label.1, kw: pick(&self.unplaced[i]), subject: Subject::Unplaced(i as u32) });
+                    bars.push(Bar { lat: a.label.0, lon: a.label.1, kw: pick(&self.unplaced[i]), subject: Subject::Unplaced(i as u32), demand: 0.0 });
                 }
             }
         }
@@ -757,58 +815,91 @@ impl Energy {
         }
     }
 
-    /// What the information box says about a bar: the gist, the figures by source, then what
-    /// the bar stands for and how far to trust the figures. With `output`, the estimated output
-    /// at a time (the shares of capacity running, and the time as text) beside the capacity.
-    pub fn describe(&self, subject: Subject, month: u16, shown: [bool; SOURCES], output: Option<(&[f32; SOURCES], &str)>) -> Card {
+    /// What the information box says about a bar: the gist, bars that compare what is installed,
+    /// what runs and what is used, one bar per source, then what the bar stands for and how far
+    /// to trust the figures. With `output`, the estimated output at a time beside the capacity.
+    pub fn describe(&self, subject: Subject, month: u16, shown: [bool; SOURCES], palette: Palette, output: Option<At<'_>>) -> Card {
         let mut card = Card::default();
-        let (mut renewable, mut fossil, mut running) = (0.0f32, 0.0f32, 0.0f32);
-        let mut largest: Option<(Source, f32)> = None;
-        for s in Source::ALL.into_iter().filter(|s| shown[*s as usize]) {
-            let kw = self.subject_kw(subject, s, month);
-            if kw <= 0.0 {
-                continue;
-            }
-            let value = match output {
-                Some((shares, _)) => {
-                    let out = kw * shares[s as usize].clamp(0.0, 1.0);
-                    running += out;
-                    format!("{} of {}", format_power(out), format_power(kw))
-                }
-                None => format_power(kw),
-            };
-            card.facts.push((s.name().to_string(), value));
-            if s.fossil() {
-                fossil += kw;
-            } else {
-                renewable += kw;
-            }
-            if largest.is_none_or(|l| kw > l.1) {
-                largest = Some((s, kw));
-            }
-        }
+        let share = |s: Source| output.map_or(1.0, |o| o.shares[s as usize].clamp(0.0, 1.0));
+        let rows: Vec<(Source, f32)> = Source::ALL
+            .into_iter()
+            .filter(|s| shown[*s as usize])
+            .map(|s| (s, self.subject_kw(subject, s, month)))
+            .filter(|&(_, kw)| kw > 0.0)
+            .collect();
+        let renewable: f32 = rows.iter().filter(|r| !r.0.fossil()).map(|r| r.1).sum();
+        let fossil: f32 = rows.iter().filter(|r| r.0.fossil()).map(|r| r.1).sum();
+        let running: f32 = rows.iter().map(|&(s, kw)| kw * share(s)).sum();
         let total = renewable + fossil;
-        let pct = |part: f32| 100.0 * part / total.max(1e-6);
-        if total > 0.0 {
-            card.facts.push((String::new(), String::new()));
-            card.facts.push(("Renewable".to_string(), format!("{} ({:.0}%)", format_power(renewable), pct(renewable))));
-            card.facts.push(("Fossil, nuclear".to_string(), format!("{} ({:.0}%)", format_power(fossil), pct(fossil))));
-        }
-        let main = largest.map_or(String::new(), |(s, kw)| format!(" Largest: {} ({:.0}%).", s.name().to_lowercase(), pct(kw)));
+        let pct = |part: f32, of: f32| 100.0 * part / of.max(1e-6);
+        let largest = rows.iter().copied().max_by(|a, b| a.1.total_cmp(&b.1));
+        let demand = output.and_then(|o| self.demand_kw(subject, o.consumption_mw));
+        let main = largest.map_or(String::new(), |(s, kw)| format!(" Largest: {} ({:.0}%).", s.name().to_lowercase(), pct(kw, total)));
         card.summary = match (total > 0.0, output) {
             (false, _) => format!("No capacity of the shown sources in {}.", month_name(month)),
-            (true, Some((_, when))) => format!(
-                "About {} running at {when}, of {} installed ({:.0}%).{main}",
-                format_power(running),
-                format_power(total),
-                pct(running)
-            ),
-            (true, None) => format!("{} installed in {}, {:.0}% renewable.{main}", format_power(total), month_name(month), pct(renewable)),
+            (true, Some(o)) => format!("About {} running at {}, of {} installed ({:.0}%).{main}", format_power(running), o.when, format_power(total), pct(running, total)),
+            (true, None) => format!("{} installed in {}, {:.0}% renewable.{main}", format_power(total), month_name(month), pct(renewable, total)),
         };
+        let colour = |s: Source| palette.colour(s);
+        if total > 0.0 {
+            // Installed, running and used on one scale.
+            let installed: Vec<Part> = rows.iter().map(|&(s, kw)| Part { alpha: 150, hatched: s.fossil(), ..Part::solid(kw, colour(s)) }).collect();
+            let mut group = Meters { title: String::new(), max: total.max(demand.unwrap_or(0.0)), rows: Vec::new(), caption: String::new() };
+            group.rows.push(Meter { label: "Installed".to_string(), segments: installed, text: format_power(total) });
+            if output.is_some() {
+                let ran: Vec<Part> = rows.iter().map(|&(s, kw)| Part { hatched: s.fossil(), ..Part::solid(kw * share(s), colour(s)) }).collect();
+                group.rows.push(Meter { label: "Running".to_string(), segments: ran, text: format_power(running) });
+            }
+            if let Some(d) = demand {
+                let label = if matches!(subject, Subject::Unplaced(_)) { "Town's use" } else { "Use (est.)" };
+                group.rows.push(Meter { label: label.to_string(), segments: vec![Part { ink: true, ..Part::solid(d, DEMAND) }], text: format!("\u{2248} {}", format_power(d)) });
+            }
+            group.caption = format!("{:.0}% renewable, {:.0}% fossil or nuclear installed", pct(renewable, total), pct(fossil, total));
+            if let Some(d) = demand.filter(|&d| d > 0.0) {
+                group.caption.push_str(&format!("; running covers {:.0}% of the use", pct(running, d)));
+            }
+            card.meters.push(group);
+            // Each source on its own: output solid, the rest of its capacity faint.
+            if rows.len() > 1 || output.is_some() {
+                let mut by_source = Meters { title: "By source".to_string(), max: largest.map_or(1.0, |l| l.1), rows: Vec::new(), caption: String::new() };
+                for &(s, kw) in &rows {
+                    let out = kw * share(s);
+                    let mut segments = vec![Part { hatched: s.fossil(), ..Part::solid(out, colour(s)) }];
+                    let text = if output.is_some() {
+                        segments.push(Part { alpha: 60, ..Part::solid(kw - out, colour(s)) });
+                        format!("{} of {}", format_power(out), format_power(kw))
+                    } else {
+                        format_power(kw)
+                    };
+                    by_source.rows.push(Meter { label: s.name().to_string(), segments, text });
+                }
+                if output.is_some() {
+                    by_source.caption = "Solid: running now. Faint: the rest of what is installed.".to_string();
+                }
+                card.meters.push(by_source);
+            }
+        }
+        let area = match subject {
+            Subject::Area(i) | Subject::Unplaced(i) => Some(i),
+            Subject::Site(_) => None,
+        };
+        if let Some(p) = area.and_then(|i| self.people(i)) {
+            card.facts.push(("Population".to_string(), group_thousands(p)));
+        }
         match subject {
             Subject::Unplaced(i) if self.areas[i as usize].level != Level::Districts => {
+                let d = self.unplaced_density(i, month, shown).unwrap_or(0.0);
                 card.facts.push(("Area".to_string(), format!("{:.1} km²", self.km2[i as usize])));
-                card.facts.push(("Per km²".to_string(), format_power(self.unplaced_density(i, month, shown).unwrap_or(0.0))));
+                card.meters.push(Meters {
+                    title: "Shade on the map".to_string(),
+                    max: self.dense,
+                    rows: vec![Meter {
+                        label: "Per km²".to_string(),
+                        segments: vec![Part::solid(d.min(self.dense), [255, 80, 200])],
+                        text: format!("{} ({:.0}%)", format_power(d), pct(d, self.dense)),
+                    }],
+                    caption: format!("Full shade at {} per km².", format_power(self.dense)),
+                });
             }
             Subject::Site(i) => card.facts.push(("Units running".to_string(), self.sites[i as usize].running(month).to_string())),
             _ => {}
@@ -822,14 +913,17 @@ impl Energy {
             Subject::Unplaced(i) if self.areas[i as usize].level == Level::Districts => {
                 "Units the register gives only by district, mostly large power plants: one bar for the district, outlined in orange.".to_string()
             }
-            Subject::Unplaced(_) => format!(
-                "Units without a published position, mostly private rooftop solar. They shade the municipality instead of standing as a bar, fully at {} per km².",
-                format_power(self.dense)
-            ),
+            Subject::Unplaced(_) => "Units without a published position, mostly private rooftop solar. They shade the municipality instead of standing as a bar.".to_string(),
             Subject::Site(_) => "Units of one source at one published position.".to_string(),
         });
         if output.is_some() {
             card.notes.push("Output is estimated: Germany's output of each source (SMARD) shared out by capacity.".to_string());
+        }
+        if demand.is_some() {
+            card.notes.push(
+                "Use is estimated: Germany's consumption (SMARD) shared out by population (BKG, end of 2025). Industry, about 45% of the total, sits where the factories are, so places with much industry use more than shown."
+                    .to_string(),
+            );
         }
         card.notes.push(format!(
             "Marktstammdatenregister, {}-{:02}-{:02}: net power of units in operation.",
@@ -837,6 +931,28 @@ impl Energy {
         ));
         card
     }
+}
+
+/// The moment the information box tells about: the share of each source's capacity running,
+/// the time in words, and Germany's consumption then in MW.
+#[derive(Clone, Copy, Debug)]
+pub struct At<'a> {
+    pub shares: &'a [f32; SOURCES],
+    pub when: &'a str,
+    pub consumption_mw: f32,
+}
+
+/// A count with thin spaces between thousands.
+pub fn group_thousands(n: u32) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push('\u{2009}');
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn level_noun(level: Level) -> &'static str {
@@ -1124,11 +1240,25 @@ pub fn mesh(bars: &[Bar], scale: Scale, center: DVec3, ground: &dyn Fn(f64, f64)
             let dash = (n == 1).then_some(width * 0.6);
             column(&mut out, &mut ghost, base + shift, (east, north, up), sides, width, scale.width * 0.3, &segments, dash);
         }
+        // The estimated demand: a slim column west of the others, in the colour of the day
+        // chart's consumption line.
+        if bar.demand > 0.0 {
+            let left = if both { -1.05 } else { -0.5 } * width;
+            let slim = width * DEMAND_WIDTH;
+            let shift = east * (left - width * 0.12 - slim / 2.0);
+            let seg = [Segment { colour: DEMAND, alpha: 255, height: bar.demand as f64 * scale.per_kw }];
+            column(&mut out, &mut ghost, base + shift, (east, north, up), 4, slim, scale.width * 0.3, &seg, None);
+        }
     }
     let solid = out.indices.len() as u32;
     out.indices.extend(ghost);
     BarMesh { mesh: out, solid }
 }
+
+/// The colour of the demand column.
+pub const DEMAND: [u8; 3] = [246, 246, 250];
+/// The demand column's width, as a share of the others'.
+const DEMAND_WIDTH: f64 = 0.45;
 
 /// A part of a column: its colour, opacity (255 solid) and height in metres.
 #[derive(Clone, Copy, Debug)]
@@ -1222,9 +1352,11 @@ pub fn hit(bars: &[Bar], scale: Scale, ground: &dyn Fn(f64, f64) -> f64, project
     for bar in bars {
         let up = enu(bar.lat, bar.lon).2;
         let base = geodetic_to_ecef(bar.lat, bar.lon, ground(bar.lat, bar.lon));
-        let top = base + up * (bar.height() as f64 * scale.per_kw);
+        let top = base + up * (bar.height().max(bar.demand) as f64 * scale.per_kw);
         let (Some(b), Some(t)) = (project(base), project(top)) else { continue };
-        let half = project(base + enu(bar.lat, bar.lon).0 * scale.width / 2.0).map_or(4.0, |e| (e - b).length()).max(4.0) + 2.0;
+        // A bar with demand beside it is wider: the demand column stands west of the others.
+        let reach = if bar.demand > 0.0 { 1.8 } else { 0.5 };
+        let half = project(base + enu(bar.lat, bar.lon).0 * scale.width * reach).map_or(4.0, |e| (e - b).length()).max(4.0) + 2.0;
         // Distance from the point to the bar's axis on screen, and how far along it lies.
         let axis = t - b;
         let len = axis.length().max(1e-6);
@@ -1337,17 +1469,70 @@ pub(crate) mod tests {
         assert_eq!(e.town_at(48.3f64.to_radians(), 11.1f64.to_radians()), Some(2));
         assert_eq!(e.town_at(48.1f64.to_radians(), 11.1f64.to_radians()), Some(3));
         assert_eq!(e.town_at(47.0f64.to_radians(), 11.1f64.to_radians()), None);
-        let card = e.describe(Subject::Area(1), 115 * 12, all, None);
-        assert!(card.facts.contains(&("Wind on land".to_string(), "3.0 MW".to_string())), "{card:?}");
+        let card = e.describe(Subject::Area(1), 115 * 12, all, Palette::Standard, None);
+        let row = |card: &Card, group: &str, label: &str| card.meters.iter().find(|g| g.title == group).and_then(|g| g.rows.iter().find(|r| r.label == label)).map(|r| r.text.clone());
+        assert_eq!(row(&card, "By source", "Wind on land").as_deref(), Some("3.0 MW"), "{card:?}");
+        assert_eq!(row(&card, "", "Installed").as_deref(), Some("903.0 MW"));
+        assert!(card.meters[0].caption.starts_with("0% renewable, 100% fossil"), "{}", card.meters[0].caption);
         assert!(card.summary.starts_with("903.0 MW installed in January 2015, 0% renewable. Largest: lignite"), "{}", card.summary);
         let mut shares = [0.0; SOURCES];
         shares[1] = 0.5;
-        let card = e.describe(Subject::Area(1), 115 * 12, all, Some((&shares, "12:00 UTC")));
-        assert!(card.facts.contains(&("Wind on land".to_string(), "1.5 MW of 3.0 MW".to_string())), "{card:?}");
+        let at = At { shares: &shares, when: "12:00 UTC", consumption_mw: 60_000.0 };
+        let card = e.describe(Subject::Area(1), 115 * 12, all, Palette::Standard, Some(at));
+        assert_eq!(row(&card, "By source", "Wind on land").as_deref(), Some("1.5 MW of 3.0 MW"), "{card:?}");
+        assert_eq!(row(&card, "", "Running").as_deref(), Some("1.5 MW"));
+        assert_eq!(row(&card, "", "Use (est.)"), None, "no population, no demand");
         assert!(card.summary.starts_with("About 1.5 MW running at 12:00 UTC, of 903.0 MW installed (0%)"), "{}", card.summary);
         assert!(card.notes.iter().any(|n| n.contains("estimated")));
         assert_eq!(e.national(115 * 12)[1], 3000.0);
         assert_eq!(e.subject_title(Subject::Area(3)), "Süd, Kreis, Land");
+    }
+
+    /// A population file as `gen_population.py` writes it, for the sample's four areas.
+    fn population(people: &[i64]) -> Vec<u8> {
+        let mut out = POPULATION_MAGIC.to_vec();
+        out.extend(20251231u32.to_le_bytes());
+        out.extend((people.len() as u32).to_le_bytes());
+        for &p in people {
+            varint(&mut out, p);
+        }
+        out
+    }
+
+    #[test]
+    fn demand_is_germanys_consumption_shared_by_population() {
+        let mut e = Energy::parse(&sample()).unwrap();
+        assert!(!e.attach_population(&population(&[100, 100, 60])), "one area short");
+        assert!(!e.attach_population(b"nonsense"));
+        assert_eq!(e.demand_kw(Subject::Area(0), 1000.0), None);
+        assert!(e.attach_population(&population(&[1000, 1000, 600, 400])));
+        // 1 GW for 1000 people: the state uses all of it, "Nord" with 600 people 60%.
+        assert_eq!(e.demand_kw(Subject::Area(0), 1000.0), Some(1_000_000.0));
+        assert_eq!(e.demand_kw(Subject::Area(2), 1000.0), Some(600_000.0));
+        assert_eq!(e.demand_kw(Subject::Unplaced(2), 1000.0), Some(600_000.0), "the municipality's");
+        assert_eq!(e.demand_kw(Subject::Site(0), 1000.0), None);
+        let shares = [0.5; SOURCES];
+        let at = At { shares: &shares, when: "12:00 UTC", consumption_mw: 1.0 };
+        let card = e.describe(Subject::Area(2), 126 * 12, [true; SOURCES], Palette::Standard, Some(at));
+        let first = &card.meters[0];
+        let used = first.rows.iter().find(|r| r.label == "Use (est.)").unwrap();
+        assert_eq!(used.text, "\u{2248} 600 kW");
+        assert!(used.segments[0].ink);
+        assert_eq!(first.max, 600.0, "the scale holds the demand, larger than the 15 kW installed");
+        assert!(first.caption.contains("running covers 1% of the use"), "{}", first.caption);
+        assert!(card.facts.contains(&("Population".to_string(), "600".to_string())));
+        assert_eq!(group_thousands(83_467_117), "83\u{2009}467\u{2009}117");
+    }
+
+    #[test]
+    fn the_bundled_population_fits_the_bundled_areas() {
+        let e = Energy::bundled().unwrap();
+        let total = e.people_total;
+        assert!((80e6..90e6).contains(&total), "{total}");
+        // Germany at 50 GW: Berlin, with about 3.9 million people, some 2.3 GW.
+        let berlin = e.areas.iter().position(|a| a.level == Level::States && a.name == "Berlin").unwrap() as u32;
+        let gw = e.demand_kw(Subject::Area(berlin), 50_000.0).unwrap() / 1e6;
+        assert!((2.0..2.6).contains(&gw), "{gw}");
     }
 
     #[test]
@@ -1407,7 +1592,7 @@ pub(crate) mod tests {
         let mut kw = [0.0; SOURCES];
         kw[Source::Solar as usize] = 100.0;
         kw[Source::Gas as usize] = 100.0;
-        let bar = Bar { lat: 0.8, lon: 0.2, kw, subject: Subject::Area(0) };
+        let bar = Bar { lat: 0.8, lon: 0.2, kw, subject: Subject::Area(0), demand: 0.0 };
         let scale = Scale { width: 10.0, per_kw: 1.0 };
         let m = mesh(&[bar], scale, geodetic_to_ecef(0.8, 0.2, 0.0), &|_, _| 0.0, None, &Style::default()).mesh;
         // Each colour comes in one shade of wall per height; the dark bands give gas a second set.
@@ -1422,6 +1607,26 @@ pub(crate) mod tests {
         // A gas column 100 m tall in bands of 6 m: about 17 bands, half of them dark.
         assert!(gas > solar * 5, "solar {solar} shades, gas {gas}");
         assert!(m.indices.iter().all(|&i| (i as usize) < m.vertices.len()));
+    }
+
+    #[test]
+    fn demand_stands_slim_and_west_of_the_columns() {
+        let mut kw = [0.0; SOURCES];
+        kw[Source::Solar as usize] = 100.0;
+        kw[Source::Gas as usize] = 100.0;
+        let bar = Bar { lat: 0.8, lon: 0.2, kw, subject: Subject::Area(0), demand: 300.0 };
+        let scale = Scale { width: 10.0, per_kw: 1.0 };
+        let center = geodetic_to_ecef(0.8, 0.2, 0.0);
+        let m = mesh(&[bar], scale, center, &|_, _| 0.0, None, &Style::default()).mesh;
+        let (east, _, up) = enu(0.8, 0.2);
+        let demand: Vec<glam::DVec3> = m.vertices.iter().filter(|v| v.colour[..3] == [DEMAND[0], DEMAND[1], DEMAND[2]] || v.colour[0] > 240 && v.colour[1] > 240 && v.colour[2] > 240).map(|v| glam::Vec3::from_array(v.pos).as_dvec3()).collect();
+        assert!(!demand.is_empty());
+        let top = demand.iter().map(|p| p.dot(up)).fold(f64::MIN, f64::max);
+        assert!((top - 300.0).abs() < 1.0, "300 kW at 1 m per kW: {top}");
+        // West of the solar column, whose west side is at -10.5 m, and 4.5 m wide.
+        let xs: Vec<f64> = demand.iter().map(|p| p.dot(east)).collect();
+        let (lo, hi) = (xs.iter().cloned().fold(f64::MAX, f64::min), xs.iter().cloned().fold(f64::MIN, f64::max));
+        assert!(hi < -10.5 && (hi - lo - 4.5).abs() < 0.1, "{lo}..{hi}");
     }
 
     #[test]

@@ -526,7 +526,14 @@ never confused:
 - Output per bar is estimated: Germany's output of a source is shared out by capacity, so every bar of a source runs at the
   same share of its capacity, capped at its full capacity. SMARD reports oil and other fossil fuels together; they share one
   share. Nuclear, which SMARD no longer lists since the last plants shut down in 2023, counts as zero.
-- A click on a bar gives each source's output and capacity.
+- A click on a bar opens a box that draws the figures as bars: installed, running and estimated use on one scale (with the
+  renewable share and how much of the use the running output covers), then one bar per source with its output solid and the
+  rest of its capacity faint, fossil and nuclear hatched as in the day chart. For a municipality's units without a position a
+  further bar shows its shade on the map against the full shade. The exact figures stand beside each bar.
+- **Estimated use**: beside the bar of each state, district and municipality stands a slim white column, its estimated
+  consumption at the clock's quarter hour on the same scale as the bars, so that a glance shows where more is generated than
+  used and where less. It is Germany's consumption shared out by population. Clicking units without a position gives their
+  municipality's use for comparison. "Estimated use beside the bars" in the view options turns the columns off.
 - A **day chart** at the top left shows the clock's day (UTC) for Germany: generation stacked by source (steady sources at the
   bottom, wind and sun on top), consumption as a white line and the clock as a yellow marker that moves with it. Where the areas
   rise above the line there is a surplus, where the line rises above them a shortfall. It shows while the bars show output; its
@@ -550,13 +557,19 @@ never confused:
   7.5 GW, other fossil 6.3 GW, nuclear none.
 - The file is about 11 MB, so the program is that much larger. Building it takes the 3 GB export, VG250 and about 20 seconds:
   `tools/gen_energy.py Gesamtdatenexport_YYYYMMDD_*.zip vg250_ebenen_0101/ data/energy_de.bin`.
+- Population per area (83.5 million at 31 December 2025) comes from BKG's VG250-EW. `tools/gen_population.py` sums it over
+  the areas of `data/energy_de.bin`, placing the 11 municipalities merged at New Year by position, into
+  `data/population_de.bin` (25 KB, bundled): `tools/gen_population.py vg250_ebenen_0101/ vg250-ew_ebenen_1231/
+  data/energy_de.bin data/population_de.bin`. Rebuild it whenever `energy_de.bin` is rebuilt; without a match the program
+  shows no use.
 
 ### Limitations
 - Planned units are left out.
 - Output is estimated from national figures, not measured per plant or region: a sunny south and a cloudy north show the same
   share of solar running. Generation for owners' own use (much rooftop solar, industrial plants) is not in SMARD's public net
-  generation, so shares run low for those sources. No regional consumption is published, so consumption is shown for Germany
-  only.
+  generation, so shares run low for those sources. No regional consumption is published, so use per area is Germany's
+  shared out by population: industry, about 45% of the total, sits where the factories are, so industrial districts use more
+  than shown and residential ones less.
 - Germany only, and no bars on the flat map (the outlines do show there).
 - A unit whose published position lies outside its municipality is counted with the units without a position.
 - Municipalities are those of 1 January 2026; a unit is placed by the key the register gives it, and by its position where the

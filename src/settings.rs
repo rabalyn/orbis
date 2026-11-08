@@ -194,6 +194,8 @@ settings! {
     energy_output: bool = true, "energy_output";
     /// A chart of the clock's day of generation and consumption, while the bars show output.
     energy_chart: bool = true, "energy_chart";
+    /// Beside each area's bar, its estimated demand: Germany's consumption shared out by population.
+    energy_demand: bool = true, "energy_demand";
     energy_solar: bool = true, "energy_solar";
     energy_wind_onshore: bool = true, "energy_wind_onshore";
     energy_wind_offshore: bool = true, "energy_wind_offshore";

@@ -2040,7 +2040,8 @@ impl Scene {
         let reach = (self.nav.altitude * 6.0 / geo::radius()).clamp(0.02, std::f64::consts::PI);
         let step = reach / 10.0;
         let centre = ((cam.lat / step).round() as i64, (cam.lon / step).round() as i64);
-        let quarter = self.energy.power.shown.as_ref().map(|m| m.0.time as i64);
+        // The quarter hour shown, and whether demand stands beside the bars.
+        let quarter = self.energy.power.shown.as_ref().map(|m| (m.0.time as i64) * 2 + self.view.energy_demand as i64);
         let key = (level, month, shown, centre, r.tile_count(), quarter);
         let rescaled = self.energy.scale.is_none_or(|s| (s.per_kw / scale.per_kw - 1.0).abs() > 0.03);
         let same_but_terrain = self.energy.built_from.is_some_and(|b| (b.0, b.1, b.2, b.3, b.5) == (key.0, key.1, key.2, key.3, key.5));
@@ -2053,6 +2054,13 @@ impl Scene {
             _ => Some((cam.lat, cam.lon, reach)),
         };
         self.energy.bars = data.bars(level, month, shown, near);
+        // Beside the bars of states, districts and municipalities, their estimated demand.
+        if let (Some((m, _)), true) = (&self.energy.power.shown, self.view.energy_demand) {
+            let consumption = m.consumption();
+            for b in self.energy.bars.iter_mut().filter(|b| matches!(b.subject, energy::Subject::Area(_))) {
+                b.demand = data.demand_kw(b.subject, consumption).unwrap_or(0.0);
+            }
+        }
         let ground = |lat: f64, lon: f64| r.ground(lat, lon).unwrap_or(0.0);
         let shares = self.energy.power.shown.as_ref().map(|m| m.1);
         let bars = energy::mesh(&self.energy.bars, scale, geo::geodetic_to_ecef(cam.lat, cam.lon, 0.0), &ground, shares.as_ref(), &style);
@@ -2207,8 +2215,9 @@ impl Scene {
             title: data.subject_title(subject),
             at,
             content: info::Content::Facts({
-                let when = self.energy.power.shown.as_ref().map(|(m, sh)| (sh, sky_time::format_utc(m.time, false)[11..16].to_string() + " UTC"));
-                data.describe(subject, month, self.energy_sources(), when.as_ref().map(|(sh, w)| (*sh, w.as_str())))
+                let when = self.energy.power.shown.as_ref().map(|(m, sh)| (sh, sky_time::format_utc(m.time, false)[11..16].to_string() + " UTC", m.consumption()));
+                let at = when.as_ref().map(|(sh, w, c)| energy::At { shares: sh, when: w.as_str(), consumption_mw: *c });
+                data.describe(subject, month, self.energy_sources(), self.view.energy_palette, at)
             }),
             note: None,
         };
@@ -2226,6 +2235,8 @@ impl Scene {
         let mut notes = Vec::new();
         if level == energy::Level::Plants {
             notes.push(format!("Shade: units without a position, full at {}/km²", energy::format_power(data.dense())));
+        } else if self.view.energy_demand && self.energy.power.shown.is_some() {
+            notes.push("White column: estimated use, Germany's consumption shared out by population".to_string());
         }
         Some(energy_panel::Model {
             detail: self.view.energy_detail,

@@ -29,6 +29,90 @@ pub struct Card {
     pub facts: Vec<(String, String)>,
     /// Short paragraphs, in grey.
     pub notes: Vec<String>,
+    /// Groups of bars drawn between the summary and the facts.
+    pub meters: Vec<Meters>,
+}
+
+/// Bars on one common scale under a small heading: each a label, a bar of stacked segments and a
+/// figure, with a line of explanation below.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Meters {
+    pub title: String,
+    /// The value that fills a whole bar.
+    pub max: f32,
+    pub rows: Vec<Meter>,
+    pub caption: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Meter {
+    pub label: String,
+    pub segments: Vec<Segment>,
+    pub text: String,
+}
+
+/// A part of a bar, in the units of [`Meters::max`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Segment {
+    pub value: f32,
+    pub colour: [u8; 3],
+    /// 255 is solid.
+    pub alpha: u8,
+    pub hatched: bool,
+    /// Drawn in the text's colour instead of `colour`, as lines in charts are.
+    pub ink: bool,
+}
+
+impl Segment {
+    pub fn solid(value: f32, colour: [u8; 3]) -> Segment {
+        Segment { value, colour, alpha: 255, hatched: false, ink: false }
+    }
+}
+
+/// The groups of bars, as [`Card::meters`] holds them.
+fn meters(ui: &mut egui::Ui, groups: &[Meters]) {
+    const LABEL: f32 = 92.0;
+    const ROW: f32 = 18.0;
+    let font = egui::FontId::proportional(12.5);
+    for g in groups {
+        // The figures' column is as wide as its longest figure.
+        let text = g.rows.iter().map(|m| ui.painter().layout_no_wrap(m.text.clone(), font.clone(), egui::Color32::WHITE).size().x).fold(0.0f32, f32::max) + 10.0;
+        ui.add_space(6.0);
+        if !g.title.is_empty() {
+            ui.label(egui::RichText::new(&g.title).color(gui::accent()));
+        }
+        for m in &g.rows {
+            let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW), egui::Sense::hover());
+            let v = ui.visuals();
+            let (ink, weak) = (v.text_color(), v.weak_text_color());
+            let p = ui.painter();
+            p.text(egui::pos2(row.left(), row.center().y), egui::Align2::LEFT_CENTER, &m.label, font.clone(), weak);
+            p.text(egui::pos2(row.right(), row.center().y), egui::Align2::RIGHT_CENTER, &m.text, font.clone(), ink);
+            let track = egui::Rect::from_min_max(egui::pos2(row.left() + LABEL, row.top() + 3.0), egui::pos2((row.right() - text).max(row.left() + LABEL + 20.0), row.bottom() - 3.0));
+            p.rect_filled(track, 2.0, v.extreme_bg_color);
+            let mut x = track.left();
+            for s in &m.segments {
+                if s.value <= 0.0 || g.max <= 0.0 {
+                    continue;
+                }
+                // Something present never vanishes, however small next to the rest.
+                let w = (s.value / g.max * track.width()).max(2.0).min(track.right() - x);
+                if w <= 0.0 {
+                    break;
+                }
+                let r = egui::Rect::from_min_max(egui::pos2(x, track.top()), egui::pos2(x + w, track.bottom()));
+                let c = if s.ink { ink } else { egui::Color32::from_rgb(s.colour[0], s.colour[1], s.colour[2]) };
+                p.rect_filled(r, 0.0, c.gamma_multiply(s.alpha as f32 / 255.0));
+                if s.hatched {
+                    gui::hatch(&p.with_clip_rect(r), r, s.colour);
+                }
+                x += w;
+            }
+        }
+        if !g.caption.is_empty() {
+            gui::note(ui, &g.caption);
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -176,8 +260,11 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> (bool, Option<Acti
                     }
                     Content::Facts(card) => {
                         ui.add(egui::Label::new(egui::RichText::new(&card.summary).strong()).wrap());
-                        ui.add_space(4.0);
-                        facts(ui, &card.facts);
+                        meters(ui, &card.meters);
+                        if !card.facts.is_empty() {
+                            ui.add_space(6.0);
+                            facts(ui, &card.facts);
+                        }
                         for note in &card.notes {
                             ui.add_space(4.0);
                             gui::note(ui, note);
