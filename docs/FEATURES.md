@@ -82,8 +82,10 @@ agree and the view may come down to 2 m. Loading never lowers the camera, it onl
 
 - A WGS84 globe from whole-Earth view down to street scale, with satellite imagery on real terrain.
   `--exaggeration N` scales the terrain's height.
-- Detail loads progressively. A coarse tile stays visible until all of its finer replacements are ready, so the
-  view never shows holes while loading.
+- Detail loads progressively. A coarse tile stays visible until all of its finer replacements are ready, so
+  zooming in shows no holes while loading. A coarse tile stands in for at most two levels of detail: where a
+  part of the view has nothing loaded yet, such as country that tilting up brings in at the horizon, that part
+  stays open for the moment it takes to load, and the detail elsewhere stays.
 - Where the terrain service has no tile at a zoom level, the nearest coarser terrain tile is used.
 - Imagery is Sentinel-2 at 10 m per pixel worldwide, with sharper aerial photos near the ground where national
   services offer them (see [CACHING.md](CACHING.md)).

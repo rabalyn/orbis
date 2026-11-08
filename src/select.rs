@@ -12,6 +12,11 @@ const TERRAIN_MARGIN: f64 = 9_000.0;
 /// Pixels per texel above which a tile is split.
 const REFINE_ABOVE: f64 = 1.25;
 pub const TILE_TEXELS: f64 = 256.0;
+/// The most zoom levels a loaded tile may give up when it stands in for children that cannot
+/// all be drawn yet. Beyond this the finer tiles stay and the missing part is left open until
+/// it arrives: one tile not yet loaded at the horizon must not swap the detail under the camera
+/// for a tile of the whole continent.
+const MAX_STAND_IN: u8 = 2;
 
 pub struct View {
     pub basis: Basis,
@@ -26,6 +31,15 @@ pub struct Selection {
     pub draw: Vec<TileKey>,
     /// Tiles that are not loaded yet, most urgent first.
     pub wanted: Vec<TileKey>,
+}
+
+/// How much of a tile's area the tiles added for it cover.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Cover {
+    Full,
+    /// Some is drawn, and the rest waits for tiles still loading.
+    Part,
+    Nothing,
 }
 
 /// Tiles already drawn, and their ancestors.
@@ -188,37 +202,46 @@ impl View {
         }
     }
 
-    /// Returns whether the area of `k` is fully covered by tiles added to `draw`. A tile
-    /// is replaced only once all its visible children can be drawn, so nothing leaves a hole.
+    /// Adds the tiles to draw for the area of `k` and says how much of it they cover. A tile
+    /// is replaced only once all its visible children can be drawn, so that zooming in leaves no
+    /// holes, unless standing in for them would give up more than `MAX_STAND_IN` levels.
     fn visit(
         &self,
         k: TileKey,
         loaded: &impl Fn(TileKey) -> bool,
         draw: &mut Vec<TileKey>,
         wanted: &mut Vec<(u8, f64, TileKey)>,
-    ) -> bool {
+    ) -> Cover {
         let s = samples(k);
         if !self.visible(k, &s) {
-            return true;
+            return Cover::Full;
         }
         let (dist, pixels) = self.measure(k, &s);
+        let mark = draw.len();
         if k.z < (self.max_z)(k) && (k.z < 2 || pixels > REFINE_ABOVE) {
-            let mark = draw.len();
             let mut covered = true;
             for c in k.children() {
-                covered &= self.visit(c, loaded, draw, wanted);
+                covered &= self.visit(c, loaded, draw, wanted) == Cover::Full;
             }
             if covered {
-                return true;
+                return Cover::Full;
             }
-            draw.truncate(mark);
+            let finest = draw[mark..].iter().map(|t| t.z).max().unwrap_or(k.z);
+            if loaded(k) && finest <= k.z + MAX_STAND_IN {
+                draw.truncate(mark);
+            } else if !loaded(k) || draw.len() > mark {
+                if !loaded(k) {
+                    wanted.push((k.z, dist, k));
+                }
+                return if draw.len() > mark { Cover::Part } else { Cover::Nothing };
+            }
         }
         if loaded(k) {
             draw.push(k);
-            true
+            Cover::Full
         } else {
             wanted.push((k.z, dist, k));
-            false
+            Cover::Nothing
         }
     }
 }
@@ -318,6 +341,46 @@ mod tests {
         let s = v.select(&|k| k == parent);
         assert_eq!(s.draw, vec![parent]);
         assert!(!s.wanted.is_empty());
+    }
+
+    #[test]
+    fn a_missing_tile_at_the_horizon_keeps_the_detail_under_the_camera() {
+        let v = view(3_000.0, 1.3);
+        let settled = settle(&v);
+        let at = TileKey::containing(0.82, 0.2, 16);
+        let finest = |draw: &[TileKey]| draw.iter().find(|k| at.ancestor(k.z) == **k).map(|k| k.z);
+        let before = finest(&settled.draw).unwrap();
+        // The drawn tile farthest from the view point is gone, with all its ancestors below
+        // zoom 2, as when tilting up shows country never loaded.
+        let far = *settled.draw.iter().max_by_key(|k| k.x.abs_diff(at.ancestor(k.z).x) + k.y.abs_diff(at.ancestor(k.z).y)).unwrap();
+        let gone: HashSet<TileKey> = (2..=far.z).map(|z| far.ancestor(z)).collect();
+        let mut have: HashSet<TileKey> = settled.draw.iter().copied().collect();
+        for k in &settled.draw {
+            have.extend((0..k.z).map(|z| k.ancestor(z)));
+        }
+        have.retain(|k| !gone.contains(k));
+        let s = v.select(&|k| have.contains(&k));
+        assert_eq!(finest(&s.draw), Some(before), "the view point lost its detail");
+        assert!(s.wanted.contains(&far.ancestor(2)), "the missing part is asked for, coarsest first");
+        for (i, a) in s.draw.iter().enumerate() {
+            assert!(s.draw[i + 1..].iter().all(|b| !overlaps(*a, *b)), "{a:?} overlaps");
+        }
+    }
+
+    #[test]
+    fn a_parent_one_level_up_still_stands_in_for_a_missing_child() {
+        let v = view(3_000.0, 0.0);
+        let settled = settle(&v);
+        let missing = *settled.draw.iter().max_by_key(|k| k.z).unwrap();
+        let mut have: HashSet<TileKey> = settled.draw.iter().copied().collect();
+        for k in &settled.draw {
+            have.extend((0..k.z).map(|z| k.ancestor(z)));
+        }
+        have.remove(&missing);
+        let s = v.select(&|k| have.contains(&k));
+        let parent = missing.ancestor(missing.z - 1);
+        assert!(s.draw.contains(&parent));
+        assert!(!s.draw.iter().any(|k| k.z == missing.z && k.ancestor(parent.z) == parent), "no sibling overlaps it");
     }
 
     #[test]
