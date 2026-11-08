@@ -84,6 +84,7 @@ agree and the view may come down to 2 m. Loading never lowers the camera, it onl
   `--exaggeration N` scales the terrain's height.
 - Detail loads progressively. A coarse tile stays visible until all of its finer replacements are ready, so the
   view never shows holes while loading.
+- Where the terrain service has no tile at a zoom level, the nearest coarser terrain tile is used.
 - Imagery is Sentinel-2 at 10 m per pixel worldwide, with sharper aerial photos near the ground where national
   services offer them (see [CACHING.md](CACHING.md)).
 - A simple atmosphere glow, and plain colour where no imagery exists (the poles).

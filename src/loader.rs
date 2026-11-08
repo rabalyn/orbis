@@ -181,6 +181,27 @@ fn terrain_source(k: TileKey) -> (TileKey, (f64, f64, f64)) {
     (a, k.rect_in(a))
 }
 
+/// The terrain for a tile, with the tile's part of it. Where the usual source tile is missing,
+/// as Mapterhorn's finer levels are outside the regions it has detailed data for, the nearest
+/// coarser tile that exists is used. Taking such a gap for flat ground at sea level put the
+/// mountains of the Himalaya at 0 m in close tiles, and the camera with them. Flat only where no
+/// level has terrain. `dem` gives a tile's terrain, or `None` when the server has none.
+fn terrain_from(
+    k: TileKey,
+    mut dem: impl FnMut(TileKey) -> Result<Option<Arc<Dem>>, FetchError>,
+) -> Result<(Arc<Dem>, (f64, f64, f64)), FetchError> {
+    let mut a = terrain_source(k).0;
+    loop {
+        if let Some(d) = dem(a)? {
+            return Ok((d, k.rect_in(a)));
+        }
+        if a.z == 0 {
+            return Ok((Arc::new(Dem::flat()), (0.0, 0.0, 1.0)));
+        }
+        a = a.ancestor(a.z - 1);
+    }
+}
+
 /// Builds the surface of a tile: a grid plus a skirt that hides cracks between tiles.
 pub fn build_mesh(
     k: TileKey,
@@ -344,7 +365,8 @@ struct Shared {
     names: Vec<String>,
     queue: Mutex<Queue>,
     wake: Condvar,
-    dems: Mutex<HashMap<TileKey, Arc<Dem>>>,
+    /// Decoded terrain tiles, and `None` for those the server does not have.
+    dems: Mutex<HashMap<TileKey, Option<Arc<Dem>>>>,
     vectors: Mutex<HashMap<TileKey, Arc<VectorTile>>>,
     /// What was imported, with the count of changes that made it.
     imports: Mutex<(Arc<Vec<Arc<Imported>>>, u64)>,
@@ -387,9 +409,8 @@ impl Shared {
         if tile.buildings.is_empty() {
             return Outcome::Buildings(k, None);
         }
-        let (dem_key, rect) = terrain_source(k);
-        let dem = match self.dem(dem_key) {
-            Ok(dem) => dem,
+        let (dem, rect) = match self.terrain(k) {
+            Ok(found) => found,
             Err(e) => return after_failure(e, k, Outcome::BuildingsRetry),
         };
         let ground = |x: f64, y: f64| dem.sample(rect.0 + x * rect.2, rect.1 + y * rect.2) * self.exaggeration;
@@ -409,16 +430,19 @@ impl Shared {
         Outcome::Overlay(Box::new(OverlayData { key: k, source, labels: tile.labels.clone(), mips, generation }))
     }
 
-    fn dem(&self, k: TileKey) -> Result<Arc<Dem>, FetchError> {
+    fn terrain(&self, k: TileKey) -> Result<(Arc<Dem>, (f64, f64, f64)), FetchError> {
+        terrain_from(k, |a| self.dem(a))
+    }
+
+    fn dem(&self, k: TileKey) -> Result<Option<Arc<Dem>>, FetchError> {
         if let Some(d) = self.dems.lock().unwrap().get(&k) {
             return Ok(d.clone());
         }
         let dem = match self.fetcher.try_fetch(&sources::TERRAIN, k) {
-            // Where no terrain exists, the surface is simply flat.
-            Err(FetchError::Missing) => Dem::flat(),
+            Err(FetchError::Missing) => None,
             Err(e) => return Err(e),
             Ok(bytes) => match Dem::from_terrarium(&bytes) {
-                Some(dem) => dem,
+                Some(dem) => Some(Arc::new(dem)),
                 None => {
                     eprintln!("terrain: tile {}/{}/{} is damaged", k.z, k.x, k.y);
                     self.fetcher.discard(&sources::TERRAIN, k);
@@ -426,7 +450,6 @@ impl Shared {
                 }
             },
         };
-        let dem = Arc::new(dem);
         let mut dems = self.dems.lock().unwrap();
         if dems.len() >= DEM_CACHE {
             let any = *dems.keys().next().unwrap();
@@ -438,14 +461,13 @@ impl Shared {
 
     fn load(&self, k: TileKey) -> Outcome {
         // Terrain first: a job sent back to the queue then does not decode its image again.
-        let (dem_key, dem_rect) = terrain_source(k);
-        let dem = if crate::body::current().surface_data {
-            match self.dem(dem_key) {
-                Ok(dem) => dem,
+        let (dem, dem_rect) = if crate::body::current().surface_data {
+            match self.terrain(k) {
+                Ok(found) => found,
                 Err(e) => return after_failure(e, k, Outcome::Retry),
             }
         } else {
-            Arc::new(Dem::flat())
+            (Arc::new(Dem::flat()), (0.0, 0.0, 1.0))
         };
         let active = service_lib::active();
         // Best imagery first. While a better source is unavailable for a moment the tile
@@ -782,6 +804,45 @@ mod tests {
     }
 
     #[test]
+    fn missing_terrain_comes_from_the_nearest_coarser_tile() {
+        // The z15 tile at Everest whose terrain was flat: its z13 source is missing, z12 exists.
+        let k = TileKey::containing(27.7733f64.to_radians(), 86.7797f64.to_radians(), 15);
+        let high = Arc::new(Dem { size: 1, data: vec![5300.0] });
+        let mut asked = Vec::new();
+        let (dem, rect) = terrain_from(k, |a| {
+            asked.push(a.z);
+            Ok((a.z <= 12).then(|| high.clone()))
+        })
+        .unwrap();
+        assert_eq!(asked, [13, 12]);
+        assert_eq!(dem.sample(0.5, 0.5), 5300.0);
+        assert_eq!(rect, k.rect_in(k.ancestor(12)));
+    }
+
+    #[test]
+    fn terrain_is_flat_only_where_no_level_has_any() {
+        let k = TileKey::new(10, 500, 300);
+        let mut asked = 0;
+        let (dem, rect) = terrain_from(k, |_| {
+            asked += 1;
+            Ok(None)
+        })
+        .unwrap();
+        assert_eq!(asked, 9, "z8 down to z0");
+        assert_eq!((dem.sample(0.3, 0.7), rect), (0.0, (0.0, 0.0, 1.0)));
+        let failed = terrain_from(k, |a| if a.z == 7 { Err(FetchError::Transient) } else { Ok(None) });
+        assert!(failed.is_err(), "a failure is retried, not taken for missing terrain");
+    }
+
+    /// Marks a terrain tile and all its ancestors as missing, so that its terrain is flat with
+    /// no download.
+    fn no_terrain(cache: &DiskCache, k: TileKey) {
+        for z in 0..=k.z {
+            cache.mark_missing(&sources::TERRAIN.cache_name(k.ancestor(z)));
+        }
+    }
+
+    #[test]
     fn dem_sampling_interpolates() {
         let dem = Dem { size: 2, data: vec![0.0, 100.0, 0.0, 100.0] };
         assert_eq!(dem.sample(0.5, 0.5), 50.0);
@@ -839,7 +900,7 @@ mod tests {
     fn detail_setup(tag: &str) -> (DiskCache, TileKey, TileKey) {
         let cache = crate::fetcher::tests::temp_cache(tag);
         let k = TileKey::containing(47.27f64.to_radians(), 11.4f64.to_radians(), 18);
-        cache.mark_missing(&sources::TERRAIN.cache_name(k.ancestor(14)));
+        no_terrain(&cache, k.ancestor(14));
         cache.mark_missing(&sources::by_id("versatiles").unwrap().cache_name(k.ancestor(17)));
         (cache, k, k.ancestor(14))
     }
@@ -897,7 +958,7 @@ mod tests {
     fn a_large_source_image_is_shared_between_four_tiles() {
         let cache = crate::fetcher::tests::temp_cache("large");
         let k = TileKey::containing(50.11f64.to_radians(), 8.68f64.to_radians(), 18);
-        cache.mark_missing(&sources::TERRAIN.cache_name(k.ancestor(14)));
+        no_terrain(&cache, k.ancestor(14));
         let vt = sources::by_id("versatiles").unwrap();
         let img = image::RgbImage::from_fn(512, 512, |x, y| image::Rgb([(x / 2) as u8, (y / 2) as u8, 9]));
         let mut bytes = std::io::Cursor::new(Vec::new());
@@ -914,7 +975,7 @@ mod tests {
         // The base has plain oceans; only detail services use blank to mean "no data".
         let cache = crate::fetcher::tests::temp_cache("ocean");
         let k = TileKey::new(5, 1, 1);
-        cache.mark_missing(&sources::TERRAIN.cache_name(k.ancestor(3)));
+        no_terrain(&cache, k.ancestor(3));
         cache.put(&sources::EOX.cache_name(k), &tile_bytes(|_, _| [10, 20, 60])).unwrap();
         assert!(matches!(load_with(&cache, k), Outcome::Ready(_)));
     }
@@ -1057,7 +1118,7 @@ mod tests {
     fn a_full_server_does_not_hold_up_jobs_for_other_data() {
         let cache = crate::fetcher::tests::temp_cache("no-holdup");
         let ready = TileKey::new(5, 1, 1);
-        cache.mark_missing(&sources::TERRAIN.cache_name(ready.ancestor(3)));
+        no_terrain(&cache, ready.ancestor(3));
         cache.put(&sources::EOX.cache_name(ready), &tile_bytes(|_, _| [10, 20, 60])).unwrap();
 
         // Online, but no request gets out: terrain is the only thing not known, and its server
@@ -1095,7 +1156,7 @@ mod tests {
     fn service_setup(tag: &str, name: &str) -> (DiskCache, TileKey, crate::services::Service) {
         let cache = crate::fetcher::tests::temp_cache(tag);
         let k = TileKey::new(5, 1, 1);
-        cache.mark_missing(&sources::TERRAIN.cache_name(k.ancestor(3)));
+        no_terrain(&cache, k.ancestor(3));
         cache.put(&sources::EOX.cache_name(k), &png(16, [10, 20, 60, 255])).unwrap();
         let mut s = crate::services::xyz_service(&format!("https://{name}.example/{{z}}/{{x}}/{{y}}.png"), false).unwrap();
         s.tile_size = 64;
