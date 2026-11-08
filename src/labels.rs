@@ -395,42 +395,111 @@ pub fn may_show(screen: &Screen, label: &Label) -> bool {
     facing > min_facing(label.style) && screen.project(p).is_some_and(|s| screen.on_screen(s))
 }
 
+/// How labels meet the window: the globe seen through the camera, or the flat map.
+pub trait View {
+    fn size(&self) -> DVec2;
+    /// Screen areas labels must stay clear of, as (x0, y0, x1, y1).
+    fn reserved(&self) -> &[[f64; 4]];
+    /// Whether a label could appear at all, before its text has been rasterised.
+    fn may_show(&self, label: &Label) -> bool;
+    /// Where the label's text is centred on screen.
+    fn center(&self, label: &Label) -> Option<DVec2>;
+    /// Where a point on the ground is on screen.
+    fn point(&self, lat: f64, lon: f64) -> Option<DVec2>;
+    /// Whether text with these corners may stand there.
+    fn fits(&self, label: &Label, corners: &[DVec2; 4]) -> bool;
+}
+
+/// The globe, with the terrain that labels stand on and that can hide them.
+pub struct GlobeView<'a> {
+    pub screen: &'a Screen,
+    pub ground: &'a dyn Fn(f64, f64) -> Option<f64>,
+}
+
+impl View for GlobeView<'_> {
+    fn size(&self) -> DVec2 {
+        self.screen.size
+    }
+    fn reserved(&self) -> &[[f64; 4]] {
+        &self.screen.reserved
+    }
+    fn may_show(&self, label: &Label) -> bool {
+        may_show(self.screen, label)
+    }
+    fn center(&self, label: &Label) -> Option<DVec2> {
+        self.screen.project(anchor(label, self.ground))
+    }
+    fn point(&self, lat: f64, lon: f64) -> Option<DVec2> {
+        self.screen.project(geodetic_to_ecef(lat, lon, 0.0))
+    }
+    fn fits(&self, label: &Label, corners: &[DVec2; 4]) -> bool {
+        // Text must not hang over the edge of the globe or stick out into the sky.
+        corners.iter().all(|c| self.screen.over_ground(*c)) && !hidden_by_terrain(self.screen.basis.pos, anchor(label, self.ground), self.ground)
+    }
+}
+
+/// The flat map. It names places of the kinds the globe names from as far away as the
+/// map's scale stands for.
+pub struct FlatView<'a> {
+    pub map: &'a crate::atlas::AtlasView,
+    pub reserved: Vec<[f64; 4]>,
+}
+
+impl FlatView<'_> {
+    fn on_screen(&self, p: DVec2) -> bool {
+        p.x >= 0.0 && p.y >= 0.0 && p.x <= self.map.size.0 && p.y <= self.map.size.1
+    }
+}
+
+impl View for FlatView<'_> {
+    fn size(&self) -> DVec2 {
+        DVec2::new(self.map.size.0, self.map.size.1)
+    }
+    fn reserved(&self) -> &[[f64; 4]] {
+        &self.reserved
+    }
+    fn may_show(&self, label: &Label) -> bool {
+        self.map.distance_for_scale() <= crate::body::scaled(max_distance(label))
+            && self.point(label.lat, label.lon).is_some_and(|p| self.on_screen(p))
+    }
+    fn center(&self, label: &Label) -> Option<DVec2> {
+        self.point(label.lat, label.lon)
+    }
+    fn point(&self, lat: f64, lon: f64) -> Option<DVec2> {
+        let (x, y) = self.map.screen_of(self.map.project(lat, lon));
+        Some(DVec2::new(x, y))
+    }
+    fn fits(&self, _label: &Label, corners: &[DVec2; 4]) -> bool {
+        // Text must not hang over the edge of the map.
+        corners.iter().all(|c| self.map.lat_lon_at(c.x, c.y).is_some())
+    }
+}
+
 /// Chooses labels greedily in priority order, so that none overlap. `candidates` holds a
 /// label and its text size, already sorted with the most important first.
-pub fn place(
-    screen: &Screen,
-    candidates: &[(&Label, DVec2)],
-    ground: &dyn Fn(f64, f64) -> Option<f64>,
-) -> Vec<Placed> {
+pub fn place(view: &dyn View, candidates: &[(&Label, DVec2)]) -> Vec<Placed> {
+    let size = view.size();
     let mut placed = Vec::new();
-    let mut taken: Vec<Bounds> = screen
-        .reserved
-        .iter()
-        .map(|r| Bounds { x0: r[0], y0: r[1], x1: r[2], y1: r[3] })
-        .collect();
+    let mut taken: Vec<Bounds> = view.reserved().iter().map(|r| Bounds { x0: r[0], y0: r[1], x1: r[2], y1: r[3] }).collect();
     let mut seen: HashMap<&str, Vec<DVec2>> = HashMap::new();
-    for (index, (label, size)) in candidates.iter().enumerate() {
+    for (index, (label, text_size)) in candidates.iter().enumerate() {
         if placed.len() >= MAX_PLACED {
             break;
         }
-        if !may_show(screen, label) {
+        if !view.may_show(label) {
             continue;
         }
-        let world = anchor(label, ground);
-        let Some(center) = screen.project(world) else { continue };
-        let half = *size / 2.0;
+        let Some(center) = view.center(label) else { continue };
+        let half = *text_size / 2.0;
 
         let mut angle = 0.0;
         if let Some([a, b]) = label.along {
-            let (Some(pa), Some(pb)) = (
-                screen.project(geodetic_to_ecef(a.0, a.1, 0.0)),
-                screen.project(geodetic_to_ecef(b.0, b.1, 0.0)),
-            ) else {
+            let (Some(pa), Some(pb)) = (view.point(a.0, a.1), view.point(b.0, b.1)) else {
                 continue;
             };
             let chord = pb - pa;
             // The chord is a fifth of the road, so this drops labels longer than their road.
-            if chord.length() * 5.0 < size.x {
+            if chord.length() * 5.0 < text_size.x {
                 continue;
             }
             angle = chord.y.atan2(chord.x);
@@ -451,7 +520,7 @@ pub fn place(
             x1: center.x + extent.x,
             y1: center.y + extent.y,
         };
-        if bounds.x0 < 0.0 || bounds.y0 < 0.0 || bounds.x1 > screen.size.x || bounds.y1 > screen.size.y {
+        if bounds.x0 < 0.0 || bounds.y0 < 0.0 || bounds.x1 > size.x || bounds.y1 > size.y {
             continue;
         }
         if taken.iter().any(|t| t.overlaps(&bounds)) {
@@ -463,17 +532,13 @@ pub fn place(
         {
             continue;
         }
-        // Text must not hang over the edge of the globe or stick out into the sky.
         let corners = [
             DVec2::new(bounds.x0, bounds.y0),
             DVec2::new(bounds.x1, bounds.y0),
             DVec2::new(bounds.x0, bounds.y1),
             DVec2::new(bounds.x1, bounds.y1),
         ];
-        if !corners.iter().all(|c| screen.over_ground(*c)) {
-            continue;
-        }
-        if hidden_by_terrain(screen.basis.pos, world, ground) {
+        if !view.fits(label, &corners) {
             continue;
         }
         taken.push(bounds);
@@ -516,6 +581,36 @@ mod tests {
         Label { text: text.into(), style: LabelStyle::City, priority: 0, lat, lon, along: None }
     }
 
+    fn flat_map(distance: f64) -> crate::atlas::AtlasView {
+        let mut v = crate::atlas::AtlasView::whole(crate::atlas::Projection::EqualEarth, 0.0, (1200.0, 800.0));
+        v.match_globe(LAT, LON, distance);
+        v
+    }
+
+    #[test]
+    fn the_flat_map_names_places_where_they_are_drawn() {
+        let map = flat_map(3.0e5);
+        let view = FlatView { map: &map, reserved: Vec::new() };
+        let a = label("Here", LAT, LON);
+        let placed = place(&view, &[(&a, DVec2::new(40.0, 16.0))]);
+        assert_eq!(placed.len(), 1);
+        let (x, y) = map.screen_of(map.project(LAT, LON));
+        assert!(placed[0].center.distance(DVec2::new(x, y)) < 1.0);
+        // Overlapping names: only the first, more important one is kept.
+        let b = label("There", LAT, LON + 0.00001);
+        assert_eq!(place(&view, &[(&a, DVec2::new(40.0, 16.0)), (&b, DVec2::new(40.0, 16.0))]).len(), 1);
+    }
+
+    #[test]
+    fn the_flat_map_leaves_out_small_places_when_zoomed_out() {
+        let village = Label { style: LabelStyle::Village, ..label("Dorf", LAT, LON) };
+        let size = DVec2::new(40.0, 16.0);
+        let far = flat_map(2.0e6);
+        assert!(place(&FlatView { map: &far, reserved: Vec::new() }, &[(&village, size)]).is_empty());
+        let near = flat_map(2.0e4);
+        assert_eq!(place(&FlatView { map: &near, reserved: Vec::new() }, &[(&village, size)]).len(), 1);
+    }
+
     #[test]
     fn view_point_projects_to_the_centre() {
         let s = screen(100_000.0, 0.5);
@@ -539,7 +634,7 @@ mod tests {
         let (a, b) = (label("First", LAT, LON), label("Second", LAT, LON + 0.0001));
         let far = label("Far", LAT + 0.005, LON);
         let size = DVec2::new(80.0, 20.0);
-        let placed = place(&s, &[(&a, size), (&b, size), (&far, size)], NO_GROUND);
+        let placed = place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&a, size), (&b, size), (&far, size)]);
         let chosen: Vec<_> = placed.iter().map(|p| p.index).collect();
         assert_eq!(chosen, [0, 2]);
     }
@@ -549,11 +644,11 @@ mod tests {
         let mut s = screen(100_000.0, 0.0);
         let a = label("A", LAT, LON);
         let size = DVec2::new(40.0, 20.0);
-        assert_eq!(place(&s, &[(&a, size)], NO_GROUND).len(), 1);
+        assert_eq!(place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&a, size)]).len(), 1);
         s.reserved.push([500.0, 350.0, 700.0, 450.0]);
-        assert!(place(&s, &[(&a, size)], NO_GROUND).is_empty());
+        assert!(place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&a, size)]).is_empty());
         s.reserved.clear();
-        assert!(place(&s, &[(&a, DVec2::new(1300.0, 20.0))], NO_GROUND).is_empty());
+        assert!(place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&a, DVec2::new(1300.0, 20.0))]).is_empty());
     }
 
     #[test]
@@ -593,9 +688,9 @@ mod tests {
         let country = |text: &str, lat, lon| Label { style: LabelStyle::Country, ..label(text, lat, lon) };
         let near_edge = country("Edge", LAT - 0.4, LON + 1.45);
         assert!(may_show(&s, &near_edge), "the place itself is in view");
-        assert!(place(&s, &[(&near_edge, size)], NO_GROUND).is_empty());
+        assert!(place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&near_edge, size)]).is_empty());
         let middle = country("Middle", LAT, LON);
-        assert_eq!(place(&s, &[(&middle, size)], NO_GROUND).len(), 1);
+        assert_eq!(place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&middle, size)]).len(), 1);
     }
 
     #[test]
@@ -603,7 +698,7 @@ mod tests {
         let s = screen(100_000.0, 0.0);
         let (a, b) = (label("Inn", LAT, LON), label("Inn", LAT, LON + 0.002));
         let size = DVec2::new(30.0, 16.0);
-        assert_eq!(place(&s, &[(&a, size), (&b, size)], NO_GROUND).len(), 1);
+        assert_eq!(place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&a, size), (&b, size)]).len(), 1);
     }
 
     #[test]
@@ -611,11 +706,11 @@ mod tests {
         let s = screen(20_000.0, 1.3);
         let a = label("Valley", LAT, LON);
         let size = DVec2::new(40.0, 16.0);
-        assert_eq!(place(&s, &[(&a, size)], NO_GROUND).len(), 1);
+        assert_eq!(place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&a, size)]).len(), 1);
         // A wall between the label and the camera, which stands to the south.
         let wall: &dyn Fn(f64, f64) -> Option<f64> =
             &|lat, _| Some(if lat < LAT - 0.0002 && lat > LAT - 0.01 { 9000.0 } else { 0.0 });
-        assert!(place(&s, &[(&a, size)], wall).is_empty());
+        assert!(place(&GlobeView { screen: &s, ground: wall }, &[(&a, size)]).is_empty());
     }
 
     fn road_label(a: (f64, f64), b: (f64, f64)) -> Label {
@@ -634,12 +729,12 @@ mod tests {
         let s = screen(5_000.0, 0.0);
         // North-east going, seen north up, so rising to the right.
         let l = road_label((LAT - 0.0005, LON - 0.0005), (LAT + 0.0005, LON + 0.0005));
-        let p = place(&s, &[(&l, DVec2::new(30.0, 12.0))], NO_GROUND);
+        let p = place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&l, DVec2::new(30.0, 12.0))]);
         assert_eq!(p.len(), 1);
         assert!(p[0].angle < 0.0 && p[0].angle > -std::f64::consts::FRAC_PI_2, "{}", p[0].angle);
         // The same road described in the opposite direction gets the same angle.
         let r = road_label((LAT + 0.0005, LON + 0.0005), (LAT - 0.0005, LON - 0.0005));
-        let q = place(&s, &[(&r, DVec2::new(30.0, 12.0))], NO_GROUND);
+        let q = place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&r, DVec2::new(30.0, 12.0))]);
         assert!((q[0].angle - p[0].angle).abs() < 1e-9);
     }
 
@@ -647,7 +742,7 @@ mod tests {
     fn road_labels_longer_than_the_road_are_dropped() {
         let s = screen(100_000.0, 0.0);
         let l = road_label((LAT, LON), (LAT, LON + 0.00001));
-        assert!(place(&s, &[(&l, DVec2::new(100.0, 12.0))], NO_GROUND).is_empty());
+        assert!(place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&l, DVec2::new(100.0, 12.0))]).is_empty());
     }
 
     #[test]
@@ -655,7 +750,7 @@ mod tests {
         let s = screen(100_000.0, 0.0);
         let a = label("A", LAT + 0.001, LON + 0.001);
         let size = DVec2::new(41.0, 17.0);
-        let p = place(&s, &[(&a, size)], NO_GROUND)[0];
+        let p = place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&a, size)])[0];
         let corner = p.center - size / 2.0;
         assert_eq!(corner, corner.round());
     }

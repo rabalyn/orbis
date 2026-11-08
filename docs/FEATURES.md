@@ -172,7 +172,7 @@ and they appear once the server answers again.
 ## Flat map
 
 - M switches to a flat map and back, `--atlas PROJECTION` starts with it and `--globe` starts on the globe whatever is saved. The map uses the same imagery, the same
-  coarse-before-fine tile replacement and the same road and boundary lines. It works on every body.
+  coarse-before-fine tile replacement, the same road and boundary lines and the same names, chosen by the same rules: the kinds of place the globe names from as far away as the map's scale stands for. It works on every body.
 - Projections: Equal Earth, Mollweide, Hammer-Aitoff, Mercator and Plate Carrée (`equal-earth`, `mollweide`,
   `hammer-aitoff`, `mercator`, `plate-carree`). P cycles through them.
 - The central meridian is the longitude at the middle of the map. `--central-meridian DEG` sets it, and `[` and `]` move
@@ -594,8 +594,8 @@ never confused:
 - The article box shows the title, the one-line description, facts from Wikidata where there are some (type, country or countries, population with the year, elevation, area, official website, time zone), then the article's introduction as plain text, scrollable, and the credit. Text only: no images.
 - A button opens the article in the default browser (`xdg-open`, with the address from the API checked to be a Wikipedia address and started without a shell). A failure is shown in the box.
 - A click makes at most five requests, one after another and at least 0.3 s apart. All answers are kept on disk for a week. With `--offline` only kept answers are used, and otherwise the box says so. A stale answer is used when the service cannot be reached.
-- On other bodies the box shows the coordinates and says that information is available for Earth only; nothing is asked. On the flat map a click on a name in the imagery looks up that place, and elsewhere gives the ground list.
-- The flat map's names are part of the imagery, so the places of the shown tiles stand in for them: a click within a box around a place's point, as wide as its name is long, counts as a click on that name, for the kinds of place shown at that scale (not streets). Close to a long name's ends or right beside a short one it can miss or hit wrongly. For this the places are loaded on the flat map while information on click is on.
+- On other bodies the box shows the coordinates and says that information is available for Earth only; nothing is asked.
+- The flat map works the same way, with the names it draws.
 - With the box open, a click on a name or an energy bar opens that one at once; a click on open ground only closes the box.
 
 ### Limitations
@@ -616,7 +616,7 @@ never confused:
 - Heading and tilt stay the user's on short hops. High over a long hop the tilt eases towards straight down, so the globe does not swing, and the user's tilt returns at the end. The camera stays above the terrain and works on every body.
 - Any drag, wheel turn, flying key, SpaceMouse movement or Escape ends the flight at once, with no jump. A double click during a flight starts a new one from the view as it is.
 - While flying, only the tiles of the view the flight lands on are requested. The views passed on the way are drawn from what is already there, and names, lines and buildings are fetched after landing. A long flight costs no more downloads than arriving there directly.
-- On the flat map a double click does the same pan and zoom with the same curve; there are no labels to pick.
+- On the flat map a double click does the same pan and zoom with the same curve.
 - Search, saved places and Ctrl-0 use a simpler automatic flight of their own.
 
 ### Limitations

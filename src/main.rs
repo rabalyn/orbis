@@ -81,7 +81,7 @@ use fetcher::{Fetcher, Peers};
 use geo::{ecef_to_geodetic, TileKey};
 use glam::{DVec2, DVec3};
 use layers::{LineKinds, NameKinds};
-use labels::{Screen, TextKey, TextWorker, ATLAS_SIZE};
+use labels::{Screen, TextKey, TextWorker, View as _, ATLAS_SIZE};
 use loader::{Loader, Outcome, VECTOR_MAX_Z};
 use nav::{Arrow, Button, Mods, Nav, WHOLE_EARTH};
 use pacing::{FrameLimit, Pacer, RateMeter};
@@ -1473,46 +1473,16 @@ impl Scene {
         }
     }
 
-    /// Whether a name is under a point: a placed label on the globe, or on the flat map a
-    /// name the imagery shows there.
+    /// Whether a placed label is under a point.
     fn label_at(&self, pos: DVec2) -> bool {
-        if self.mode == Mode::Atlas {
-            self.flat_name_at(pos).is_some()
-        } else {
-            self.placed_labels.iter().any(|l| l.contains(pos))
-        }
-    }
-
-    /// The place whose name the flat map's imagery shows under a point. The imagery's text is
-    /// only pixels, so the places of the drawn tiles stand in for it: those of a kind shown at
-    /// this scale, found around where their point lies in the window.
-    fn flat_name_at(&self, pos: DVec2) -> Option<pick::Target> {
-        if self.mode != Mode::Atlas || body::current().id != body::EARTH.id {
-            return None;
-        }
-        let view = &self.map.view;
-        let altitude = view.distance_for_scale();
-        let sources: HashSet<TileKey> = self.draw.iter().map(|k| vector_source(*k)).collect();
-        let candidates: Vec<(&vector::Label, DVec2)> = sources
-            .iter()
-            .filter_map(|k| self.label_sets.get(k))
-            .flat_map(|set| set.iter())
-            .filter(|l| altitude <= body::scaled(labels::max_distance(l)))
-            .map(|l| {
-                let (x, y) = view.screen_of(view.project(l.lat, l.lon));
-                (l, DVec2::new(x, y))
-            })
-            .collect();
-        let l = pick::named_near(pos, &candidates)?;
-        Some(pick::Target::Label { name: l.text.clone(), style: l.style, priority: l.priority, lat: l.lat, lon: l.lon })
+        self.placed_labels.iter().any(|l| l.contains(pos))
     }
 
     /// Opens the information box for the label or the ground under a point, and asks for its
     /// content. Nothing is asked for other bodies, whose places Wikipedia does not locate.
     fn start_info(&mut self, pos: DVec2) {
         let (target, altitude) = if self.mode == Mode::Atlas {
-            let ground = || self.map.view.lat_lon_at(pos.x, pos.y).map(|(lat, lon)| pick::Target::Ground { lat, lon });
-            (self.flat_name_at(pos).or_else(ground), self.map.view.distance_for_scale())
+            (pick::pick(pos, &self.placed_labels, self.map.view.lat_lon_at(pos.x, pos.y)), self.map.view.distance_for_scale())
         } else {
             (pick::pick(pos, &self.placed_labels, self.nav.ground_at(pos)), self.nav.cam.distance)
         };
@@ -2407,9 +2377,7 @@ impl Scene {
         self.draw = selection.draw;
 
         let mut overlays = Vec::new();
-        // Labels are placed on the globe only. On the flat map their places tell which name
-        // in the imagery a click hit, so they are loaded there for information on click.
-        let labels_wanted = !flying && if atlas { self.view.info_on_click } else { self.names_on() };
+        let labels_wanted = self.names_on() && !flying;
         if body::current().surface_data && ((self.lines_on() && !flying) || labels_wanted) {
             for &k in &self.draw {
                 let lines_needed = !r.has_overlay(k) && !self.overlay_empty.contains(&k);
@@ -2499,11 +2467,7 @@ impl Scene {
             }
         }
         self.labels_shown = 0;
-        if !self.names_on() || self.mode == Mode::Atlas {
-            if self.label_sets.len() > LABEL_SETS {
-                let sources: HashSet<TileKey> = self.draw.iter().map(|k| vector_source(*k)).collect();
-                self.label_sets.retain(|k, _| sources.contains(k));
-            }
+        if !self.names_on() {
             r.set_labels(&[]);
             self.label_alpha.clear();
             self.placed_labels.clear();
@@ -2524,15 +2488,13 @@ impl Scene {
 
         let names = NameKinds::of(&self.view);
         let pad = |p: [f64; 4]| [p[0] - 4.0, p[1] - 4.0, p[2] + 4.0, p[3] + 4.0];
-        let screen = Screen {
-            basis: self.nav.cam.basis(),
-            size: DVec2::new(width as f64, height as f64),
-            reserved: self.gui.covered().iter().map(|p| pad(*p)).collect(),
-        };
+        let reserved: Vec<[f64; 4]> = self.gui.covered().iter().map(|p| pad(*p)).collect();
+        let screen = Screen { basis: self.nav.cam.basis(), size: DVec2::new(width as f64, height as f64), reserved: reserved.clone() };
+        let flat = (self.mode == Mode::Atlas).then(|| labels::FlatView { map: &self.map.view, reserved });
         let mut shown: Vec<(&vector::Label, i32, u64)> = sets
             .iter()
             .flat_map(|set| set.iter())
-            .filter(|label| names.allows(label.style) && labels::may_show(&screen, label))
+            .filter(|label| names.allows(label.style) && flat.as_ref().map_or_else(|| labels::may_show(&screen, label), |f| f.may_show(label)))
             .map(|label| {
                 let id = label_id(label);
                 let bonus = if self.label_alpha.contains_key(&id) { LABEL_STAY_BONUS } else { 0 };
@@ -2554,7 +2516,12 @@ impl Scene {
         }
 
         let ground = |lat: f64, lon: f64| r.ground(lat, lon);
-        let placed = labels::place(&screen, &candidates, &ground);
+        let globe = labels::GlobeView { screen: &screen, ground: &ground };
+        let view: &dyn labels::View = match &flat {
+            Some(f) => f,
+            None => &globe,
+        };
+        let placed = labels::place(view, &candidates);
 
         self.placed_labels = placed
             .iter()
@@ -2589,7 +2556,9 @@ impl Scene {
             })
             .collect();
         let mut instances = instances;
-        instances.extend(self.sky_labels(r, &screen, scale));
+        if self.mode != Mode::Atlas {
+            instances.extend(self.sky_labels(r, &screen, scale));
+        }
         self.labels_shown = instances.len();
         self.label_alpha = alpha;
         r.set_labels(&instances);

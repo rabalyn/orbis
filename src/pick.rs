@@ -67,30 +67,6 @@ pub fn pick(pos: DVec2, labels: &[PlacedLabel], ground: Option<(f64, f64)>) -> O
     }
 }
 
-/// The name in the map imagery under `pos`, on the flat map, where the text is part of the
-/// picture and only the places behind it are known: `candidates` are labels with the window
-/// position of their point. Imagery sets a name centred on its point, so the text is taken to
-/// cover a box around it, as wide as the name is long. Of several, the nearest wins.
-pub fn named_near<'a>(pos: DVec2, candidates: &[(&'a Label, DVec2)]) -> Option<&'a Label> {
-    candidates
-        .iter()
-        .filter(|(l, _)| l.style != LabelStyle::Road)
-        .filter_map(|(l, at)| {
-            let half = imagery_text_half(&l.text);
-            let d = (pos - *at) / half;
-            let reach = d.x.abs().max(d.y.abs());
-            (reach <= 1.0).then_some((reach, l.priority, *l))
-        })
-        .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
-        .map(|(_, _, l)| l)
-}
-
-/// Half the size of a name as map imagery usually draws it, in pixels, with some slack.
-fn imagery_text_half(text: &str) -> DVec2 {
-    let letters = text.chars().filter(|c| c.is_alphanumeric() || *c == ' ').count().max(1) as f64;
-    DVec2::new(8.0 + 3.5 * letters, 10.0)
-}
-
 /// How close the view comes to a named place, in metres on Earth, by kind. Within a kind the
 /// importance (the label's priority, lower is bigger) nudges it: a capital shows more around it.
 fn label_distance(style: LabelStyle, priority: i32) -> f64 {
@@ -191,36 +167,6 @@ mod tests {
         // Turned a quarter: its long side now runs up and down.
         assert!(l.contains(DVec2::new(300.0, 230.0)));
         assert!(!l.contains(DVec2::new(330.0, 200.0)));
-    }
-
-    fn place(text: &str, style: LabelStyle, priority: i32) -> Label {
-        Label { text: text.into(), style, priority, lat: 0.0, lon: 0.0, along: None }
-    }
-
-    #[test]
-    fn a_name_in_the_imagery_is_found_around_its_point() {
-        let berlin = place("Berlin", LabelStyle::City, 300);
-        let c = [(&berlin, DVec2::new(400.0, 300.0))];
-        // Six letters: about 29 px either side, 10 px above and below.
-        assert!(named_near(DVec2::new(425.0, 305.0), &c).is_some());
-        assert!(named_near(DVec2::new(400.0, 315.0), &c).is_none());
-        assert!(named_near(DVec2::new(435.0, 300.0), &c).is_none());
-    }
-
-    #[test]
-    fn a_longer_name_reaches_further_and_the_nearest_name_wins() {
-        let long = place("Kaiser-Wilhelm-Koog", LabelStyle::Village, 700);
-        let short = place("Ulm", LabelStyle::Town, 500);
-        assert!(named_near(DVec2::new(460.0, 300.0), &[(&long, DVec2::new(400.0, 300.0))]).is_some());
-        let c = [(&long, DVec2::new(400.0, 300.0)), (&short, DVec2::new(420.0, 300.0))];
-        assert_eq!(named_near(DVec2::new(418.0, 300.0), &c).unwrap().text, "Ulm");
-        assert_eq!(named_near(DVec2::new(395.0, 300.0), &c).unwrap().text, "Kaiser-Wilhelm-Koog");
-    }
-
-    #[test]
-    fn street_names_are_not_picked_from_the_imagery() {
-        let road = place("Hauptstrasse", LabelStyle::Road, 900);
-        assert!(named_near(DVec2::new(400.0, 300.0), &[(&road, DVec2::new(400.0, 300.0))]).is_none());
     }
 
     #[test]
