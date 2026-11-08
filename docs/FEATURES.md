@@ -61,6 +61,10 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 
 An arrow key keeps its meaning while held, even if modifiers change. Moving by hand ends a flight.
 
+On the globe, a compass is the fourth icon at the bottom right. The red end of its needle points north on the
+screen and turns as the view does. Clicking it turns the view to face north, keeping its place and tilt, like the
+first step of Ctrl-Alt-N. The flat map is always north up, so it shows no compass.
+
 Tilt orbits the view point down to 85° from straight down. Tilting further raises the head about the camera,
 which stays where it is, through the horizon up to straight up. Tile selection and labels follow what the
 screen shows, so the ground may fill only part of it.

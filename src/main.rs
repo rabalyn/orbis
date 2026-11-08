@@ -10,6 +10,7 @@ mod cache;
 #[path = "cache_mem.rs"]
 mod cache;
 mod clicks;
+mod compass;
 mod camera;
 mod capabilities;
 mod fetcher;
@@ -766,6 +767,8 @@ struct Scene {
     options: options::Shared,
     energy_style: energy_style::Shared,
     time_model: time_dialog::Shared,
+    /// What the compass among the icons shows.
+    compass: compass::Shared,
     eclipse_watch: time_slider::EclipseWatch,
     /// The planets and the Moon as of `bodies_time`.
     bodies: Vec<planets::Body>,
@@ -1120,6 +1123,7 @@ impl Scene {
             options: Default::default(),
             energy_style: Default::default(),
             time_model: Default::default(),
+            compass: Default::default(),
             eclipse_watch: Default::default(),
             bodies: Vec::new(),
             bodies_time: f64::NEG_INFINITY,
@@ -1139,6 +1143,7 @@ impl Scene {
         scene.ui.add(options::window_panel(scene.options.clone()));
         scene.ui.add(info::window_panel(scene.info.clone()));
         scene.ui.add(time_dialog::icon_panel());
+        scene.ui.add(compass::icon_panel(scene.compass.clone()));
         scene.ui.add(time_dialog::window_panel(scene.time_model.clone()));
         scene.ui.add(power_chart::window_panel(scene.energy.chart.clone()));
         scene.ui.add(energy_style::window_panel(scene.energy_style.clone()));
@@ -1401,6 +1406,9 @@ impl Scene {
         if let Some(event) = r.event {
             if help::handle(&mut self.ui, event) {
                 self.separate_dialogs(help::WINDOW);
+            }
+            if compass::handle(event) {
+                self.nav.face_north();
             }
             self.time_event(event);
             let (_, action) = options::handle(&mut self.ui, &self.options, event);
@@ -2698,6 +2706,8 @@ impl Scene {
         self.ui.resize(DVec2::new(width as f64, height as f64), scale as f64);
         self.sync_options();
         self.sync_time_dialog();
+        let heading = (self.mode == Mode::Globe).then_some(self.nav.cam.heading);
+        compass::update(&mut self.ui, &self.compass, heading);
         let columns = ((width as usize).saturating_sub(40) / (8 * scale)).max(20);
         // The icons sit at the bottom right, so the credits wrap in the space left of them.
         let icons = self.ui.icons_width() as usize;

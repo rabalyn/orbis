@@ -64,6 +64,9 @@ pub enum Kind {
     Slider { pos: f64, thumb_w: f64 },
     /// A clock face that clicks like a button, for the icon that opens the time dialog.
     ClockFace,
+    /// A compass needle that clicks like a button; `heading` is the view's, in radians clockwise
+    /// from north, so north on the screen lies that far anticlockwise from up.
+    Compass { heading: f64 },
     /// A chart over one day, drawn into the rect; see [`Chart`].
     Chart(Box<Chart>),
     /// A patch of colour for a legend, with straight alpha, hatched for a fossil source.
@@ -131,6 +134,10 @@ impl Widget {
         Self { id, rect, kind: Kind::ClockFace }
     }
 
+    pub fn compass(id: WidgetId, rect: Rect, heading: f64) -> Self {
+        Self { id, rect, kind: Kind::Compass { heading } }
+    }
+
     pub fn swatch(rect: Rect, colour: [u8; 4], hatched: bool) -> Self {
         Self { id: 0, rect, kind: Kind::Swatch { colour, hatched } }
     }
@@ -142,7 +149,7 @@ impl Widget {
     fn clickable(&self) -> bool {
         match self.kind {
             Kind::Label { .. } | Kind::Chart(_) | Kind::Swatch { .. } => false,
-            Kind::Button { .. } | Kind::Slider { .. } | Kind::ClockFace => true,
+            Kind::Button { .. } | Kind::Slider { .. } | Kind::ClockFace | Kind::Compass { .. } => true,
             Kind::Checkbox { enabled, .. } | Kind::Choice { enabled, .. } => enabled,
         }
     }

@@ -10,6 +10,8 @@ const BORDER: Color = [255, 255, 255, 80];
 const BUTTON: Color = [255, 255, 255, 45];
 const BUTTON_HOVER: Color = [255, 255, 255, 100];
 const BUTTON_PRESSED: Color = [255, 255, 255, 150];
+/// The north end of the compass needle.
+const NEEDLE_NORTH: Color = [230, 60, 50, 255];
 const TRACK: Color = [255, 255, 255, 35];
 const THUMB: Color = [255, 255, 255, 120];
 const THUMB_HELD: Color = [255, 255, 255, 190];
@@ -56,6 +58,36 @@ impl Canvas {
         for y in r.y.round() as i64..(r.y + r.h).round() as i64 {
             for x in r.x.round() as i64..(r.x + r.w).round() as i64 {
                 self.put(x, y, c);
+            }
+        }
+    }
+
+    /// A filled triangle, its edges smoothed by sampling each pixel 4 by 4.
+    fn triangle(&mut self, p: [(f64, f64); 3], c: Color) {
+        let edge = |a: (f64, f64), b: (f64, f64), x: f64, y: f64| (b.0 - a.0) * (y - a.1) - (b.1 - a.1) * (x - a.0);
+        let area = edge(p[0], p[1], p[2].0, p[2].1);
+        if area.abs() < 1e-9 {
+            return;
+        }
+        let xs = p.map(|q| q.0);
+        let ys = p.map(|q| q.1);
+        let (x0, x1) = (xs.iter().cloned().fold(f64::MAX, f64::min), xs.iter().cloned().fold(f64::MIN, f64::max));
+        let (y0, y1) = (ys.iter().cloned().fold(f64::MAX, f64::min), ys.iter().cloned().fold(f64::MIN, f64::max));
+        for y in y0.floor() as i64..y1.ceil() as i64 {
+            for x in x0.floor() as i64..x1.ceil() as i64 {
+                let mut inside = 0u32;
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        let (fx, fy) = (x as f64 + (sx as f64 + 0.5) / 4.0, y as f64 + (sy as f64 + 0.5) / 4.0);
+                        let w = [edge(p[1], p[2], fx, fy), edge(p[2], p[0], fx, fy), edge(p[0], p[1], fx, fy)];
+                        if w.iter().all(|w| w * area >= 0.0) {
+                            inside += 1;
+                        }
+                    }
+                }
+                if inside > 0 {
+                    self.put(x, y, [c[0], c[1], c[2], (c[3] as u32 * inside / 16) as u8]);
+                }
             }
         }
     }
@@ -162,6 +194,22 @@ fn widget(cv: &mut Canvas, w: &Widget, origin: (f64, f64), scale: usize, hover: 
             cv.fill(Rect::new(cx - t / 2.0, cy - rad * 0.7, t, rad * 0.7), white);
             cv.fill(Rect::new(cx, cy, rad * 0.45, t), white);
             cv.fill(Rect::new(cx - t, cy - t, 2.0 * t, 2.0 * t), white);
+        }
+        Kind::Compass { heading } => {
+            let bg = if pressed { BUTTON_PRESSED } else if hover { BUTTON_HOVER } else { BUTTON };
+            cv.fill(r, bg);
+            let t = scale.max(1) as f64;
+            let face = Rect::new(r.x + 3.0 * t, r.y + 3.0 * t, r.w - 6.0 * t, r.h - 6.0 * t);
+            cv.disc(face, false, tone(Tone::Dim));
+            let (cx, cy, rad) = (face.x + face.w / 2.0, face.y + face.h / 2.0, face.w / 2.0);
+            // North on the screen, and the needle's side; y grows downwards.
+            let (s, c) = heading.sin_cos();
+            let north = (-s, -c);
+            let side = (c, -s);
+            let at = |along: f64, across: f64| (cx + north.0 * along + side.0 * across, cy + north.1 * along + side.1 * across);
+            let (tip, half) = (rad * 0.8, rad * 0.26);
+            cv.triangle([at(tip, 0.0), at(0.0, half), at(0.0, -half)], NEEDLE_NORTH);
+            cv.triangle([at(-tip, 0.0), at(0.0, -half), at(0.0, half)], tone(Tone::Normal));
         }
         Kind::Label { text, tone: t } => cv.text(r.x, r.y, text, scale, tone(*t)),
         Kind::Chart(c) => chart(cv, r, c, scale),
