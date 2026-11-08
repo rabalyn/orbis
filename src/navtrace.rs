@@ -95,7 +95,7 @@ impl Jumps {
 fn frame(scene: &mut Scene, r: &mut Renderer, size: (u32, u32), jumps: &mut Jumps) {
     let aspect = size.0 as f64 / size.1 as f64;
     scene.update(r, DT, (aspect, size.1 as f64));
-    scene.set_panels(r, size.0, size.1, 1);
+    scene.set_panels(r, size.0, size.1, 1.0);
     scene.place_labels(r, size, 1, DT);
     r.flush_uploads();
     let h = ecef_to_geodetic(scene.nav.cam.basis().pos).2;

@@ -524,34 +524,3 @@ fn fs_star(in: StarOut) -> @location(0) vec4<f32> {
     }
     return vec4<f32>(colour * cover * in.shape.z, 1.0);
 }
-
-// Text panels
-
-struct Panel {
-    // Left, top, right and bottom in clip space.
-    rect: vec4<f32>,
-}
-
-@group(1) @binding(0) var<uniform> panel: Panel;
-@group(1) @binding(1) var panel_tex: texture_2d<f32>;
-@group(1) @binding(2) var panel_sampler: sampler;
-
-struct PanelOut {
-    @builtin(position) clip: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-}
-
-@vertex
-fn vs_panel(@builtin(vertex_index) i: u32) -> PanelOut {
-    let u = f32(i & 1u);
-    let v = f32((i >> 1u) & 1u);
-    var out: PanelOut;
-    out.clip = vec4<f32>(mix(panel.rect.x, panel.rect.z, u), mix(panel.rect.y, panel.rect.w, v), 0.0, 1.0);
-    out.uv = vec2<f32>(u, v);
-    return out;
-}
-
-@fragment
-fn fs_panel(in: PanelOut) -> @location(0) vec4<f32> {
-    return textureSample(panel_tex, panel_sampler, in.uv);
-}

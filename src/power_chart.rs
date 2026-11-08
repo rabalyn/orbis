@@ -4,14 +4,29 @@
 
 use crate::energy::{Palette, Source};
 use crate::power_feed::{Moment, FILTERS};
-use crate::ui::{Chart, Metrics, Panel, Rect, Tone, Ui, UiEvent, Widget};
+use crate::gui::{self, Gui};
+use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 use std::cell::RefCell;
 use std::rc::Rc;
 
 pub const WINDOW: &str = "power-chart";
-const CLOSE_BUTTON: u32 = 2;
-const STYLE_BUTTON: u32 = 3;
-const COLS: usize = 50;
+
+/// One stacked area of a [`Chart`]: colour, name, values, and whether it is hatched rather than solid.
+pub type ChartLayer = ([u8; 3], String, Vec<Option<f32>>, bool);
+
+/// A day of stacked areas with a line over them: values per equal step from midnight to
+/// midnight, `None` where there is none.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Chart {
+    /// Stacked from the bottom.
+    pub layers: Vec<ChartLayer>,
+    /// Drawn over the areas: name and values.
+    pub line: (String, Vec<Option<f32>>),
+    /// Where a vertical marker stands, from 0 (midnight) to 1 (the next midnight).
+    pub marker: Option<f64>,
+    /// The values' unit for the axis, and how many values one unit is: ("GW", 1000.0) for MW.
+    pub unit: (String, f32),
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Model {
@@ -57,10 +72,6 @@ pub fn chart(moments: &[Option<Moment>], marker: Option<f64>, palette: Palette) 
     Chart { layers, line: ("Consumption".to_string(), values(FILTERS.len() - 1)), marker, unit: ("GW".to_string(), 1000.0) }
 }
 
-pub fn window_panel(model: Shared) -> Panel {
-    Panel::new(WINDOW, true, move |p, m| layout(p, m, &model.borrow()))
-}
-
 /// What a click on the chart's buttons asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
@@ -70,59 +81,125 @@ pub enum Event {
     Style,
 }
 
-pub fn handle(ui: &mut Ui, event: UiEvent) -> Option<Event> {
-    match event {
-        UiEvent::Clicked { panel: WINDOW, widget: CLOSE_BUTTON } => {
-            ui.set_visible(WINDOW, false);
-            Some(Event::Closed)
+/// The chart window, while it is open.
+pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Option<Event> {
+    let mut open = gui.is_visible(WINDOW);
+    if !open {
+        return None;
+    }
+    let mut event = None;
+    let screen = ctx.content_rect();
+    let width = (screen.width() - 40.0).clamp(260.0, 440.0);
+    let shown = gui::window(&model.title, WINDOW)
+        .open(&mut open)
+        // Low on the left, above the credits, clear of the view options at the top.
+        .pivot(egui::Align2::LEFT_BOTTOM)
+        .default_pos(egui::pos2(screen.left() + 12.0, screen.bottom() - 150.0))
+        .show(ctx, |ui| {
+            ui.set_width(width);
+            if let Some(c) = &model.chart {
+                let height = (screen.height() * 0.25).clamp(110.0, 170.0);
+                plot(ui, c, Vec2::new(width, height));
+                legend(ui, c);
+            }
+            if !model.note.is_empty() {
+                gui::note(ui, &model.note);
+            }
+            if ui.button("Colours and bar size\u{2026}").clicked() {
+                event = Some(Event::Style);
+            }
+        });
+    if let Some(r) = shown {
+        gui.cover(r.response.rect);
+    }
+    if !open {
+        event = Some(Event::Closed);
+    }
+    gui.set_visible(WINDOW, open);
+    event
+}
+
+/// The stacked areas, the line, the axes and the clock's marker.
+fn plot(ui: &mut egui::Ui, c: &Chart, size: Vec2) {
+    let (r, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let v = ui.visuals();
+    let (ink, weak, grid) = (v.text_color(), v.weak_text_color(), v.widgets.noninteractive.bg_stroke.color);
+    let small = egui::FontId::proportional(11.0);
+    let plot = Rect::from_min_max(Pos2::new(r.left() + 28.0, r.top() + 6.0), Pos2::new(r.right() - 4.0, r.bottom() - 18.0));
+    let p = ui.painter().with_clip_rect(r);
+    let steps = c.line.1.len().max(c.layers.iter().map(|l| l.2.len()).max().unwrap_or(0)).max(1);
+    let stack = |i: usize| c.layers.iter().map(|l| l.2.get(i).copied().flatten().unwrap_or(0.0)).sum::<f32>();
+    let top = (0..steps).map(|i| stack(i).max(c.line.1.get(i).copied().flatten().unwrap_or(0.0))).fold(0.0f32, f32::max);
+    // The axis goes up in whole steps of 10 units.
+    let tick = 10.0 * c.unit.1;
+    let max = (top / tick).ceil().max(1.0) * tick;
+    let y_of = |v: f32| plot.bottom() - v / max * plot.height();
+    let x_of = |i: f32| plot.left() + i / steps as f32 * plot.width();
+    p.rect_filled(plot, 3.0, v.extreme_bg_color.gamma_multiply(0.5));
+    let mut t = 0.0;
+    while t <= max + 1.0 {
+        let y = y_of(t);
+        p.line_segment([Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)], Stroke::new(1.0, grid));
+        p.text(Pos2::new(plot.left() - 4.0, y), egui::Align2::RIGHT_CENTER, format!("{:.0}", t / c.unit.1), small.clone(), weak);
+        t += tick;
+    }
+    // The areas, one step at a time.
+    for i in 0..steps {
+        let (x0, x1) = (x_of(i as f32), x_of(i as f32 + 1.0) + 0.5);
+        let mut base = 0.0f32;
+        for (colour, _, values, hatched) in &c.layers {
+            let Some(v) = values.get(i).copied().flatten() else { continue };
+            let cell = Rect::from_min_max(Pos2::new(x0, y_of(base + v)), Pos2::new(x1, y_of(base)));
+            p.rect_filled(cell, 0.0, Color32::from_rgb(colour[0], colour[1], colour[2]));
+            if *hatched {
+                gui::hatch(&p.with_clip_rect(cell), cell, *colour);
+            }
+            base += v;
         }
-        UiEvent::Clicked { panel: WINDOW, widget: STYLE_BUTTON } => Some(Event::Style),
-        _ => None,
+    }
+    // The line, broken where values are missing.
+    let mut run: Vec<Pos2> = Vec::new();
+    let flush = |run: &mut Vec<Pos2>| {
+        if run.len() > 1 {
+            p.add(egui::Shape::line(std::mem::take(run), Stroke::new(2.0, ink)));
+        }
+        run.clear();
+    };
+    for i in 0..steps {
+        match c.line.1.get(i).copied().flatten() {
+            Some(v) => run.push(Pos2::new(x_of(i as f32 + 0.5), y_of(v))),
+            None => flush(&mut run),
+        }
+    }
+    flush(&mut run);
+    if let Some(m) = c.marker {
+        let x = plot.left() + m.clamp(0.0, 1.0) as f32 * plot.width();
+        p.line_segment([Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())], Stroke::new(1.5, Color32::from_rgb(255, 214, 70)));
+    }
+    for h in (0..=24).step_by(3) {
+        let x = plot.left() + plot.width() * h as f32 / 24.0;
+        p.text(Pos2::new(x, plot.bottom() + 3.0), egui::Align2::CENTER_TOP, format!("{h:02}"), small.clone(), weak);
     }
 }
 
-fn layout(p: &mut Panel, m: &Metrics, model: &Model) {
-    let s = m.scale;
-    let (glyph, step, pad, margin, header) = (8.0 * s, 10.0 * s, 6.0 * s, 8.0 * s, 18.0 * s);
-    let w = (m.screen.x - 2.0 * margin).min(COLS as f64 * glyph + 2.0 * pad).max(30.0 * glyph);
-    let inner = w - 2.0 * pad;
-    let cols = (inner / glyph) as usize;
-    let note: Vec<String> = crate::text::wrap(&model.note, cols);
-    let chart_h = match &model.chart {
-        Some(c) => {
-            let (_, rows) = c.legend_rows(inner, s);
-            (130.0 * s).min(m.screen.y * 0.3) + 2.5 * glyph + rows as f64 * 11.0 * s
+/// The legend: the line first, then the areas from the top of the stack down.
+fn legend(ui: &mut egui::Ui, c: &Chart) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(4.0, 2.0);
+        let (r, _) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), egui::Sense::hover());
+        ui.painter().line_segment([r.left_center(), r.right_center()], Stroke::new(2.0, ui.visuals().text_color()));
+        ui.label(egui::RichText::new(&c.line.0).small());
+        ui.add_space(8.0);
+        for (colour, name, _, hatched) in c.layers.iter().rev() {
+            gui::legend_entry(ui, [colour[0], colour[1], colour[2], 255], *hatched, name);
+            ui.add_space(6.0);
         }
-        None => 0.0,
-    };
-    let h = header + chart_h + note.len() as f64 * step + 2.0 * pad;
-    // At the top left, below where the search box opens.
-    p.rect = Rect::new(margin, margin + 22.0 * s, w, h);
-    let style = "Style";
-    let style_w = (style.chars().count() + 2) as f64 * glyph;
-    let title: String = model.title.chars().take(cols.saturating_sub(10)).collect();
-    p.fixed = vec![
-        Widget::label(Rect::new(pad, (header - glyph) / 2.0, title.chars().count() as f64 * glyph, glyph), &title, Tone::Heading),
-        Widget::button(STYLE_BUTTON, Rect::new(w - pad - 16.0 * s - style_w, 3.0 * s, style_w, 12.0 * s), style, 1),
-        Widget::button(CLOSE_BUTTON, Rect::new(w - pad - 12.0 * s, 3.0 * s, 12.0 * s, 12.0 * s), "x", 1),
-    ];
-    let mut y = header + pad;
-    if let Some(c) = &model.chart {
-        p.fixed.push(Widget::chart(Rect::new(pad, y, inner, chart_h), c.clone()));
-        y += chart_h;
-    }
-    for line in &note {
-        p.fixed.push(Widget::label(Rect::new(pad, y, line.chars().count() as f64 * glyph, glyph), line, Tone::Dim));
-        y += step;
-    }
-    p.body = None;
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nav::Button;
-    use glam::DVec2;
 
     fn moment(solar: f32, load: f32) -> Moment {
         let mut mw = vec![0.0; FILTERS.len()];
@@ -142,30 +219,5 @@ mod tests {
         assert_eq!(c.line.1[10], Some(40_000.0));
         assert_eq!(c.line.1[80], None);
         assert_eq!(c.layers[1].2[10], Some(1000.0));
-    }
-
-    #[test]
-    fn the_window_draws_and_closes() {
-        let model: Shared = Rc::new(RefCell::new(Model {
-            title: "Germany".into(),
-            chart: Some(chart(&vec![Some(moment(20_000.0, 50_000.0)); 96], Some(0.25), Palette::Standard)),
-            note: "A note".into(),
-        }));
-        let mut ui = Ui::new();
-        ui.resize(DVec2::new(1280.0, 800.0), 1.0);
-        ui.add(window_panel(model));
-        ui.set_visible(WINDOW, true);
-        let r = ui.panels()[0].rect;
-        assert!(r.x >= 0.0 && r.y >= 0.0 && r.x + r.w <= 1280.0 && r.y + r.h <= 800.0, "{r:?}");
-        let (w, h, px) = crate::ui_draw::render(&ui, 0, 1);
-        assert_eq!((w as usize) * (h as usize) * 4, px.len());
-        // Somewhere the solar colour is painted.
-        let sun = Source::Solar.colour();
-        assert!(px.chunks(4).any(|p| p[0].abs_diff(sun[0]) < 12 && p[1].abs_diff(sun[1]) < 12 && p[2].abs_diff(sun[2]) < 12));
-        let close = DVec2::new(r.x + r.w - 6.0 - 6.0, r.y + 9.0);
-        ui.press(Button::Left, close);
-        let e = ui.release(Button::Left, close).event.unwrap();
-        assert_eq!(handle(&mut ui, e), Some(Event::Closed));
-        assert!(!ui.is_visible(WINDOW));
     }
 }

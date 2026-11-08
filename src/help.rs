@@ -1,13 +1,9 @@
 //! The help icon and the window listing the keyboard and mouse controls.
 //! The list is one table, which a test compares with the key table in docs/FEATURES.md.
 
-use crate::text;
-use crate::ui::{Body, Metrics, Panel, Rect, Tone, Ui, UiEvent, Widget, WidgetId};
+use crate::gui::{self, Gui};
 
-pub const ICON: &str = "help-icon";
 pub const WINDOW: &str = "help-window";
-const OPEN_BUTTON: WidgetId = 1;
-const CLOSE_BUTTON: WidgetId = 2;
 
 /// Groups of (keys as written in the key table of docs/FEATURES.md, what they do).
 pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
@@ -71,109 +67,62 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("G", "List of map services"),
             ("V", "View options: choose lines, names, scene, projection, imagery"),
             ("H, ?, F1", "Show or hide this window"),
+            ("F12", "Technical figures: tiles, frame rate, downloads"),
         ],
     ),
     ("Program", &[("Ctrl-Q", "Quit")]),
 ];
 
-pub fn icon_panel() -> Panel {
-    let mut p = Panel::new(ICON, false, |p, m| {
-        p.rect = m.icon_rect(0);
-        p.fixed = vec![Widget::button(OPEN_BUTTON, Rect::new(0.0, 0.0, p.rect.w, p.rect.h), "?", 2)];
-        p.visible = true;
-    });
-    p.in_band = true;
-    p
-}
-
-pub fn window_panel() -> Panel {
-    Panel::new(WINDOW, true, layout)
-}
-
-/// A pointer click on the icon or the close button toggles the window. True if it did.
-pub fn handle(ui: &mut Ui, event: UiEvent) -> bool {
-    match event {
-        UiEvent::Clicked { panel: ICON, widget: OPEN_BUTTON } => ui.toggle(WINDOW),
-        UiEvent::Clicked { panel: WINDOW, widget: CLOSE_BUTTON } => ui.set_visible(WINDOW, false),
-        _ => return false,
+/// The help window, while it is open. `scroll` moves its list down that many points once.
+pub fn show(ctx: &egui::Context, gui: &mut Gui, scroll: Option<f32>) {
+    let mut open = gui.is_visible(WINDOW);
+    if !open {
+        return;
     }
-    true
-}
-
-/// How many text columns the list gets in a window of this width.
-const WIDE_COLS: usize = 64;
-const KEY_COLS: usize = 18;
-
-fn layout(p: &mut Panel, m: &Metrics) {
-    let s = m.scale;
-    let (glyph, step, pad) = (8.0 * s, 10.0 * s, 6.0 * s);
-    let margin = 8.0 * s;
-    let bar_w = 6.0 * s;
-    let header = 18.0 * s;
-    let w = (m.screen.x - 2.0 * margin).min(WIDE_COLS as f64 * glyph + 2.0 * pad + bar_w).max(10.0 * glyph);
-    let cols = (((w - 2.0 * pad - bar_w) / glyph) as usize).max(8);
-
-    let mut widgets = Vec::new();
-    let mut y = pad;
-    let mut add = |x_col: usize, y: f64, text: &str, tone: Tone| {
-        widgets.push(Widget::label(Rect::new(pad + x_col as f64 * glyph, y, text.chars().count() as f64 * glyph, glyph), text, tone));
-    };
-    for line in text::wrap("Scroll with the wheel. Esc closes.", cols) {
-        add(0, y, &line, Tone::Dim);
-        y += step;
-    }
-    let two_columns = cols >= KEY_COLS + 24;
-    for (name, items) in SHORTCUTS {
-        y += step * 0.6;
-        add(0, y, name, Tone::Heading);
-        y += step;
-        for (keys, what) in *items {
-            let (key_lines, what_lines) = if two_columns {
-                (text::wrap(keys, KEY_COLS), text::wrap(what, cols - KEY_COLS - 1))
-            } else {
-                (text::wrap(keys, cols), text::wrap(what, cols - 2))
-            };
-            for (i, l) in key_lines.iter().enumerate() {
-                add(0, y + i as f64 * step, l, Tone::Key);
+    let screen = ctx.content_rect();
+    let width = (screen.width() - 40.0).clamp(260.0, 600.0);
+    let shown = gui::window("Keyboard and mouse", WINDOW)
+        .open(&mut open)
+        .default_pos(egui::pos2(screen.right() - width - 30.0, screen.top() + 60.0))
+        .default_width(width)
+        .show(ctx, |ui| {
+            ui.set_width(width);
+            let mut area = egui::ScrollArea::vertical().max_height((screen.height() - 200.0).max(150.0));
+            if let Some(dy) = scroll {
+                area = area.vertical_scroll_offset(dy);
             }
-            let (x, top) = if two_columns {
-                (KEY_COLS + 1, y)
-            } else {
-                (2, y + key_lines.len() as f64 * step)
-            };
-            for (i, l) in what_lines.iter().enumerate() {
-                add(x, top + i as f64 * step, l, Tone::Normal);
-            }
-            let rows = if two_columns { key_lines.len().max(what_lines.len()) } else { key_lines.len() + what_lines.len() };
-            y += rows as f64 * step + 0.3 * step;
-        }
+            area.show(ui, |ui| {
+                gui::note(ui, "Esc closes this window.");
+                let key_width = if width > 420.0 { 170.0 } else { width - 40.0 };
+                for (name, items) in SHORTCUTS {
+                    gui::section(ui, name);
+                    for (keys, what) in *items {
+                        if width > 420.0 {
+                            ui.horizontal_top(|ui| {
+                                // The keys in a column of their own, left aligned.
+                                ui.allocate_ui_with_layout(egui::vec2(key_width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                                    ui.set_width(key_width);
+                                    ui.add(egui::Label::new(egui::RichText::new(*keys).color(gui::accent())).wrap());
+                                });
+                                ui.add(egui::Label::new(*what).wrap());
+                            });
+                        } else {
+                            ui.label(egui::RichText::new(*keys).color(gui::accent()));
+                            ui.add(egui::Label::new(*what).wrap());
+                        }
+                    }
+                }
+            });
+        });
+    if let Some(r) = shown {
+        gui.cover(r.response.rect);
     }
-    let content_h = y + pad;
-
-    // Above the credits and icons, at the bottom right; shorter when the screen is.
-    let bottom = m.floor() - 4.0 * s;
-    let max_h = (bottom - margin).max(header + 4.0 * step);
-    let h = (header + content_h).min(max_h);
-    p.rect = Rect::new(m.screen.x - margin - w, bottom - h, w, h);
-    p.fixed = vec![
-        Widget::label(Rect::new(pad, (header - glyph) / 2.0, 20.0 * glyph, glyph), "Keyboard shortcuts", Tone::Heading),
-        Widget::button(CLOSE_BUTTON, Rect::new(w - pad - 12.0 * s, 3.0 * s, 12.0 * s, 12.0 * s), "x", 1),
-    ];
-    let offset = p.body.as_ref().map_or(0.0, |b| b.offset);
-    p.body = Some(Body {
-        viewport: Rect::new(0.0, header, w, h - header),
-        content_h,
-        offset,
-        step: 3.0 * step,
-        bar_w,
-        widgets,
-    });
+    gui.set_visible(WINDOW, open);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::DVec2;
 
     /// The first cell of each row of the key table in docs/FEATURES.md.
     fn spec_keys() -> Vec<String> {
@@ -211,58 +160,5 @@ mod tests {
                 seen.push(k);
             }
         }
-    }
-
-    fn ui_at(w: f64, h: f64) -> Ui {
-        let mut ui = Ui::new();
-        ui.resize(DVec2::new(w, h), 1.0);
-        ui.add(icon_panel());
-        ui.add(window_panel());
-        ui
-    }
-
-    #[test]
-    fn icon_toggles_the_window_and_the_close_button_hides_it() {
-        use crate::nav::Button;
-        let mut ui = ui_at(1280.0, 800.0);
-        assert!(ui.is_visible(ICON) && !ui.is_visible(WINDOW));
-        let icon = DVec2::new(1280.0 - 8.0 - 10.0, 800.0 - 8.0 - 10.0);
-        ui.press(Button::Left, icon);
-        let e = ui.release(Button::Left, icon).event.unwrap();
-        assert!(handle(&mut ui, e));
-        assert!(ui.is_visible(WINDOW));
-        let r = ui.panels()[1].rect;
-        let close = DVec2::new(r.x + r.w - 6.0 - 6.0, r.y + 9.0);
-        ui.press(Button::Left, close);
-        let e = ui.release(Button::Left, close).event.unwrap();
-        assert!(handle(&mut ui, e));
-        assert!(!ui.is_visible(WINDOW));
-    }
-
-    #[test]
-    fn window_fits_and_scrolls_at_every_size() {
-        for (w, h) in [(1280.0, 800.0), (500.0, 350.0), (240.0, 200.0)] {
-            let mut ui = ui_at(w, h);
-            ui.set_visible(WINDOW, true);
-            let (win, icon) = (ui.panels()[1].rect, ui.panels()[0].rect);
-            assert!(win.x >= 0.0 && win.y >= 0.0 && win.x + win.w <= w && win.y + win.h <= h, "{w}x{h}: {win:?}");
-            assert!(win.y + win.h <= icon.y, "{w}x{h}: window sits above the icon");
-            let body = ui.panels()[1].body.as_ref().unwrap();
-            assert_eq!(body.scrolls(), h < 800.0, "{w}x{h}: scrolls only when the list does not fit");
-            // Tall credits push the window up and make it scroll, and never lie over them.
-            ui.set_credit_band(90.0);
-            assert!(ui.covering_credits().is_empty(), "{w}x{h}");
-            if h >= 350.0 {
-                assert!(ui.panels()[1].rect.y + ui.panels()[1].rect.h <= h - 90.0, "{w}x{h}");
-            }
-        }
-    }
-
-    #[test]
-    fn narrow_windows_stack_keys_over_descriptions() {
-        let wide = ui_at(1280.0, 800.0);
-        let narrow = ui_at(300.0, 800.0);
-        let rows = |ui: &Ui| ui.panels()[1].body.as_ref().unwrap().content_h;
-        assert!(rows(&narrow) > rows(&wide));
     }
 }

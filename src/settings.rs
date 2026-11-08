@@ -10,7 +10,7 @@
 //! keys in the file are kept as they are, and a missing or damaged value means the default.
 
 use crate::atlas::Projection;
-use crate::energy::{Idle, Palette, Style};
+use crate::energy::{Detail, Idle, Palette, Style};
 use crate::pacing::FrameLimit;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
@@ -55,6 +55,15 @@ impl Setting for f64 {
 impl Setting for Palette {
     fn from_json(v: &Value) -> Option<Self> {
         Palette::parse(v.as_str()?)
+    }
+    fn to_json(&self) -> Value {
+        Value::from(self.key())
+    }
+}
+
+impl Setting for Detail {
+    fn from_json(v: &Value) -> Option<Self> {
+        Detail::parse(v.as_str()?)
     }
     fn to_json(&self) -> Value {
         Value::from(self.key())
@@ -202,6 +211,8 @@ settings! {
     energy_idle: Idle = Idle::Source, "energy_idle";
     /// Its opacity, 0 to 1.
     energy_idle_opacity: f64 = 0.3, "energy_idle_opacity";
+    /// How much detail the bars show: "auto" follows the altitude.
+    energy_detail: Detail = Detail::Auto, "energy_detail";
     /// Factors on the usual height and width of the bars.
     energy_bar_height: f64 = 1.0, "energy_bar_height";
     energy_bar_width: f64 = 1.0, "energy_bar_width";

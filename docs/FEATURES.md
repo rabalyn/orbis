@@ -57,6 +57,7 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | G | Show or hide the list of map services. In it: Enter uses the chosen service as the base layer (again: back to the usual imagery), O as the overlay, + and - change the overlay's opacity, A opens the box to add a service, Delete removes one |
 | V | Show or hide the view options window |
 | H, ?, F1 | Show or hide the help window |
+| F12 | Show or hide the technical figures below the status line: tiles drawn and held, loading, frame rate, downloads |
 | Ctrl-Q | Quit |
 
 An arrow key keeps its meaning while held, even if modifiers change. Moving by hand ends a flight.

@@ -113,16 +113,6 @@ impl Level {
         self as usize
     }
 
-    /// What one bar stands for, for the display.
-    pub fn name(self) -> &'static str {
-        match self {
-            Level::States => "state",
-            Level::Districts => "district",
-            Level::Towns => "municipality",
-            Level::Plants => "plant site",
-        }
-    }
-
     /// The level for a camera at `altitude`, given the one shown so far.
     pub fn for_altitude(altitude: f64, previous: Option<Level>) -> Level {
         let plain = |a: f64| Level::ALL[LEVEL_ALTITUDES.iter().filter(|&&l| a < l).count()];
@@ -136,6 +126,67 @@ impl Level {
             prev
         } else {
             level
+        }
+    }
+}
+
+/// How much detail the bars show: following the camera's altitude, or held at one level.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Detail {
+    Auto,
+    Fixed(Level),
+}
+
+impl Detail {
+    pub fn key(self) -> &'static str {
+        match self {
+            Detail::Auto => "auto",
+            Detail::Fixed(Level::States) => "states",
+            Detail::Fixed(Level::Districts) => "districts",
+            Detail::Fixed(Level::Towns) => "municipalities",
+            Detail::Fixed(Level::Plants) => "plants",
+        }
+    }
+
+    pub fn parse(key: &str) -> Option<Detail> {
+        Some(match key {
+            "auto" => Detail::Auto,
+            "states" => Detail::Fixed(Level::States),
+            "districts" => Detail::Fixed(Level::Districts),
+            "municipalities" => Detail::Fixed(Level::Towns),
+            "plants" => Detail::Fixed(Level::Plants),
+            _ => return None,
+        })
+    }
+
+    /// The level shown for a camera at `altitude`, given the one shown so far.
+    pub fn level(self, altitude: f64, previous: Option<Level>) -> Level {
+        match self {
+            Detail::Auto => Level::for_altitude(altitude, previous),
+            Detail::Fixed(level) => level,
+        }
+    }
+}
+
+/// The altitude bands of the automatic detail, in words.
+pub fn auto_bands() -> String {
+    let km = |m: f64| format!("{:.0} km", m / 1000.0);
+    format!(
+        "States above {}, districts down to {}, municipalities down to {}, plant sites below.",
+        km(LEVEL_ALTITUDES[0]),
+        km(LEVEL_ALTITUDES[1]),
+        km(LEVEL_ALTITUDES[2])
+    )
+}
+
+impl Level {
+    /// The name of the level in the plural, for the detail control.
+    pub fn plural(self) -> &'static str {
+        match self {
+            Level::States => "States",
+            Level::Districts => "Districts",
+            Level::Towns => "Municipalities",
+            Level::Plants => "Plant sites",
         }
     }
 }
@@ -279,6 +330,8 @@ pub struct Energy {
     /// The typical width of an area of each level, in metres: the median of the square roots of
     /// their areas. Bars are sized against it, so they keep a fixed size in the landscape.
     widths: [f64; 4],
+    /// How many bars each level has with all sources at the export date.
+    counts: [usize; 4],
     /// Each area's size in km² (municipalities only; 0 for others).
     km2: Vec<f64>,
     /// The density of units without a position, in kW per km², that gets the full shade.
@@ -447,7 +500,7 @@ impl Energy {
             cells.entry(cell_of(s.lat, s.lon)).or_default().push(i as u32);
         }
         let km2 = areas.iter().map(|a| if a.level == Level::Towns { area_km2(&a.rings) } else { 0.0 }).collect();
-        let mut energy = Energy { exported, areas, sites, totals, unplaced, cells, largest: [1.0; 4], widths: [PLANT_WIDTH; 4], km2, dense: 1.0 };
+        let mut energy = Energy { exported, areas, sites, totals, unplaced, cells, largest: [1.0; 4], widths: [PLANT_WIDTH; 4], counts: [0; 4], km2, dense: 1.0 };
         for level in [Level::States, Level::Districts, Level::Towns] {
             let mut sides: Vec<f64> = energy
                 .areas
@@ -468,6 +521,7 @@ impl Energy {
             totals.sort_by(f32::total_cmp);
             let at = (totals.len() as f64 * 0.98) as usize;
             energy.largest[level.index()] = totals.get(at.min(totals.len().saturating_sub(1))).copied().unwrap_or(1.0).max(1.0);
+            energy.counts[level.index()] = totals.len();
         }
         // Likewise the shade of units without a position.
         let mut densities: Vec<f32> = (0..energy.areas.len() as u32).filter_map(|i| energy.unplaced_density(i, last, all)).filter(|&d| d > 0.0).collect();
@@ -545,6 +599,11 @@ impl Energy {
             }
         }
         out
+    }
+
+    /// How many bars a level has, with all sources, at the register's date.
+    pub fn count(&self, level: Level) -> usize {
+        self.counts[level.index()]
     }
 
     /// The capacity of a tall bar of a level: 98% of the level's bars at the export date, with

@@ -9,7 +9,6 @@ use crate::labels::{AtlasRect, Mask, Shelves, TextKey, TextWorker, ATLAS_SIZE};
 use crate::shadows;
 use crate::sky::SkyPoint;
 use crate::loader::{mesh_indices, TileData, Vertex, GRID, TILE_MAX_Z};
-use crate::text;
 use bytemuck::{Pod, Zeroable};
 use glam::{DMat3, DVec3};
 use std::collections::{HashMap, HashSet};
@@ -131,30 +130,6 @@ pub struct LabelInstance {
     pub halo: [f32; 4],
 }
 
-struct Panel {
-    uniform: wgpu::Buffer,
-    bind_group: Option<wgpu::BindGroup>,
-    texture: Option<wgpu::Texture>,
-    text: String,
-    width: u32,
-    height: u32,
-    max_cols: usize,
-    scale: usize,
-    /// Where an image panel sits, instead of in a corner.
-    at: Option<[f64; 2]>,
-}
-
-/// Panels 0 to 3 are text panels in corners; the interface's panels follow.
-pub const UI_PANEL_BASE: usize = 4;
-const UI_PANELS: usize = 12;
-
-#[derive(Clone, Copy)]
-pub enum Corner {
-    TopRight,
-    BottomLeft,
-    TopLeft,
-}
-
 pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -163,7 +138,6 @@ pub struct Renderer {
     /// Set while the flat map is shown instead of the globe.
     atlas: Option<AtlasDraw>,
     sky_pipeline: wgpu::RenderPipeline,
-    panel_pipeline: wgpu::RenderPipeline,
     label_pipeline: wgpu::RenderPipeline,
     building_pipeline: wgpu::RenderPipeline,
     building_ghost_pipeline: wgpu::RenderPipeline,
@@ -216,9 +190,7 @@ pub struct Renderer {
     cascade_buffers: Vec<wgpu::Buffer>,
     cascade_binds: Vec<wgpu::BindGroup>,
     tile_layout: wgpu::BindGroupLayout,
-    panel_layout: wgpu::BindGroupLayout,
     tile_sampler: wgpu::Sampler,
-    panel_sampler: wgpu::Sampler,
     indices: wgpu::Buffer,
     index_count: u32,
     underlay_vertices: wgpu::Buffer,
@@ -229,7 +201,6 @@ pub struct Renderer {
     instance_capacity: usize,
     depth: Option<(wgpu::TextureView, u32, u32)>,
     tiles: HashMap<TileKey, GpuTile>,
-    panels: Vec<Panel>,
     frame_no: u64,
 }
 
@@ -400,23 +371,6 @@ impl Renderer {
             label: Some("tile"),
             entries: &[texture_entry(0), sampler_entry(1)],
         });
-        let panel_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("panel"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                texture_entry(1),
-                sampler_entry(2),
-            ],
-        });
         let layout_for = |second: &wgpu::BindGroupLayout, label| {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some(label),
@@ -429,7 +383,6 @@ impl Renderer {
             bind_group_layouts: &[Some(&frame_layout), Some(&tile_layout), Some(&tile_layout)],
             immediate_size: 0,
         });
-        let panel_pl = layout_for(&panel_layout, "panel");
         let label_pl = layout_for(&tile_layout, "label");
         let sky_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("sky"),
@@ -805,31 +758,6 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
-        let panel_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("panel"),
-            layout: Some(&panel_pl),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_panel"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                ..Default::default()
-            },
-            depth_stencil: Some(no_depth),
-            multisample,
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_panel"),
-                compilation_options: Default::default(),
-                targets: &blended,
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
-
         let frame_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame"),
             size: size_of::<FrameUniform>() as u64,
@@ -879,11 +807,6 @@ impl Renderer {
             anisotropy_clamp: 16,
             ..Default::default()
         });
-        let panel_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("panel"),
-            ..Default::default()
-        });
-
         let indices_cpu = mesh_indices();
         let indices = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("tile indices"),
@@ -944,30 +867,11 @@ impl Renderer {
 
         let instance_capacity = 1024;
         let instances = create_instance_buffer(&device, instance_capacity);
-        let panel = || Panel {
-            uniform: device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("panel"),
-                size: 16,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }),
-            bind_group: None,
-            texture: None,
-            text: String::new(),
-            width: 0,
-            height: 0,
-            max_cols: 0,
-            scale: 1,
-            at: None,
-        };
-        let panels = (0..UI_PANEL_BASE + UI_PANELS).map(|_| panel()).collect();
-
         Self {
             tile_pipeline,
             atlas_pipeline,
             atlas: None,
             sky_pipeline,
-            panel_pipeline,
             label_pipeline,
             building_pipeline,
             building_ghost_pipeline,
@@ -1011,9 +915,7 @@ impl Renderer {
             cascade_buffers,
             cascade_binds,
             tile_layout,
-            panel_layout,
             tile_sampler,
-            panel_sampler,
             index_count: indices_cpu.len() as u32,
             indices,
             underlay_vertices,
@@ -1024,7 +926,6 @@ impl Renderer {
             instance_capacity,
             depth: None,
             tiles: HashMap::new(),
-            panels,
             frame_no: 0,
             device,
             queue,
@@ -1364,23 +1265,6 @@ impl Renderer {
         self.label_count = instances.len() as u32;
     }
 
-    /// The screen area a text panel covers, as (x0, y0, x1, y1).
-    pub fn panel_rect(&self, i: usize, corner: Corner, width: u32, height: u32) -> [f64; 4] {
-        let p = &self.panels[i];
-        let margin = 8.0;
-        let (sw, sh) = (width as f64, height as f64);
-        let (pw, ph) = (p.width as f64, p.height as f64);
-        if let Some([x, y]) = p.at {
-            return [x, y, x + pw, y + ph];
-        }
-        let (x0, y0) = match corner {
-            Corner::TopRight => (sw - pw - margin, margin),
-            Corner::BottomLeft => (margin, sh - ph - margin),
-            Corner::TopLeft => (margin, margin),
-        };
-        [x0, y0, x0 + pw, y0 + ph]
-    }
-
     /// The terrain height from the finest loaded tile covering a position.
     pub fn ground(&self, lat: f64, lon: f64) -> Option<f64> {
         (0..=TILE_MAX_Z).rev().find_map(|z| {
@@ -1466,99 +1350,6 @@ impl Renderer {
         for (_, k) in old.into_iter().take(excess) {
             self.tiles.remove(&k);
         }
-    }
-
-    pub fn set_panel(&mut self, i: usize, content: &str, max_cols: usize, scale: usize) {
-        let p = &self.panels[i];
-        if p.text == content && p.max_cols == max_cols && p.scale == scale {
-            return;
-        }
-        if content.is_empty() {
-            let p = &mut self.panels[i];
-            (p.bind_group, p.texture, p.width, p.height, p.max_cols, p.scale) = (None, None, 0, 0, max_cols, scale);
-            p.text.clear();
-            return;
-        }
-        let lines = text::wrap(content, max_cols);
-        let (w, h, rgba) = text::rasterize(&lines, scale);
-        self.upload_panel(i, w, h, &rgba);
-        let p = &mut self.panels[i];
-        p.text = content.to_string();
-        p.max_cols = max_cols;
-        p.scale = scale;
-    }
-
-    /// Shows an image from the interface at a screen position, or hides the panel for `None`.
-    /// `i` counts from the first interface panel.
-    pub fn set_ui_panel(&mut self, i: usize, image: Option<([f64; 2], u32, u32, &[u8])>) {
-        let i = UI_PANEL_BASE + i;
-        let Some((at, w, h, rgba)) = image else {
-            let p = &mut self.panels[i];
-            (p.bind_group, p.texture, p.width, p.height, p.at) = (None, None, 0, 0, None);
-            return;
-        };
-        if w == 0 || h == 0 {
-            return;
-        }
-        self.upload_panel(i, w, h, rgba);
-        self.panels[i].at = Some(at);
-    }
-
-    pub fn ui_panel_count() -> usize {
-        UI_PANELS
-    }
-
-    fn upload_panel(&mut self, i: usize, w: u32, h: u32, rgba: &[u8]) {
-        let p = &self.panels[i];
-        let same_size = p.width == w && p.height == h && p.texture.is_some();
-        if !same_size {
-            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("panel"),
-                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&Default::default());
-            let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("panel"),
-                layout: &self.panel_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: self.panels[i].uniform.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.panel_sampler) },
-                ],
-            });
-            let p = &mut self.panels[i];
-            p.texture = Some(texture);
-            p.bind_group = Some(bind);
-        }
-        let p = &mut self.panels[i];
-        p.width = w;
-        p.height = h;
-        self.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: p.texture.as_ref().unwrap(),
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            rgba,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        );
-    }
-
-    fn place_panel(&self, i: usize, corner: Corner, width: u32, height: u32) {
-        let r = self.panel_rect(i, corner, width, height).map(|v| v as f32);
-        let (sw, sh) = (width as f32, height as f32);
-        let clip_x = |x: f32| x / sw * 2.0 - 1.0;
-        let clip_y = |y: f32| 1.0 - y / sh * 2.0;
-        let rect = [clip_x(r[0]), clip_y(r[1]), clip_x(r[2]), clip_y(r[3])];
-        self.queue.write_buffer(&self.panels[i].uniform, 0, bytemuck::cast_slice(&rect));
     }
 
     fn depth_view(&mut self, width: u32, height: u32) -> wgpu::TextureView {
@@ -1710,13 +1501,6 @@ impl Renderer {
         }
         self.queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(&origins));
 
-        self.place_panel(0, Corner::BottomLeft, width, height);
-        self.place_panel(1, Corner::TopRight, width, height);
-        self.place_panel(2, Corner::TopLeft, width, height);
-        self.place_panel(3, Corner::TopLeft, width, height);
-        for i in UI_PANEL_BASE..self.panels.len() {
-            self.place_panel(i, Corner::TopLeft, width, height);
-        }
         let depth = self.depth_view(width, height);
         let msaa = self.msaa_view(width, height);
         // With anti-aliasing the target only receives the resolved image.
@@ -1881,14 +1665,6 @@ impl Renderer {
                 pass.set_bind_group(1, &self.label_bind, &[]);
                 pass.set_vertex_buffer(0, self.label_instances.slice(..));
                 pass.draw(0..4, 0..self.label_count);
-            }
-
-            pass.set_pipeline(&self.panel_pipeline);
-            for p in &self.panels {
-                if let Some(bind) = &p.bind_group {
-                    pass.set_bind_group(1, bind, &[]);
-                    pass.draw(0..4, 0..1);
-                }
             }
         }
         before_submit(&mut encoder);

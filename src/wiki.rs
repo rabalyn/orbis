@@ -634,6 +634,7 @@ fn text_has_phonetic(chars: &[char]) -> bool {
 
 /// Breaks text into lines of at most `cols` characters, at spaces, and inside a word that is longer
 /// than a line. Empty lines (paragraph breaks) are kept.
+#[cfg(test)]
 pub fn wrap_lines(text: &str, cols: usize) -> Vec<String> {
     let cols = cols.max(1);
     let mut lines = Vec::new();

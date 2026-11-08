@@ -15,6 +15,9 @@ mod camera;
 mod capabilities;
 mod fetcher;
 mod geocode;
+mod gui;
+mod energy_panel;
+mod readout;
 mod help;
 mod info;
 mod geo;
@@ -58,11 +61,8 @@ mod servers;
 mod service_lib;
 mod services;
 mod sources;
-mod text;
 mod time_dialog;
 mod time_slider;
-mod ui;
-mod ui_draw;
 mod vector;
 mod wiki;
 mod wtime;
@@ -85,7 +85,7 @@ use labels::{Screen, TextKey, TextWorker, ATLAS_SIZE};
 use loader::{Loader, Outcome, VECTOR_MAX_Z};
 use nav::{Arrow, Button, Mods, Nav, WHOLE_EARTH};
 use pacing::{FrameLimit, Pacer, RateMeter};
-use render::{hemisphere_label, Corner, LabelInstance, Renderer};
+use render::{hemisphere_label, LabelInstance, Renderer};
 use select::View;
 use settings::{Settings, ViewKind};
 use sky_time::{Clock, ClockKey};
@@ -109,7 +109,6 @@ Map: OpenFreeMap © OpenMapTiles Data from OpenStreetMap";
 /// Shown while the stars are displayed.
 const STARS_CREDIT: &str = "Stars: HYG database by David Nash, CC BY-SA 4.0";
 /// The search panel is no wider than this many characters, and keeps clear of the readout.
-const SEARCH_COLUMNS: usize = 72;
 /// Imported points that are given a name label at most.
 const IMPORT_LABELS: usize = 3000;
 const GIB: u64 = 1024 * 1024 * 1024;
@@ -118,6 +117,8 @@ const CACHE_LIMIT_GIB: u64 = 10;
 const TRIM_EVERY: Duration = Duration::from_secs(3600);
 const UPLOADS_PER_FRAME: usize = 12;
 /// Label sets for this many vector tiles stay in memory.
+/// Room around a label's text when deciding what a click hits, in pixels at scale 1.
+const LABEL_PAD: f64 = 4.0;
 const LABEL_SETS: usize = 2000;
 /// The most labels considered per frame, most important first.
 const LABEL_CANDIDATES: usize = 1500;
@@ -767,8 +768,6 @@ struct Scene {
     options: options::Shared,
     energy_style: energy_style::Shared,
     time_model: time_dialog::Shared,
-    /// What the compass among the icons shows.
-    compass: compass::Shared,
     eclipse_watch: time_slider::EclipseWatch,
     /// The planets and the Moon as of `bodies_time`.
     bodies: Vec<planets::Body>,
@@ -779,8 +778,19 @@ struct Scene {
     places: places::Store,
     place_list: places::Picker,
     services: service_ui::Control,
-    /// The mouse-driven interface: the help icon and window, and later dialogs.
-    ui: ui::Ui,
+    /// The interface: windows, icons, the readout and the credits.
+    gui: gui::Gui,
+    /// The size (pixels) and pixels per point the interface was last built for.
+    gui_size: (u32, u32, f32),
+    /// The pointer was over the interface at its last move.
+    gui_hover: bool,
+    /// The technical figures are shown (F12).
+    debug_readout: bool,
+    /// Where the help window is scrolled to, in points, while a saved image asks for it.
+    help_scroll: Option<f32>,
+    /// The credits for what is drawn, and how many tiles the renderer holds, as of the last frame.
+    credits_text: String,
+    tiles_loaded: usize,
     clicks: clicks::ClickClassifier,
     started: Instant,
     pointer: DVec2,
@@ -820,6 +830,18 @@ struct Scene {
     /// Keeps a slow tick going for tiles waiting out a retry delay.
     last_retry_tick: Instant,
     energy: EnergyLayer,
+}
+
+/// What the user did in one frame of the interface, carried out once it is built.
+#[derive(Default)]
+struct GuiDone {
+    icon: Option<compass::Clicked>,
+    options: Option<options::Action>,
+    time: Vec<time_dialog::Action>,
+    style: Option<energy_style::Action>,
+    chart: Option<power_chart::Event>,
+    info: (bool, Option<info::Action>),
+    energy: Option<energy_panel::Action>,
 }
 
 type OutlineKey = (energy::Level, [bool; energy::SOURCES], Option<energy::Subject>, Option<u16>);
@@ -1060,7 +1082,13 @@ impl Scene {
             places,
             place_list: places::Picker::default(),
             services: make_services(args),
-            ui: ui::Ui::new(),
+            gui: gui::Gui::new(),
+            gui_size: (size.x.max(1.0) as u32, size.y.max(1.0) as u32, 1.0),
+            gui_hover: false,
+            debug_readout: false,
+            help_scroll: None,
+            credits_text: String::new(),
+            tiles_loaded: 0,
             clicks: clicks::ClickClassifier::default(),
             started: Instant::now(),
             pointer: DVec2::ZERO,
@@ -1123,7 +1151,6 @@ impl Scene {
             options: Default::default(),
             energy_style: Default::default(),
             time_model: Default::default(),
-            compass: Default::default(),
             eclipse_watch: Default::default(),
             bodies: Vec::new(),
             bodies_time: f64::NEG_INFINITY,
@@ -1136,19 +1163,6 @@ impl Scene {
         }
         let base = scene.services.base_id().unwrap_or_default().to_string();
         (scene.view.base_service, scene.view_last.base_service) = (base.clone(), base);
-        scene.ui.resize(size, 1.0);
-        scene.ui.add(help::icon_panel());
-        scene.ui.add(help::window_panel());
-        scene.ui.add(options::icon_panel());
-        scene.ui.add(options::window_panel(scene.options.clone()));
-        scene.ui.add(info::window_panel(scene.info.clone()));
-        scene.ui.add(time_dialog::icon_panel());
-        scene.ui.add(compass::icon_panel(scene.compass.clone()));
-        scene.ui.add(time_dialog::window_panel(scene.time_model.clone()));
-        scene.ui.add(power_chart::window_panel(scene.energy.chart.clone()));
-        scene.ui.add(energy_style::window_panel(scene.energy_style.clone()));
-        // The renderer has a fixed number of places for the interface's panels; one beyond them is never drawn.
-        assert!(scene.ui.panels().len() <= Renderer::ui_panel_count(), "more panels than the renderer draws");
         scene
     }
 
@@ -1185,7 +1199,7 @@ impl Scene {
 
     /// Keeps the options dialog true to the state, whatever changed it.
     fn sync_options(&mut self) {
-        if !self.ui.is_visible(options::WINDOW) {
+        if !self.gui.is_visible(options::WINDOW) {
             return;
         }
         let model = options::Model {
@@ -1196,7 +1210,6 @@ impl Scene {
         };
         if *self.options.borrow() != model {
             *self.options.borrow_mut() = model;
-            self.ui.refresh(options::WINDOW);
         }
     }
 
@@ -1208,7 +1221,7 @@ impl Scene {
                 options::set_toggle(&mut self.view, index, value);
                 self.sync_energy_style();
                 if !self.view.info_on_click {
-                    self.ui.set_visible(info::WINDOW, false);
+                    self.gui.set_visible(info::WINDOW, false);
                     self.info_id += 1;
                     self.info_pending = false;
                 }
@@ -1227,25 +1240,25 @@ impl Scene {
     }
 
     /// Shows or hides a dialog; one that does not fit beside the other closes it.
-    fn toggle_dialog(&mut self, id: ui::PanelId) {
-        self.ui.toggle(id);
+    fn toggle_dialog(&mut self, id: gui::PanelId) {
+        self.gui.toggle(id);
         self.separate_dialogs(id);
     }
 
-    fn separate_dialogs(&mut self, opened: ui::PanelId) {
+    /// Windows are moved and stacked by the user, so opening one only brings the dialogs up to date.
+    fn separate_dialogs(&mut self, _opened: gui::PanelId) {
         self.sync_options();
         self.sync_time_dialog();
         self.sync_energy_style();
-        self.ui.close_overlapping(opened, &[help::WINDOW, options::WINDOW, info::WINDOW, time_dialog::WINDOW, energy_style::WINDOW]);
     }
 
     /// Keeps the time dialog true to the clock, whatever moved it. A drag that ended without the
     /// release reaching the slider (the dialog was closed) lets the clock go.
     fn sync_time_dialog(&mut self) {
-        if self.clock.is_held() && self.ui.slider_held().is_none() {
+        if self.clock.is_held() && !self.gui.is_held() {
             self.clock.release();
         }
-        if !self.ui.is_visible(time_dialog::WINDOW) {
+        if !self.gui.is_visible(time_dialog::WINDOW) {
             return;
         }
         self.clock.advance(self.clock_epoch.elapsed().as_secs_f64());
@@ -1260,7 +1273,6 @@ impl Scene {
         };
         if *self.time_model.borrow() != model {
             *self.time_model.borrow_mut() = model;
-            self.ui.refresh(time_dialog::WINDOW);
         }
     }
 
@@ -1300,39 +1312,11 @@ impl Scene {
         !matches!(action, Action::Set(..)) || self.clock.time() != before
     }
 
-    /// An event from the interface that the time dialog may be the owner of.
-    fn time_event(&mut self, event: ui::UiEvent) -> bool {
-        let (handled, action) = time_dialog::handle(&mut self.ui, event);
-        if handled && matches!(event, ui::UiEvent::Clicked { .. }) {
-            self.separate_dialogs(time_dialog::WINDOW);
-        }
-        action.is_some_and(|a| self.time_action(a))
-    }
-
-    /// An event from a slider, which the time dialog or the energy display window may own.
-    fn slider_event(&mut self, event: ui::UiEvent) -> bool {
-        let time = self.time_event(event);
-        self.energy_style_event(event) || time
-    }
-
-    /// An event the energy display window may own. True if the picture changes.
-    fn energy_style_event(&mut self, event: ui::UiEvent) -> bool {
-        let (handled, action) = energy_style::handle(&mut self.ui, &self.energy_style, event);
-        if handled && matches!(event, ui::UiEvent::Clicked { .. }) {
-            self.separate_dialogs(energy_style::WINDOW);
-        }
-        let Some(energy_style::Action::Set(style)) = action else { return false };
-        self.view.set_energy_style(style);
-        self.sync_energy_style();
-        true
-    }
-
     /// Keeps the energy display window true to the settings.
     fn sync_energy_style(&mut self) {
         let model = energy_style::Model { style: self.view.energy_style(), output: self.view.energy_output };
         if *self.energy_style.borrow() != model {
             *self.energy_style.borrow_mut() = model;
-            self.ui.refresh(energy_style::WINDOW);
         }
     }
 
@@ -1356,28 +1340,23 @@ impl Scene {
     /// picture needs drawing again: a plain pointer move over the map does not.
     fn mouse_moved(&mut self, pos: DVec2) -> bool {
         self.pointer = pos;
-        let r = self.ui.pointer_moved(pos);
-        if let Some(e) = r.event {
-            return self.slider_event(e);
+        let over = self.gui.pointer_moved(pos);
+        // Leaving the interface changes what it shows as hovered, so that needs a picture too.
+        let left = std::mem::replace(&mut self.gui_hover, over);
+        // A drag that began on the map stays with it, even across a window.
+        if over && self.map_buttons == 0 {
+            return true;
         }
-        if r.consumed {
-            return r.redraw;
-        }
-        // A drag that began on the map stays with it, even across a panel.
         if self.mode == Mode::Atlas {
             self.map.moved(pos);
         } else {
             self.nav.moved(pos);
         }
-        r.redraw || self.map_buttons != 0
+        over || left || self.map_buttons != 0
     }
 
     fn mouse_pressed(&mut self, b: Button, mods: Mods) -> bool {
-        let r = self.ui.press(b, self.pointer);
-        if let Some(e) = r.event {
-            self.slider_event(e);
-        }
-        if r.consumed {
+        if self.map_buttons == 0 && self.gui.press(b) {
             return true;
         }
         self.map_buttons |= 1 << (b == Button::Right) as u8;
@@ -1402,33 +1381,10 @@ impl Scene {
     }
 
     fn release_input(&mut self, b: Button, mods: Mods) -> bool {
-        let r = self.ui.release(b, self.pointer);
-        if let Some(event) = r.event {
-            if help::handle(&mut self.ui, event) {
-                self.separate_dialogs(help::WINDOW);
-            }
-            if compass::handle(event) {
-                self.nav.face_north();
-            }
-            self.time_event(event);
-            let (_, action) = options::handle(&mut self.ui, &self.options, event);
-            self.separate_dialogs(options::WINDOW);
-            if let Some(a) = action {
-                self.options_action(a);
-            }
-            if let (true, Some(a)) = info::handle(&mut self.ui, event) {
-                self.info_action(a);
-            }
-            self.energy_style_event(event);
-            match power_chart::handle(&mut self.ui, event) {
-                Some(power_chart::Event::Closed) => self.view.energy_chart = false,
-                Some(power_chart::Event::Style) => self.toggle_dialog(energy_style::WINDOW),
-                None => {}
-            }
-        }
         let bit = 1 << (b == Button::Right) as u8;
-        if r.consumed || self.map_buttons & bit == 0 {
-            return r.consumed;
+        if self.gui.release(b) || self.map_buttons & bit == 0 {
+            // The interface acts on it when it builds its next frame.
+            return true;
         }
         self.map_buttons &= !bit;
         if self.mode == Mode::Atlas {
@@ -1446,12 +1402,8 @@ impl Scene {
     }
 
     fn mouse_wheel(&mut self, lines: f64, mods: Mods) -> bool {
-        let r = self.ui.wheel(lines, self.pointer);
-        if let Some(e) = r.event {
-            return self.slider_event(e);
-        }
-        if r.consumed {
-            return r.redraw;
+        if self.gui.wheel(lines) {
+            return true;
         }
         if self.mode == Mode::Atlas {
             self.map.scroll(lines, self.pointer);
@@ -1463,7 +1415,8 @@ impl Scene {
 
     /// The pointer left the window, or the window lost focus.
     fn mouse_lost(&mut self) {
-        self.ui.pointer_moved(DVec2::new(-1.0, -1.0));
+        self.gui.mouse_lost();
+        self.gui_hover = false;
         self.map_buttons = 0;
         self.clicks.cancel();
     }
@@ -1495,8 +1448,8 @@ impl Scene {
     /// called for single clicks after the double-click window and for double clicks.
     fn on_map_click(&mut self, click: clicks::Click) {
         // With the box open, a click on the map only closes it; a double click still flies.
-        if self.ui.is_visible(info::WINDOW) {
-            self.ui.set_visible(info::WINDOW, false);
+        if self.gui.is_visible(info::WINDOW) {
+            self.gui.set_visible(info::WINDOW, false);
             self.info_id += 1;
             self.info_pending = false;
             self.info_changed = true;
@@ -1545,8 +1498,7 @@ impl Scene {
     }
 
     fn show_info(&mut self) {
-        self.ui.refresh(info::WINDOW);
-        self.ui.set_visible(info::WINDOW, true);
+        self.gui.set_visible(info::WINDOW, true);
         self.separate_dialogs(info::WINDOW);
         self.info_changed = true;
     }
@@ -1558,7 +1510,6 @@ impl Scene {
                 let url = self.info.borrow().article_url().map(str::to_string);
                 if let Some(url) = url {
                     self.info.borrow_mut().note = info::open_in_browser(&url).err();
-                    self.ui.refresh(info::WINDOW);
                 }
             }
             info::Action::Pick(i) => {
@@ -1567,7 +1518,6 @@ impl Scene {
                 *self.info.borrow_mut() = info::Model { title: near.title.clone(), at: None, content: info::Content::Looking, note: None };
                 self.lookup.submit(self.info_id, wikilookup::Job::Page { lang: near.lang, page_id: near.page_id, item: near.item });
                 self.info_pending = true;
-                self.ui.refresh(info::WINDOW);
             }
         }
     }
@@ -1595,7 +1545,6 @@ impl Scene {
                 wikilookup::Outcome::Failed(f) => m.content = info::Content::Message(f.message().to_string()),
             }
             drop(m);
-            self.ui.refresh(info::WINDOW);
             changed = true;
         }
         changed
@@ -1615,18 +1564,25 @@ impl Scene {
     fn simulate_drag(&mut self, from: DVec2, to: DVec2) {
         const STEPS: usize = 8;
         self.mouse_moved(from);
+        self.gui_step();
         self.mouse_pressed(Button::Left, Mods::default());
+        self.gui_step();
         for i in 1..=STEPS {
             self.mouse_moved(from + (to - from) * (i as f64 / STEPS as f64));
+            self.gui_step();
         }
         self.mouse_released(Button::Left, Mods::default());
+        self.gui_step();
     }
 
     /// A left click at a point, as the window would deliver it.
     fn simulate_click(&mut self, pos: DVec2) {
         self.mouse_moved(pos);
+        self.gui_step();
         self.mouse_pressed(Button::Left, Mods::default());
+        self.gui_step();
         self.mouse_released(Button::Left, Mods::default());
+        self.gui_step();
     }
 
     /// Reads a file and adds what is in it, saying what happened. With `fly` the view moves to it.
@@ -2044,8 +2000,8 @@ impl Scene {
             self.notice = Some("The energy data built into this program could not be read.".to_string());
         }
         let Some(data) = data else {
-            if self.ui.is_visible(power_chart::WINDOW) {
-                self.ui.set_visible(power_chart::WINDOW, false);
+            if self.gui.is_visible(power_chart::WINDOW) {
+                self.gui.set_visible(power_chart::WINDOW, false);
             }
             if self.energy.outlines.is_some() || self.energy.built_from.is_some() {
                 let power = std::mem::take(&mut self.energy.power);
@@ -2062,7 +2018,7 @@ impl Scene {
             self.energy.outlines_from = None;
             self.energy.built_from = None;
         }
-        let level = energy::Level::for_altitude(self.nav.altitude, self.energy.level);
+        let level = self.view.energy_detail.level(self.nav.altitude, self.energy.level);
         self.energy.level = Some(level);
         let shown = self.energy_sources();
         let month = energy::month_of(self.clock.time());
@@ -2161,8 +2117,8 @@ impl Scene {
     /// Fills the day chart for the clock's day, and shows it while it is wanted.
     fn sync_power_chart(&mut self) {
         let wanted = self.energy_on() && self.view.energy_output && self.view.energy_chart;
-        if self.ui.is_visible(power_chart::WINDOW) != wanted {
-            self.ui.set_visible(power_chart::WINDOW, wanted);
+        if self.gui.is_visible(power_chart::WINDOW) != wanted {
+            self.gui.set_visible(power_chart::WINDOW, wanted);
         }
         if !wanted {
             return;
@@ -2187,7 +2143,6 @@ impl Scene {
         };
         if *self.energy.chart.borrow() != model {
             *self.energy.chart.borrow_mut() = model;
-            self.ui.refresh(power_chart::WINDOW);
         }
     }
 
@@ -2261,26 +2216,27 @@ impl Scene {
         true
     }
 
-    /// The display's line about the bars: what they stand for and their scale.
-    fn energy_status(&self) -> Option<String> {
+    /// What the energy card tells: what a bar stands for, the level of detail, the scale and the figures.
+    fn energy_card(&self) -> Option<energy_panel::Model> {
         let (level, scale) = (self.energy.level?, self.energy.scale?);
         if !self.energy_on() {
             return None;
         }
-        let month = energy::month_name(energy::month_of(self.clock.time()));
-        let mut line = format!("Energy: bars per {}, {month}, 1 GW = {} tall", level.name(), format_distance(1.0e6 * scale.per_kw));
-        if self.view.energy_output {
-            line.push('\n');
-            line.push_str(&self.power_status());
-        }
+        let data = energy::Energy::bundled()?;
+        let mut notes = Vec::new();
         if level == energy::Level::Plants {
-            let dense = energy::Energy::bundled().map_or(0.0, |d| d.dense());
-            line.push_str(&format!("\nShade: units without position, full at {}/km²", energy::format_power(dense)));
+            notes.push(format!("Shade: units without a position, full at {}/km²", energy::format_power(data.dense())));
         }
-        if self.nav.cam.total_tilt() < 0.3 {
-            line.push_str("\nTilt the view (right-drag) to see the bars' heights");
-        }
-        Some(line)
+        Some(energy_panel::Model {
+            detail: self.view.energy_detail,
+            level,
+            counts: energy::Level::ALL.map(|l| data.count(l)),
+            month: energy::month_name(energy::month_of(self.clock.time())),
+            scale: format_distance(1.0e6 * scale.per_kw),
+            output: self.view.energy_output.then(|| self.power_status()),
+            notes,
+            flat: self.nav.cam.total_tilt() < 0.3,
+        })
     }
 
     /// Germany's generation against consumption at the quarter hour shown, or why there is none.
@@ -2511,15 +2467,7 @@ impl Scene {
         let screen = Screen {
             basis: self.nav.cam.basis(),
             size: DVec2::new(width as f64, height as f64),
-            reserved: vec![
-                pad(r.panel_rect(0, Corner::BottomLeft, width, height)),
-                pad(r.panel_rect(1, Corner::TopRight, width, height)),
-                pad(r.panel_rect(2, Corner::TopLeft, width, height)),
-                pad(r.panel_rect(3, Corner::TopLeft, width, height)),
-                pad(r.panel_rect(render::UI_PANEL_BASE, Corner::TopLeft, width, height)),
-                pad(r.panel_rect(render::UI_PANEL_BASE + 1, Corner::TopLeft, width, height)),
-                pad(r.panel_rect(render::UI_PANEL_BASE + 3, Corner::TopLeft, width, height)),
-            ],
+            reserved: self.gui.covered().iter().map(|p| pad(*p)).collect(),
         };
         let mut shown: Vec<(&vector::Label, i32, u64)> = sets
             .iter()
@@ -2552,7 +2500,7 @@ impl Scene {
             .iter()
             .map(|p| {
                 let rect = details[p.index].0;
-                let half = pick::PlacedLabel::text_half(DVec2::new(rect.w as f64, rect.h as f64), (text::PAD * scale as usize) as f64);
+                let half = pick::PlacedLabel::text_half(DVec2::new(rect.w as f64, rect.h as f64), LABEL_PAD * scale as f64);
                 pick::PlacedLabel::new(candidates[p.index].0, p.center, half, p.angle)
             })
             .collect();
@@ -2653,62 +2601,42 @@ impl Scene {
         !self.text.is_idle() || self.label_alpha.values().any(|a| *a < 1.0)
     }
 
-    fn hud(&self, r: &Renderer) -> String {
+    /// The quiet line at the top right: where the view is, how high, and the clock; and what is
+    /// still loading, if anything.
+    fn status_line(&self) -> (String, Option<String>) {
         let cam = &self.nav.cam;
         let view = &self.map.view;
         let (position, scale) = match self.mode {
             Mode::Globe => (hemisphere_label(cam.lat, cam.lon), format!("altitude {}", format_distance(self.nav.altitude))),
             Mode::Atlas => {
                 let (lat, lon) = view.centre_lat_lon();
-                let meridian = view.central_meridian.to_degrees();
-                (
-                    hemisphere_label(lat, lon),
-                    format!(
-                        "{}, meridian {:.0}° {}  {} per pixel at the equator",
-                        view.projection.name(),
-                        meridian.abs(),
-                        if meridian >= 0.0 { 'E' } else { 'W' },
-                        format_distance(view.metres_per_pixel()),
-                    ),
-                )
+                (hemisphere_label(lat, lon), format!("{}, {} per pixel", view.projection.name(), format_distance(view.metres_per_pixel())))
             }
         };
         let position = match body::current() {
             b if b.id == body::EARTH.id => position,
             b => format!("{}  {position}", b.name),
         };
-        let sky = if self.view.sunlight { self.clock.label() } else { format!("{}  flat light", self.clock.label()) };
-        let mut text = format!(
-            "{position}\n{sky}\n{scale}  tiles {}/{}\n{}",
-            self.draw.len(),
-            r.tile_count(),
-            loading_status(self.waiting, self.retrying),
-        );
-        if let Some(status) = &self.frame_status {
-            text.push('\n');
-            text.push_str(status);
-        }
-        if let Some(line) = self.energy_status() {
-            text.push('\n');
-            text.push_str(&line);
-        }
-        for line in network_status(&self.fetcher, SystemTime::now()) {
-            text.push('\n');
-            text.push_str(&line);
-        }
-        text
+        let sky = if self.view.sunlight { self.clock.label() } else { format!("{}, flat light", self.clock.label()) };
+        let busy = (self.waiting > 0).then(|| loading_status(self.waiting, self.retrying));
+        (format!("{position}  \u{00b7}  {scale}  \u{00b7}  {sky}"), busy)
     }
 
-    fn set_panels(&mut self, r: &mut Renderer, width: u32, height: u32, scale: usize) {
-        self.ui.resize(DVec2::new(width as f64, height as f64), scale as f64);
-        self.sync_options();
-        self.sync_time_dialog();
-        let heading = (self.mode == Mode::Globe).then_some(self.nav.cam.heading);
-        compass::update(&mut self.ui, &self.compass, heading);
-        let columns = ((width as usize).saturating_sub(40) / (8 * scale)).max(20);
-        // The icons sit at the bottom right, so the credits wrap in the space left of them.
-        let icons = self.ui.icons_width() as usize;
-        let credit_columns = ((width as usize).saturating_sub(32 + icons) / (8 * scale)).max(20);
+    /// The technical figures shown on request (F12): tiles, frame rate and downloads.
+    fn technical_lines(&self) -> Vec<String> {
+        let mut lines = vec![format!("tiles {}/{}, {}", self.draw.len(), self.tiles_loaded, loading_status(self.waiting, self.retrying))];
+        if self.mode == Mode::Atlas {
+            let meridian = self.map.view.central_meridian.to_degrees();
+            lines.push(format!("central meridian {:.0}° {}", meridian.abs(), if meridian >= 0.0 { 'E' } else { 'W' }));
+        }
+        lines.extend(self.frame_status.clone());
+        lines.extend(network_status(&self.fetcher, SystemTime::now()));
+        lines
+    }
+
+    /// Gathers what the interface needs from the renderer, then builds it for this frame.
+    /// True if something done in it changes the picture.
+    fn set_panels(&mut self, r: &Renderer, width: u32, height: u32, ppp: f32) -> bool {
         let mut credits = credits_for(self.draw.iter().map(|k| r.tile_credit(*k)));
         if self.view.stars && self.mode == Mode::Globe {
             credits.push('\n');
@@ -2730,27 +2658,108 @@ impl Scene {
             credits.push('\n');
             credits.push_str(search::CREDIT);
         }
-        r.set_panel(0, &credits, credit_columns, scale);
-        // Panels keep above the credits: they are as tall as the credits turned out to be.
-        let top = r.panel_rect(0, Corner::BottomLeft, width, height)[1];
-        let band = if credits.is_empty() { 0.0 } else { height as f64 - top + 4.0 * scale as f64 };
-        self.ui.set_credit_band(band);
-        r.set_panel(1, &self.hud(r), columns, scale);
-        let wide = (columns * 3 / 5).clamp(20, SEARCH_COLUMNS);
-        r.set_panel(2, &self.search.panel_text(), wide, scale);
-        r.set_panel(3, &self.side_panel_text(), wide, scale);
-        for (i, visible) in self.ui.take_changes() {
-            if i >= Renderer::ui_panel_count() {
-                continue;
-            }
-            if visible {
-                let (w, h, rgba) = ui_draw::render(&self.ui, i, scale);
-                let rect = self.ui.panels()[i].rect;
-                r.set_ui_panel(i, Some(([rect.x, rect.y], w, h, &rgba)));
-            } else {
-                r.set_ui_panel(i, None);
+        self.credits_text = credits;
+        self.tiles_loaded = r.tile_count();
+        self.gui_size = (width, height, ppp);
+        self.gui_step()
+    }
+
+    /// Runs one frame of the interface and carries out what the user did in it. True if
+    /// anything was done.
+    fn gui_step(&mut self) -> bool {
+        self.sync_options();
+        self.sync_time_dialog();
+        self.sync_energy_style();
+        let (w, h, ppp) = self.gui_size;
+        let raw = self.gui.begin((w, h), ppp);
+        let ctx = self.gui.ctx.clone();
+        let mut done = GuiDone::default();
+        let out = ctx.run_pass(raw, |ctx| self.build_gui(ctx, &mut done));
+        self.gui.finish(out);
+        let links = std::mem::take(&mut self.gui.links);
+        for url in &links {
+            if let Err(e) = info::open_web_page(url) {
+                self.notice = Some(e);
             }
         }
+        let changed = self.gui_done(done) || !links.is_empty();
+        if changed {
+            self.persist();
+        }
+        changed
+    }
+
+    /// Lays out this frame's interface from the scene's state.
+    fn build_gui(&mut self, ctx: &egui::Context, done: &mut GuiDone) {
+        let heading = (self.mode == Mode::Globe).then_some(self.nav.cam.heading);
+        let open = [help::WINDOW, options::WINDOW, time_dialog::WINDOW].map(|w| self.gui.is_visible(w));
+        done.icon = compass::show(ctx, &mut self.gui, heading, open);
+        readout::credits(ctx, &mut self.gui, &self.credits_text, compass::row_width(heading.is_some()));
+        let (line, busy) = self.status_line();
+        readout::status(ctx, &mut self.gui, &line, busy.as_deref());
+        if self.debug_readout {
+            let lines = self.technical_lines();
+            readout::technical(ctx, &mut self.gui, &lines);
+        }
+        let search = self.search.panel_text();
+        let below = readout::text_box(ctx, &mut self.gui, "search-box", &search, 10.0);
+        let side = self.side_panel_text();
+        readout::text_box(ctx, &mut self.gui, "side-box", &side, if below > 0.0 { below + 18.0 } else { 10.0 });
+        if let Some(card) = self.energy_card() {
+            done.energy = energy_panel::show(ctx, &mut self.gui, &card);
+        }
+        help::show(ctx, &mut self.gui, self.help_scroll);
+        done.options = options::show(ctx, &mut self.gui, &self.options.borrow());
+        done.time = time_dialog::show(ctx, &mut self.gui, &self.time_model.borrow());
+        done.style = energy_style::show(ctx, &mut self.gui, &self.energy_style.borrow());
+        done.chart = power_chart::show(ctx, &mut self.gui, &self.energy.chart.borrow());
+        done.info = info::show(ctx, &mut self.gui, &self.info.borrow());
+    }
+
+    /// Carries out what the user did in a frame of the interface. True if anything was done.
+    fn gui_done(&mut self, d: GuiDone) -> bool {
+        let mut changed = d.icon.is_some();
+        match d.icon {
+            Some(compass::Clicked::Help) => self.toggle_dialog(help::WINDOW),
+            Some(compass::Clicked::Options) => self.toggle_dialog(options::WINDOW),
+            Some(compass::Clicked::Time) => self.toggle_dialog(time_dialog::WINDOW),
+            Some(compass::Clicked::North) => self.nav.face_north(),
+            None => {}
+        }
+        if let Some(a) = d.options {
+            self.options_action(a);
+            changed = true;
+        }
+        for a in d.time {
+            changed |= self.time_action(a);
+        }
+        if let Some(energy_style::Action::Set(style)) = d.style {
+            self.view.set_energy_style(style);
+            self.sync_energy_style();
+            changed = true;
+        }
+        match d.chart {
+            Some(power_chart::Event::Closed) => self.view.energy_chart = false,
+            Some(power_chart::Event::Style) => self.toggle_dialog(energy_style::WINDOW),
+            None => {}
+        }
+        changed |= d.chart.is_some();
+        let (closed, action) = d.info;
+        if closed {
+            self.info_id += 1;
+            self.info_pending = false;
+            changed = true;
+        }
+        if let Some(a) = action {
+            self.info_action(a);
+            changed = true;
+        }
+        match d.energy {
+            Some(energy_panel::Action::Detail(detail)) => self.view.energy_detail = detail,
+            Some(energy_panel::Action::Style) => self.toggle_dialog(energy_style::WINDOW),
+            None => {}
+        }
+        changed | d.energy.is_some()
     }
 
     /// The list of saved places, or a notice, below where the search box would be.
@@ -3119,20 +3128,19 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
         scene.services.toggle();
     }
     if args.show_options {
-        scene.ui.set_visible(options::WINDOW, true);
+        scene.gui.set_visible(options::WINDOW, true);
     }
     if args.show_energy_style {
         scene.sync_energy_style();
-        scene.ui.set_visible(energy_style::WINDOW, true);
+        scene.gui.set_visible(energy_style::WINDOW, true);
     }
     if args.show_time {
-        scene.ui.set_visible(time_dialog::WINDOW, true);
+        scene.gui.set_visible(time_dialog::WINDOW, true);
     }
     if args.show_help {
-        scene.ui.set_visible(help::WINDOW, true);
-        if let Some(r) = scene.ui.panels().iter().find(|p| p.id == help::WINDOW).map(|p| p.rect) {
-            scene.ui.wheel(-args.help_scroll, DVec2::new(r.x + r.w / 2.0, r.y + r.h / 2.0));
-        }
+        scene.gui.set_visible(help::WINDOW, true);
+        // A notch of the wheel scrolls about three lines.
+        scene.help_scroll = Some((args.help_scroll * 50.0) as f32);
     }
     if let Some(script) = &args.simulate_nav {
         navtrace::run(args, script, &mut scene, &mut r, &target, (width, height))?;
@@ -3150,7 +3158,7 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     let step = 1.0 / 30.0;
     loop {
         scene.update(&mut r, step, (aspect, height as f64));
-        scene.set_panels(&mut r, width, height, 1);
+        scene.set_panels(&r, width, height, 1.0);
         scene.place_labels(&mut r, (width, height), 1, step);
         r.flush_uploads();
         scene.poll_feeds();
@@ -3199,7 +3207,10 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     for _ in 0..90 {
         scene.update(&mut r, step, (aspect, height as f64));
     }
-    scene.set_panels(&mut r, width, height, 1);
+    // Windows are measured in their first frame and drawn from the next.
+    for _ in 0..3 {
+        scene.set_panels(&r, width, height, 1.0);
+    }
     scene.settle_labels(&mut r, (width, height), step);
 
     let frame_started = Instant::now();
@@ -3216,8 +3227,11 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     });
     let draw = scene.draw.clone();
     scene.prepare_draw(&mut r);
+    scene.gui.prepare(&r.device, &r.queue, format);
     let gpu_started = Instant::now();
+    let gui = &scene.gui;
     r.draw(&view, (width, height), &scene.nav.cam, scene.nav.altitude, &draw, |encoder| {
+        gui.render(encoder, &view);
         encoder.copy_texture_to_buffer(
             target.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
@@ -3434,6 +3448,8 @@ impl App {
         let renderer = Renderer::new(device, queue, draw_format, samples);
         let mut scene = Scene::new(&self.args, DVec2::new(w as f64, h as f64));
         scene.start_feeds(&self.args);
+        // Dark or light as the desktop is; without a word from it, dark suits the imagery.
+        scene.gui.set_dark(window.theme() != Some(winit::window::Theme::Light));
         let now = Instant::now();
         let benchmark = self.args.benchmark.map(|seconds| Benchmark {
             end: now + Duration::from_secs_f64(seconds),
@@ -3498,7 +3514,9 @@ impl App {
         let aspect = w as f64 / h as f64;
         gfx.scene.update(&mut gfx.renderer, dt, (aspect, h as f64));
         let scale = gfx.window.scale_factor().round().max(1.0) as usize;
-        gfx.scene.set_panels(&mut gfx.renderer, w, h, scale);
+        if gfx.scene.set_panels(&gfx.renderer, w, h, gfx.window.scale_factor() as f32) {
+            gfx.redraw_wanted = true;
+        }
         gfx.scene.place_labels(&mut gfx.renderer, (w, h), scale as u32, dt);
 
         let frame = match gfx.surface.get_current_texture() {
@@ -3518,9 +3536,12 @@ impl App {
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(gfx.draw_format), ..Default::default() });
         let draw = gfx.scene.draw.clone();
         gfx.scene.prepare_draw(&mut gfx.renderer);
+        gfx.scene.gui.prepare(&gfx.renderer.device, &gfx.renderer.queue, gfx.draw_format);
         let (cam, altitude) = (gfx.scene.nav.cam, gfx.scene.nav.altitude);
         let (number, slot) = gfx.recorder.as_mut().map_or((0, None), |rec| rec.begin(w, h));
+        let gui = &gfx.scene.gui;
         gfx.renderer.draw(&view, (w, h), &cam, altitude, &draw, |encoder| {
+            gui.render(encoder, &view);
             if let Some(slot) = &slot {
                 slot.copy(encoder, &frame.texture);
             }
@@ -3538,7 +3559,7 @@ impl App {
         // Tiles only waiting out a retry delay are picked up by the slow tick instead.
         let scene = &gfx.scene;
         let loading = !scene.loader.is_idle() || scene.waiting > scene.retrying;
-        if scene.nav.is_animating() || scene.map.is_animating() || scene.clock.is_fast() || loading || scene.labels_changing() || gfx.benchmark.is_some() {
+        if scene.nav.is_animating() || scene.map.is_animating() || scene.clock.is_fast() || loading || scene.labels_changing() || scene.gui.animating() || gfx.benchmark.is_some() {
             gfx.redraw_wanted = true;
         }
     }
@@ -3787,6 +3808,10 @@ impl ApplicationHandler<UserEvent> for App {
                 Self::redraw(gfx);
                 return;
             }
+            WindowEvent::ThemeChanged(theme) => {
+                gfx.scene.gui.set_dark(theme != winit::window::Theme::Light);
+                gfx.redraw_wanted = true;
+            }
             // In a browser the canvas is fitted on each frame instead (see `redraw`).
             #[cfg(target_arch = "wasm32")]
             WindowEvent::Resized(_) => gfx.redraw_wanted = true,
@@ -3806,7 +3831,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::CursorLeft { .. } => {
                 if gfx.scene.map_buttons == 0 {
-                    gfx.scene.ui.pointer_moved(DVec2::new(-1.0, -1.0));
+                    gfx.scene.gui.pointer_moved(DVec2::new(-1.0, -1.0));
                 }
             }
             WindowEvent::ModifiersChanged(m) => {
@@ -3921,21 +3946,22 @@ impl ApplicationHandler<UserEvent> for App {
                         KeyCode::KeyH | KeyCode::F1 if !self.mods.ctrl => gfx.scene.toggle_dialog(help::WINDOW),
                         KeyCode::KeyV if !self.mods.ctrl => gfx.scene.toggle_dialog(options::WINDOW),
                         KeyCode::KeyC if !self.mods.ctrl => gfx.scene.toggle_dialog(time_dialog::WINDOW),
-                        KeyCode::Escape if gfx.scene.ui.is_visible(time_dialog::WINDOW) => {
-                            gfx.scene.ui.set_visible(time_dialog::WINDOW, false);
+                        KeyCode::Escape if gfx.scene.gui.is_visible(time_dialog::WINDOW) => {
+                            gfx.scene.gui.set_visible(time_dialog::WINDOW, false);
                             gfx.scene.clock.release();
                         }
-                        KeyCode::Escape if gfx.scene.ui.is_visible(info::WINDOW) => {
-                            gfx.scene.ui.set_visible(info::WINDOW, false);
+                        KeyCode::Escape if gfx.scene.gui.is_visible(info::WINDOW) => {
+                            gfx.scene.gui.set_visible(info::WINDOW, false);
                             gfx.scene.info_id += 1;
                             gfx.scene.info_pending = false;
                         }
-                        KeyCode::Escape if gfx.scene.ui.is_visible(options::WINDOW) => {
-                            gfx.scene.ui.set_visible(options::WINDOW, false);
+                        KeyCode::Escape if gfx.scene.gui.is_visible(options::WINDOW) => {
+                            gfx.scene.gui.set_visible(options::WINDOW, false);
                         }
-                        KeyCode::Escape if gfx.scene.ui.is_visible(help::WINDOW) => {
-                            gfx.scene.ui.set_visible(help::WINDOW, false);
+                        KeyCode::Escape if gfx.scene.gui.is_visible(help::WINDOW) => {
+                            gfx.scene.gui.set_visible(help::WINDOW, false);
                         }
+                        KeyCode::F12 => gfx.scene.debug_readout = !gfx.scene.debug_readout,
                         KeyCode::Escape => {
                             nav.stop();
                             map.stop();
