@@ -146,7 +146,8 @@ impl Gui {
     /// Whether a window or icon of the interface lies under a position, in pixels.
     pub fn covers(&self, p: DVec2) -> bool {
         let pos = egui::pos2((p.x / self.ppp as f64) as f32, (p.y / self.ppp as f64) as f32);
-        self.ctx.layer_id_at(pos).is_some_and(|l| l.order != egui::Order::Background)
+        // Overlays in the background let clicks through to the map, except the credits with their links.
+        self.ctx.layer_id_at(pos).is_some_and(|l| l.order != egui::Order::Background || l.id == egui::Id::unique(crate::readout::CREDITS))
     }
 
     /// The areas windows covered in the last frame, in pixels, as (x0, y0, x1, y1).

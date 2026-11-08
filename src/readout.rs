@@ -75,6 +75,9 @@ fn plate(ui: &egui::Ui) -> Frame {
     Frame::new().fill(v.window_fill.gamma_multiply(0.85)).corner_radius(6.0).inner_margin(Margin::symmetric(8, 4)).stroke(v.window_stroke)
 }
 
+/// The credits' area: the one overlay in the background whose links take clicks.
+pub const CREDITS: &str = "credits";
+
 /// The credits at the bottom left, leaving `right` points free for the icons.
 pub fn credits(ctx: &egui::Context, gui: &mut Gui, text: &str, right: f32) {
     if text.is_empty() {
@@ -82,7 +85,7 @@ pub fn credits(ctx: &egui::Context, gui: &mut Gui, text: &str, right: f32) {
     }
     let screen = ctx.content_rect();
     let width = (screen.width() - right - 20.0).max(160.0);
-    let shown = egui::Area::new(egui::Id::unique("credits")).anchor(Align2::LEFT_BOTTOM, Vec2::new(8.0, -8.0)).order(egui::Order::Background).interactable(true).show(ctx, |ui| {
+    let shown = egui::Area::new(egui::Id::unique(CREDITS)).anchor(Align2::LEFT_BOTTOM, Vec2::new(8.0, -8.0)).order(egui::Order::Background).interactable(true).show(ctx, |ui| {
         plate(ui).show(ui, |ui| {
             ui.set_max_width(width);
             ui.spacing_mut().item_spacing = Vec2::new(0.0, 1.0);
@@ -158,6 +161,7 @@ pub fn text_box(ctx: &egui::Context, gui: &mut Gui, id: &str, text: &str, y: f32
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nav::Button;
 
     #[test]
     fn addresses_and_known_sources_become_links() {
@@ -180,6 +184,56 @@ mod tests {
         assert_eq!(p, vec![Piece::Text("see ("), Piece::Link("https://example.org", "https://example.org"), Piece::Text(").")]);
         assert_eq!(pieces("plain"), vec![Piece::Text("plain")]);
         assert!(pieces("").is_empty());
+    }
+
+    /// Builds one frame of the interface with the credits and the status line, as the scene does.
+    fn frame(gui: &mut Gui) {
+        let raw = gui.begin((800, 600), 1.0);
+        let ctx = gui.ctx.clone();
+        let out = ctx.run_pass(raw, |ctx| {
+            credits(ctx, gui, "OpenFreeMap and more text after the link", 0.0);
+            status(ctx, gui, "30.0000° N 10.0000° E", None);
+        });
+        gui.finish(out);
+    }
+
+    fn area(gui: &Gui, id: &str) -> egui::Rect {
+        gui.ctx.memory(|m| m.area_rect(egui::Id::unique(id))).expect("the area was drawn")
+    }
+
+    #[test]
+    fn a_click_on_a_credit_link_opens_its_page() {
+        let mut gui = Gui::new();
+        // Areas find their size over the first frames.
+        for _ in 0..3 {
+            frame(&mut gui);
+        }
+        let r = area(&gui, CREDITS);
+        // The line starts with the link, just inside the plate's margin.
+        let on_link = glam::DVec2::new(r.min.x as f64 + 14.0, r.center().y as f64);
+        assert!(gui.pointer_moved(on_link), "the credits take the pointer");
+        frame(&mut gui);
+        assert!(gui.press(Button::Left), "the credits take the press, not the map");
+        frame(&mut gui);
+        assert!(gui.release(Button::Left));
+        frame(&mut gui);
+        assert_eq!(gui.links, vec!["https://openfreemap.org".to_string()]);
+    }
+
+    #[test]
+    fn other_overlays_in_the_background_leave_clicks_to_the_map() {
+        let mut gui = Gui::new();
+        for _ in 0..3 {
+            frame(&mut gui);
+        }
+        let r = area(&gui, "status");
+        let on_status = glam::DVec2::new(r.center().x as f64, r.center().y as f64);
+        assert!(!gui.pointer_moved(on_status));
+        assert!(!gui.press(Button::Left), "a press on the status line goes to the map");
+        let on_map = glam::DVec2::new(400.0, 300.0);
+        assert!(!gui.pointer_moved(on_map));
+        assert!(!gui.press(Button::Left));
+        assert!(gui.links.is_empty());
     }
 
     #[test]
