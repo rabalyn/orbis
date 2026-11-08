@@ -288,7 +288,7 @@ pub fn config_dir(flag: Option<&Path>, work_dir: &Path, user: Option<PathBuf>) -
 }
 
 pub fn user_config_dir() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("orbis"))
+    Some(crate::paths::config_dir()?.join("orbis"))
 }
 
 /// The saved values, and the file they are kept in.

@@ -77,6 +77,28 @@ Imagery is Sentinel-2 at 10 m per pixel worldwide, and aerial photos near the gr
 
 The base imagery is free for non-commercial use only, and credits must stay visible. See [docs/PROVENANCE.md](docs/PROVENANCE.md) before publishing or using this commercially.
 
+## Browser version
+
+The same program also runs in a web browser, as one self-contained `index.html` (about 16 MB) that can be put on GitHub Pages or any static host.
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.130   # must match wasm-bindgen in Cargo.lock
+./web/build.sh                                      # writes dist/index.html
+```
+
+It uses WebGPU where the browser has it, and WebGL 2 otherwise. Options go in the address, as for the command line: `index.html?lat=46.5&lon=11.8&distance=25000&tilt=70&time=2026-06-21T10:00:00Z`.
+
+What differs from the desktop program:
+
+- Tiles are kept in memory for the visit only, and view options are not saved.
+- No LAN cache sharing, SpaceMouse, file import, `--screenshot` or `--record`.
+- A server must allow requests from other sites. The fireball feed (NASA/JPL) does not, and some national aerial imagery may be missing for the same reason.
+- Labels have Latin, Greek and Cyrillic letters only (bundled Noto Sans, see `web/fonts/OFL.txt`); a browser does not let a page use the system's fonts.
+- Everything runs on the page's one thread, between frames, so loading is slower than on the desktop.
+
+A published page sends every visitor's requests straight to the public servers, without the shared cache, so check their usage policies before sharing a link widely. The imagery credits must stay visible, as on the desktop.
+
 ## Test
 
 ```bash

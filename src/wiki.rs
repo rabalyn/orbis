@@ -39,7 +39,11 @@ const PAGE_FIELDS: &str = "prop=coordinates%7Cpageprops%7Cdescription%7Cinfo&cop
 
 fn api(lang: &str) -> String {
     // maxlag asks the service to refuse us while its servers are behind, which is its etiquette for programs.
-    format!("https://{}.wikipedia.org/w/api.php?action=query&format=json&formatversion=2&maxlag=5", language(lang))
+    let url = format!("https://{}.wikipedia.org/w/api.php?action=query&format=json&formatversion=2&maxlag=5", language(lang));
+    // A page in a browser may read the answer only if it asks as an anonymous other site.
+    #[cfg(target_arch = "wasm32")]
+    let url = url + "&origin=*";
+    url
 }
 
 /// Pages whose title or text fits the name, with their coordinates.

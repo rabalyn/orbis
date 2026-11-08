@@ -7,9 +7,9 @@ use crate::events::{Event, Kind};
 use crate::fetcher::Fetcher;
 use crate::sky_time::{days_from_civil, format_utc};
 use serde_json::Value;
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use crate::worker::Worker;
+use std::sync::Arc;
+use crate::wtime::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DAY: f64 = 86_400.0;
 /// Requests to a publisher are at least this far apart.
@@ -339,7 +339,7 @@ fn load(fetcher: &Fetcher, feed: Feed, url: &str, wait: &mut Option<Instant>) ->
         return Err(FeedError::Offline);
     }
     if let Some(last) = *wait {
-        std::thread::sleep((last + MIN_GAP).saturating_duration_since(Instant::now()));
+        crate::wtime::pause((last + MIN_GAP).saturating_duration_since(Instant::now()));
     }
     *wait = Some(Instant::now());
     // A stored answer that is too old still beats nothing when the publisher cannot be reached.
@@ -359,32 +359,25 @@ fn load(fetcher: &Fetcher, feed: Feed, url: &str, wait: &mut Option<Instant>) ->
 
 /// Asks the feeds on a thread of its own.
 pub struct Feeds {
-    jobs: Sender<(Feed, String)>,
-    replies: Mutex<Receiver<Reply>>,
+    worker: Worker<(Feed, String), Reply>,
 }
 
 impl Feeds {
     pub fn new(fetcher: Arc<Fetcher>) -> Self {
-        let (jobs, job_rx) = channel::<(Feed, String)>();
-        let (reply_tx, replies) = channel();
-        std::thread::spawn(move || {
-            let mut wait = None;
-            while let Ok((feed, url)) = job_rx.recv() {
-                let answer = load(&fetcher, feed, &url, &mut wait);
-                if reply_tx.send(Reply { feed, answer }).is_err() {
-                    break;
-                }
-            }
+        let mut wait = None;
+        let worker = Worker::new(false, MIN_GAP, move |(feed, url): (Feed, String)| {
+            let answer = load(&fetcher, feed, &url, &mut wait);
+            Reply { feed, answer }
         });
-        Self { jobs, replies: Mutex::new(replies) }
+        Self { worker }
     }
 
     pub fn submit(&self, feed: Feed, time: f64) {
-        let _ = self.jobs.send((feed, feed.url(time, unix_now())));
+        self.worker.submit((feed, feed.url(time, unix_now())));
     }
 
     pub fn poll(&self) -> Option<Reply> {
-        self.replies.lock().ok()?.try_recv().ok()
+        self.worker.poll()
     }
 }
 

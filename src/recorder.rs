@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Instant;
+use crate::wtime::Instant;
 
 /// Frames being copied by the GPU at one time.
 const MAX_IN_FLIGHT: usize = 4;

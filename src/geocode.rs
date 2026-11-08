@@ -7,9 +7,9 @@
 
 use crate::fetcher::{FetchError, Fetcher};
 use crate::search::{self, Failure, Place};
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use crate::worker::Worker;
+use std::sync::Arc;
+use crate::wtime::{Duration, Instant};
 
 pub const DEFAULT_SERVICE: &str = "https://nominatim.openstreetmap.org/search";
 /// The policy says one request per second; this leaves a margin.
@@ -22,38 +22,27 @@ pub struct Reply {
 }
 
 pub struct Geocoder {
-    jobs: Sender<String>,
-    replies: Mutex<Receiver<Reply>>,
+    worker: Worker<String, Reply>,
 }
 
 impl Geocoder {
     /// `service` is the search endpoint, so that it can be switched without a new program.
     pub fn new(fetcher: Arc<Fetcher>, service: String, lang: String) -> Self {
-        let (jobs, job_rx) = channel::<String>();
-        let (reply_tx, replies) = channel();
-        std::thread::spawn(move || {
-            let mut gap = MinGap::new(MIN_INTERVAL);
-            // The thread ends when the Geocoder is dropped and the channel closes.
-            while let Ok(mut query) = job_rx.recv() {
-                // Only the newest query matters if the user was quicker than the server.
-                while let Ok(newer) = job_rx.try_recv() {
-                    query = newer;
-                }
-                let answer = lookup(&fetcher, &service, &lang, &query, &mut gap);
-                if reply_tx.send(Reply { query, answer }).is_err() {
-                    break;
-                }
-            }
+        let mut gap = MinGap::new(MIN_INTERVAL);
+        // Only the newest query matters if the user was quicker than the server.
+        let worker = Worker::new(true, MIN_INTERVAL, move |query: String| {
+            let answer = lookup(&fetcher, &service, &lang, &query, &mut gap);
+            Reply { query, answer }
         });
-        Self { jobs, replies: Mutex::new(replies) }
+        Self { worker }
     }
 
     pub fn submit(&self, query: &str) {
-        let _ = self.jobs.send(query.to_string());
+        self.worker.submit(query.to_string());
     }
 
     pub fn poll(&self) -> Option<Reply> {
-        self.replies.lock().ok()?.try_recv().ok()
+        self.worker.poll()
     }
 }
 
@@ -86,7 +75,7 @@ fn lookup(fetcher: &Fetcher, service: &str, lang: &str, query: &str, gap: &mut M
     if fetcher.is_offline() {
         return Err(Failure::Offline);
     }
-    std::thread::sleep(gap.wait(Instant::now()));
+    crate::wtime::pause(gap.wait(Instant::now()));
     gap.sent(Instant::now());
     let data = fetcher.fetch_service(&request_url(service, lang, query)).map_err(|e| match e {
         FetchError::Missing | FetchError::Transient | FetchError::Paused(_) | FetchError::Busy(_) => Failure::Unreachable,

@@ -1,8 +1,13 @@
+#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused))]
 mod atlas;
 mod atlas_nav;
 mod blend;
 mod body;
 mod buildings;
+#[cfg(not(target_arch = "wasm32"))]
+mod cache;
+#[cfg(target_arch = "wasm32")]
+#[path = "cache_mem.rs"]
 mod cache;
 mod clicks;
 mod camera;
@@ -59,6 +64,11 @@ mod ui;
 mod ui_draw;
 mod vector;
 mod wiki;
+mod wtime;
+mod worker;
+mod paths;
+#[cfg(target_arch = "wasm32")]
+mod web;
 mod wikilookup;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -82,7 +92,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use crate::wtime::{Duration, Instant, SystemTime};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -297,6 +307,16 @@ struct Args {
     flight_stop_at: Option<f64>,
 }
 
+#[cfg(target_arch = "wasm32")]
+fn locale_language() -> String {
+    // The browser's language, such as "de-AT", read like a locale.
+    web_sys::window()
+        .and_then(|w| w.navigator().language())
+        .map(|l| vector::language_from_locale(&l.replace('-', "_")))
+        .unwrap_or_default()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn locale_language() -> String {
     ["LC_ALL", "LC_MESSAGES", "LANG"]
         .iter()
@@ -846,12 +866,16 @@ struct EnergyLayer {
 /// Sets up tile fetching, including sharing on the LAN if asked for.
 fn make_fetcher(args: &Args) -> Arc<Fetcher> {
     let cache = DiskCache::new(args.cache_dir.clone());
-    let trimmer = cache.clone();
-    let limit = args.cache_limit_gib * GIB;
-    std::thread::spawn(move || loop {
-        trimmer.trim(limit);
-        std::thread::sleep(TRIM_EVERY);
-    });
+    // In a browser the cache is in memory, and keeps itself within bounds.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let trimmer = cache.clone();
+        let limit = args.cache_limit_gib * GIB;
+        std::thread::spawn(move || loop {
+            trimmer.trim(limit);
+            std::thread::sleep(TRIM_EVERY);
+        });
+    }
     let peers = Peers::new(args.cache_servers.clone());
     Arc::new(Fetcher::new(cache, peers, args.offline))
 }
@@ -2990,12 +3014,34 @@ fn format_distance(m: f64) -> String {
     }
 }
 
-fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue)> {
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("orbis"),
-        ..Default::default()
-    }))
-    .context("no suitable graphics device")
+async fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue)> {
+    // A browser's limits are its own, often below the native defaults.
+    #[cfg(target_arch = "wasm32")]
+    let required_limits = adapter.limits();
+    #[cfg(not(target_arch = "wasm32"))]
+    let required_limits = wgpu::Limits::default();
+    adapter
+        .request_device(&wgpu::DeviceDescriptor {
+            label: Some("orbis"),
+            required_limits,
+            ..Default::default()
+        })
+        .await
+        .context("no suitable graphics device")
+}
+
+/// The graphics adapter and device for a window's surface.
+async fn open_gpu(instance: &wgpu::Instance, surface: &wgpu::Surface<'static>) -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: Some(surface),
+            ..Default::default()
+        })
+        .await
+        .context("no graphics adapter for this window")?;
+    let (device, queue) = request_device(&adapter).await?;
+    Ok((adapter, device, queue))
 }
 
 /// Whether a saved image must keep waiting. A flight in progress counts: the tiles of the view it
@@ -3004,6 +3050,7 @@ fn screenshot_busy(loader_idle: bool, waiting: usize, text_idle: bool, feeds_pen
     !loader_idle || waiting > 0 || !text_idle || feeds_pending > 0 || animating || click_pending
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     let (width, height) = args.size;
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
@@ -3012,7 +3059,7 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
         ..Default::default()
     }))
     .context("no graphics adapter")?;
-    let (device, queue) = request_device(&adapter)?;
+    let (device, queue) = pollster::block_on(request_device(&adapter))?;
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let samples = render::sample_count(&adapter, format);
     let mut r = Renderer::new(device, queue, format, samples);
@@ -3256,6 +3303,8 @@ fn frame_state(scene: &Scene, size: (u32, u32), dt: f64, draw: &[TileKey]) -> se
 
 struct Gfx {
     window: Arc<Window>,
+    /// The format frames are drawn in: the surface's, or an sRGB view of it.
+    draw_format: wgpu::TextureFormat,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     renderer: Renderer,
@@ -3281,6 +3330,20 @@ struct Benchmark {
 #[derive(Debug)]
 enum UserEvent {
     SpaceMouse,
+    /// The browser has opened the graphics device.
+    #[cfg(target_arch = "wasm32")]
+    GpuReady,
+    /// A request made from the page was answered.
+    #[cfg(target_arch = "wasm32")]
+    Answer,
+}
+
+#[cfg(target_arch = "wasm32")]
+type OpenedGpu = Result<(Arc<Window>, wgpu::Surface<'static>, (wgpu::Adapter, wgpu::Device, wgpu::Queue))>;
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static PENDING_GPU: std::cell::RefCell<Option<OpenedGpu>> = const { std::cell::RefCell::new(None) };
 }
 
 struct App {
@@ -3290,27 +3353,47 @@ struct App {
     gfx: Option<Gfx>,
     error: Option<anyhow::Error>,
     mods: Mods,
+    /// The browser is still opening the graphics device.
+    #[cfg(target_arch = "wasm32")]
+    opening: bool,
 }
 
 impl App {
-    fn start(&self, event_loop: &ActiveEventLoop) -> Result<Gfx> {
+    /// Opens the window and its surface; the graphics device comes after, in `finish_start`.
+    fn open_window(&self, event_loop: &ActiveEventLoop) -> Result<Arc<Window>> {
         let (width, height) = if self.args.size_given { self.args.size } else { (1280, 800) };
-        let window = Arc::new(event_loop.create_window(
-            Window::default_attributes()
-                .with_title("Orbis")
-                .with_inner_size(PhysicalSize::new(width, height)),
-        )?);
+        let attributes = Window::default_attributes().with_title("Orbis");
+        // In a browser, the page decides the canvas's size.
+        #[cfg(not(target_arch = "wasm32"))]
+        let attributes = attributes.with_inner_size(PhysicalSize::new(width, height));
+        #[cfg(target_arch = "wasm32")]
+        let attributes = {
+            let _ = (width, height);
+            use winit::platform::web::WindowAttributesExtWebSys;
+            attributes.with_canvas(web::canvas()).with_prevent_default(true).with_focusable(true)
+        };
+        Ok(Arc::new(event_loop.create_window(attributes)?))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start(&self, event_loop: &ActiveEventLoop) -> Result<Gfx> {
+        let window = self.open_window(event_loop)?;
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(
             Box::new(event_loop.owned_display_handle()),
         ));
         let surface = instance.create_surface(window.clone())?;
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
-            ..Default::default()
-        }))
-        .context("no graphics adapter for this window")?;
-        let (device, queue) = request_device(&adapter)?;
+        let (adapter, device, queue) = pollster::block_on(open_gpu(&instance, &surface))?;
+        self.finish_start(window, surface, adapter, device, queue)
+    }
+
+    fn finish_start(
+        &self,
+        window: Arc<Window>,
+        surface: wgpu::Surface<'static>,
+        adapter: wgpu::Adapter,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+    ) -> Result<Gfx> {
         let size = window.inner_size();
         let (w, h) = (size.width.max(1), size.height.max(1));
         let mut config = surface
@@ -3323,6 +3406,11 @@ impl App {
             .copied()
             .find(wgpu::TextureFormat::is_srgb)
             .unwrap_or(caps.formats[0]);
+        // A browser's canvas has no sRGB format, but can be drawn through an sRGB view of it.
+        let draw_format = config.format.add_srgb_suffix();
+        if draw_format != config.format {
+            config.view_formats.push(draw_format);
+        }
         config.present_mode = pacing::present_mode(&caps.present_modes);
         if self.args.record.is_some() {
             if !caps.usages.contains(wgpu::TextureUsages::COPY_SRC) {
@@ -3331,12 +3419,12 @@ impl App {
             config.usage |= wgpu::TextureUsages::COPY_SRC;
         }
         surface.configure(&device, &config);
-        let samples = render::sample_count(&adapter, config.format);
+        let samples = render::sample_count(&adapter, draw_format);
         let recorder = match &self.args.record {
             Some(dir) => Some(recorder::Recorder::start(dir, self.args.record_limit_gib, device.clone(), config.format)?),
             None => None,
         };
-        let renderer = Renderer::new(device, queue, config.format, samples);
+        let renderer = Renderer::new(device, queue, draw_format, samples);
         let mut scene = Scene::new(&self.args, DVec2::new(w as f64, h as f64));
         scene.start_feeds(&self.args);
         let now = Instant::now();
@@ -3346,6 +3434,7 @@ impl App {
             intervals: Vec::new(),
         });
         Ok(Gfx {
+            draw_format,
             present_mode: config.present_mode,
             window,
             surface,
@@ -3362,6 +3451,16 @@ impl App {
     }
 
     fn redraw(gfx: &mut Gfx) {
+        // A page's canvas may have been resized while the graphics device was still opening.
+        #[cfg(target_arch = "wasm32")]
+        {
+            if let Some((width, height)) = web::fit_canvas().filter(|&s| s != (gfx.config.width, gfx.config.height)) {
+                gfx.config.width = width;
+                gfx.config.height = height;
+                gfx.surface.configure(&gfx.renderer.device, &gfx.config);
+                gfx.scene.nav.size = DVec2::new(width as f64, height as f64);
+            }
+        }
         let now = Instant::now();
         gfx.pacer.frame_started(now);
         gfx.meter.record(now);
@@ -3381,6 +3480,13 @@ impl App {
             .map(|mhz| mhz as f64 / 1000.0);
         gfx.scene.frame_status =
             Some(pacing::status_line(gfx.pacer.limit(), gfx.meter.rate(), display_hz));
+        // In a browser, the work threads would do runs here, in the frame's spare time.
+        #[cfg(target_arch = "wasm32")]
+        {
+            web::set_budget(Duration::from_millis(6));
+            gfx.scene.loader.pump();
+            web::set_budget(Duration::from_millis(4));
+        }
         let (w, h) = (gfx.config.width, gfx.config.height);
         let aspect = w as f64 / h as f64;
         gfx.scene.update(&mut gfx.renderer, dt, (aspect, h as f64));
@@ -3402,7 +3508,7 @@ impl App {
                 return;
             }
         };
-        let view = frame.texture.create_view(&Default::default());
+        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(gfx.draw_format), ..Default::default() });
         let draw = gfx.scene.draw.clone();
         gfx.scene.prepare_draw(&mut gfx.renderer);
         let (cam, altitude) = (gfx.scene.nav.cam, gfx.scene.nav.altitude);
@@ -3490,6 +3596,36 @@ impl App {
 }
 
 impl ApplicationHandler<UserEvent> for App {
+    #[cfg(target_arch = "wasm32")]
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.gfx.is_some() || self.opening {
+            return;
+        }
+        self.opening = true;
+        let opened = self.open_window(event_loop);
+        let proxy = self.proxy.clone();
+        let wake = proxy.clone();
+        web::set_waker(move || {
+            let _ = wake.send_event(UserEvent::Answer);
+        });
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = async {
+                let window = opened?;
+                // WebGPU where the browser can do it, WebGL 2 otherwise.
+                let instance = wgpu::util::new_instance_with_webgpu_detection(wgpu::InstanceDescriptor::new_without_display_handle()).await;
+                let surface = instance.create_surface(window.clone())?;
+                let gpu = open_gpu(&instance, &surface).await?;
+                let info = gpu.0.get_info();
+                web::log(&format!("graphics: {} through {:?}", info.name, info.backend));
+                Ok((window, surface, gpu))
+            }
+            .await;
+            PENDING_GPU.with(|p| *p.borrow_mut() = Some(result));
+            let _ = proxy.send_event(UserEvent::GpuReady);
+        });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.gfx.is_some() {
             return;
@@ -3515,7 +3651,29 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
-    fn user_event(&mut self, _: &ActiveEventLoop, event: UserEvent) {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+        #[cfg(target_arch = "wasm32")]
+        match event {
+            UserEvent::GpuReady => {
+                let Some(result) = PENDING_GPU.with(|p| p.borrow_mut().take()) else { return };
+                match result.and_then(|(window, surface, (adapter, device, queue))| self.finish_start(window, surface, adapter, device, queue)) {
+                    Ok(g) => {
+                        web::started();
+                        g.window.request_redraw();
+                        self.gfx = Some(g);
+                    }
+                    Err(e) => web::fail(&format!("{e:#}")),
+                }
+                return;
+            }
+            UserEvent::Answer => {
+                if let Some(g) = &mut self.gfx {
+                    g.redraw_wanted = true;
+                }
+                return;
+            }
+            UserEvent::SpaceMouse => {}
+        }
         let (UserEvent::SpaceMouse, Some(gfx), Some(sm)) = (event, &mut self.gfx, &self.spacemouse) else { return };
         let u = sm.shared.drain();
         let scene = &mut gfx.scene;
@@ -3534,6 +3692,15 @@ impl ApplicationHandler<UserEvent> for App {
         // A slow tick picks up tiles whose retry time has come.
         let mut wake = now + Duration::from_secs(1);
         if let Some(g) = &mut self.gfx {
+            // Tiles keep loading between frames too, which a hidden page hardly draws.
+            #[cfg(target_arch = "wasm32")]
+            {
+                web::set_budget(Duration::from_millis(8));
+                g.scene.loader.pump();
+                if !g.scene.loader.is_idle() {
+                    wake = wake.min(now + Duration::from_millis(50));
+                }
+            }
             // Whatever the user changed, by key, click or list, is noted and saved here.
             g.scene.persist();
             if g.pacer.limit() != g.scene.view.frame_rate {
@@ -3613,6 +3780,10 @@ impl ApplicationHandler<UserEvent> for App {
                 Self::redraw(gfx);
                 return;
             }
+            // In a browser the canvas is fitted on each frame instead (see `redraw`).
+            #[cfg(target_arch = "wasm32")]
+            WindowEvent::Resized(_) => gfx.redraw_wanted = true,
+            #[cfg(not(target_arch = "wasm32"))]
             WindowEvent::Resized(size) => {
                 if size.width > 0 && size.height > 0 {
                     gfx.config.width = size.width;
@@ -3885,6 +4056,41 @@ fn search_key(event: &KeyEvent, mods: Mods) -> Option<search::Key> {
     }
 }
 
+/// In a browser, the page's address holds the options: `?lat=46.5&lon=11.8` is `--lat 46.5 --lon 11.8`.
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    console_error_panic_hook::set_once();
+    let argv = web::address_args();
+    let store = settings::Store::in_memory();
+    let mut args = match parse_args(argv.into_iter(), &store.values) {
+        Ok(Some(a)) => a,
+        Ok(None) => return web::fail(USAGE),
+        Err(e) => return web::fail(&format!("{e:#}")),
+    };
+    body::select(args.body);
+    if !args.distance_given {
+        args.cam.distance = nav::whole_body();
+    }
+    // Nothing is kept between visits, and nothing is shared on a LAN.
+    args.spacemouse = false;
+    let event_loop = match EventLoop::<UserEvent>::with_user_event().build() {
+        Ok(e) => e,
+        Err(e) => return web::fail(&format!("{e}")),
+    };
+    let app = App {
+        args,
+        proxy: event_loop.create_proxy(),
+        spacemouse: None,
+        gfx: None,
+        error: None,
+        mods: Mods::default(),
+        opening: false,
+    };
+    use winit::platform::web::EventLoopExtWebSys;
+    event_loop.spawn_app(app);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> Result<()> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let (dir, flag) = settings_dir(&argv);

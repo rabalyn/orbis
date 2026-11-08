@@ -3,7 +3,7 @@
 //! Times are seconds since the Unix epoch (UTC, leap seconds ignored), as f64.
 
 use glam::DVec3;
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::wtime::{SystemTime, UNIX_EPOCH};
 use winit::keyboard::KeyCode;
 
 /// Sun directions closer than this (degrees) look the same, so no redraw is needed.

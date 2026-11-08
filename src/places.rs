@@ -79,7 +79,7 @@ pub fn default_name(body_name: &str, earth: bool, lat: f64, lon: f64) -> String 
 
 /// The folder and file for the current user.
 pub fn default_path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("orbis").join("places.json"))
+    Some(crate::paths::config_dir()?.join("orbis").join("places.json"))
 }
 
 pub struct Store {

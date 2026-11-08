@@ -11,9 +11,9 @@ use crate::energy::{Source, SOURCES};
 use crate::event_feeds::{pack, unix_now, unpack};
 use crate::fetcher::Fetcher;
 use serde_json::Value;
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use crate::worker::Worker;
+use std::sync::Arc;
+use crate::wtime::{Duration, Instant};
 
 pub const CREDIT: &str = "Generation and consumption: Bundesnetzagentur | SMARD.de (CC BY 4.0)";
 const BASE: &str = "https://www.smard.de/app/chart_data";
@@ -165,14 +165,14 @@ pub enum Reply {
     Week(i64, Result<Week, String>),
 }
 
+#[derive(Clone)]
 enum Job {
     Index,
     Week(i64),
 }
 
 pub struct PowerFeed {
-    jobs: Sender<Job>,
-    replies: Mutex<Receiver<Reply>>,
+    worker: Worker<Job, Reply>,
 }
 
 /// What a week file holds where SMARD has none: nuclear since the last plants shut down in 2023.
@@ -192,7 +192,7 @@ fn get(fetcher: &Fetcher, url: &str, name: &str, max_age: f64, wait: &mut Option
         return Err("no stored data and the program is offline".to_string());
     }
     if let Some(last) = *wait {
-        std::thread::sleep((last + MIN_GAP).saturating_duration_since(Instant::now()));
+        crate::wtime::pause((last + MIN_GAP).saturating_duration_since(Instant::now()));
     }
     *wait = Some(Instant::now());
     let answer = match fetcher.fetch_service(url) {
@@ -231,37 +231,28 @@ fn load_week(fetcher: &Fetcher, start: i64, wait: &mut Option<Instant>) -> Resul
 
 impl PowerFeed {
     pub fn new(fetcher: Arc<Fetcher>) -> Self {
-        let (jobs, job_rx) = channel::<Job>();
-        let (reply_tx, replies) = channel();
-        std::thread::spawn(move || {
-            let mut wait = None;
-            while let Ok(job) = job_rx.recv() {
-                let reply = match job {
-                    Job::Index => {
-                        let url = format!("{BASE}/410/DE/index_quarterhour.json");
-                        let r = get(&fetcher, &url, "power/smard-index.json", FRESH, &mut wait);
-                        Reply::Index(r.and_then(|b| parse_index(&b).ok_or_else(|| "SMARD's index could not be read".to_string())))
-                    }
-                    Job::Week(start) => Reply::Week(start, load_week(&fetcher, start, &mut wait)),
-                };
-                if reply_tx.send(reply).is_err() {
-                    break;
-                }
+        let mut wait = None;
+        let worker = Worker::new(false, MIN_GAP, move |job: Job| match job {
+            Job::Index => {
+                let url = format!("{BASE}/410/DE/index_quarterhour.json");
+                let r = get(&fetcher, &url, "power/smard-index.json", FRESH, &mut wait);
+                Reply::Index(r.and_then(|b| parse_index(&b).ok_or_else(|| "SMARD's index could not be read".to_string())))
             }
+            Job::Week(start) => Reply::Week(start, load_week(&fetcher, start, &mut wait)),
         });
-        Self { jobs, replies: Mutex::new(replies) }
+        Self { worker }
     }
 
     pub fn ask_index(&self) {
-        let _ = self.jobs.send(Job::Index);
+        self.worker.submit(Job::Index);
     }
 
     pub fn ask_week(&self, start_ms: i64) {
-        let _ = self.jobs.send(Job::Week(start_ms));
+        self.worker.submit(Job::Week(start_ms));
     }
 
     pub fn poll(&self) -> Option<Reply> {
-        self.replies.lock().ok()?.try_recv().ok()
+        self.worker.poll()
     }
 }
 

@@ -9,7 +9,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use crate::wtime::{Duration, Instant, SystemTime};
 
 pub const TCP_PORT: u16 = 47813;
 pub const DISCOVERY_PORT: u16 = 47814;
@@ -219,6 +219,12 @@ pub fn instance_id() -> u64 {
     (std::process::id() as u64) << 32 | nanos
 }
 
+#[cfg(target_arch = "wasm32")]
+fn discovery_socket() -> std::io::Result<UdpSocket> {
+    Err(std::io::ErrorKind::Unsupported.into())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn discovery_socket() -> std::io::Result<UdpSocket> {
     use socket2::{Domain, Protocol, Socket, Type};
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;

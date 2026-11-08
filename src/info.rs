@@ -111,7 +111,14 @@ pub fn handle(ui: &mut Ui, event: UiEvent) -> (bool, Option<Action>) {
     (true, None)
 }
 
+#[cfg(target_arch = "wasm32")]
+pub fn open_in_browser(url: &str) -> Result<(), String> {
+    let url = wiki::article_url(url).ok_or("This address is not one that is safe to open.")?;
+    crate::web::open(&url)
+}
+
 /// Opens an article in the browser, without a shell. Only a plain Wikipedia address is passed on.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn open_in_browser(url: &str) -> Result<(), String> {
     let url = wiki::article_url(url).ok_or("This address is not one that is safe to open.")?;
     let child = std::process::Command::new("xdg-open")

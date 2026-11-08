@@ -23,7 +23,7 @@ pub const CREDIT_SEP: char = '\u{1f}';
 pub const ID_PREFIX: &str = "svc-";
 
 pub fn default_path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("orbis").join("services.json"))
+    Some(crate::paths::config_dir()?.join("orbis").join("services.json"))
 }
 
 /// The services the user has added, kept in a JSON file that is written atomically.

@@ -14,7 +14,7 @@ use glam::DVec3;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, SystemTime};
+use crate::wtime::{Duration, SystemTime};
 
 pub const GRID: usize = 32;
 pub const TERRAIN_MAX_Z: u8 = 14;
@@ -598,6 +598,9 @@ fn note_fetch_trouble(source: &sources::TileSource, e: &FetchError) {
 pub struct Loader {
     shared: Arc<Shared>,
     results: Receiver<(Job, Outcome)>,
+    /// A browser page has no threads, so the work is done in `pump`, between frames.
+    #[cfg(target_arch = "wasm32")]
+    tx: SyncSender<(Job, Outcome)>,
 }
 
 impl Loader {
@@ -614,11 +617,37 @@ impl Loader {
             lines: Mutex::new(LineKinds { streets: true, trails: true, trains: true, boundaries: true }),
         });
         let (tx, results) = sync_channel(RESULT_QUEUE);
-        for _ in 0..WORKERS {
-            let (shared, tx) = (shared.clone(), tx.clone());
-            std::thread::spawn(move || worker(&shared, &tx));
+        #[cfg(target_arch = "wasm32")]
+        return Self { shared, results, tx };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            for _ in 0..WORKERS {
+                let (shared, tx) = (shared.clone(), tx.clone());
+                std::thread::spawn(move || worker(&shared, &tx));
+            }
+            Self { shared, results }
         }
-        Self { shared, results }
+    }
+
+    /// Does queued jobs while the frame's spare time lasts. Jobs that wait for a download only
+    /// start it, so the time goes to decoding what has arrived.
+    #[cfg(target_arch = "wasm32")]
+    pub fn pump(&self) {
+        while crate::web::has_budget() {
+            let job = {
+                let mut q = self.shared.queue.lock().unwrap();
+                // Results not yet collected are all in flight, as nothing else runs meanwhile.
+                if q.in_flight.len() >= RESULT_QUEUE {
+                    return;
+                }
+                let Some(j) = q.next_job(&self.shared.fetcher) else { return };
+                q.in_flight.insert(j);
+                j
+            };
+            if let Some(done) = run_job(&self.shared, job) {
+                let _ = self.tx.try_send(done);
+            }
+        }
     }
 
     /// Sets what overlays are drawn with besides map data. Overlays already drawn carry the
@@ -671,6 +700,7 @@ impl Loader {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn worker(shared: &Shared, tx: &SyncSender<(Job, Outcome)>) {
     loop {
         let job = {
@@ -688,23 +718,29 @@ fn worker(shared: &Shared, tx: &SyncSender<(Job, Outcome)>) {
                 };
             }
         };
-        let outcome = match job {
-            Job::Tile(k) => shared.load(k),
-            Job::Overlay(k) => shared.load_overlay(k),
-            Job::Buildings(k) => shared.load_buildings(k),
-        };
-        if let Outcome::Deferred(wait) = outcome {
-            let mut q = shared.queue.lock().unwrap();
-            q.in_flight.remove(&job);
-            q.blocked.insert(job, wait);
-            // The next update of the queue restores its place.
-            q.waiting.insert(0, job);
-            continue;
-        }
-        if tx.send((job, outcome)).is_err() {
+        let Some(done) = run_job(shared, job) else { continue };
+        if tx.send(done).is_err() {
             return;
         }
     }
+}
+
+/// Does one job. One that must wait goes back in the queue, and gives `None`.
+fn run_job(shared: &Shared, job: Job) -> Option<(Job, Outcome)> {
+    let outcome = match job {
+        Job::Tile(k) => shared.load(k),
+        Job::Overlay(k) => shared.load_overlay(k),
+        Job::Buildings(k) => shared.load_buildings(k),
+    };
+    if let Outcome::Deferred(wait) = outcome {
+        let mut q = shared.queue.lock().unwrap();
+        q.in_flight.remove(&job);
+        q.blocked.insert(job, wait);
+        // The next update of the queue restores its place.
+        q.waiting.insert(0, job);
+        return None;
+    }
+    Some((job, outcome))
 }
 
 #[cfg(test)]
@@ -747,7 +783,7 @@ mod tests {
     use crate::cache::DiskCache;
     use crate::fetcher::Peers;
     use glam::Vec3;
-    use std::time::Instant;
+    use crate::wtime::Instant;
 
     fn world(center: DVec3, v: &Vertex) -> DVec3 {
         center + Vec3::from_array(v.pos).as_dvec3()

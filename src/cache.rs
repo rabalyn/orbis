@@ -3,7 +3,7 @@
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
+use crate::wtime::{Duration, SystemTime};
 
 /// What was used this recently is never removed.
 const KEEP_RECENT: Duration = Duration::from_secs(6 * 3600);
@@ -23,7 +23,7 @@ impl DiskCache {
     }
 
     pub fn default_root() -> PathBuf {
-        dirs::cache_dir()
+        crate::paths::cache_dir()
             .unwrap_or_else(std::env::temp_dir)
             .join("orbis")
             .join("tiles")
