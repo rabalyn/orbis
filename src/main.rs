@@ -29,7 +29,10 @@ mod render;
 mod import;
 mod import_draw;
 mod places;
+mod power_chart;
+mod power_feed;
 mod eclipse;
+mod energy;
 mod event_feeds;
 mod events;
 mod flight;
@@ -133,6 +136,7 @@ Usage: orbis [options]
   --no-labels             start with all names hidden (key L)
   --no-cities  --no-names start with just place names, or just other names (peaks, water, streets) hidden
   --no-markers            start with event markers hidden
+  --energy                start with the bars of renewable capacity in Germany (W)
   --no-info               start with the information box on click off (clicks look nothing up)
   --config-dir DIR        keep the saved options (settings.json) in DIR. Without it they are in ./config
                           if that exists, else in orbis/ in your config folder. The command line wins
@@ -418,6 +422,10 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
             }
             "--no-markers" => {
                 a.settings.event_markers = false;
+                continue;
+            }
+            "--energy" => {
+                a.settings.energy = true;
                 continue;
             }
             "--no-info" => {
@@ -779,6 +787,49 @@ struct Scene {
     info_changed: bool,
     /// Keeps a slow tick going for tiles waiting out a retry delay.
     last_retry_tick: Instant,
+    energy: EnergyLayer,
+}
+
+type OutlineKey = (energy::Level, [bool; energy::SOURCES], Option<energy::Subject>, Option<u16>);
+
+/// Level, month, sources, centre, tile count, and the quarter hour of the output shown.
+type EnergyBuild = (energy::Level, u16, [bool; energy::SOURCES], (i64, i64), usize, Option<i64>);
+
+/// Generation and consumption from SMARD: what has arrived and what was asked.
+#[derive(Default)]
+struct PowerState {
+    feed: Option<power_feed::PowerFeed>,
+    index: Option<Vec<i64>>,
+    index_asked: Option<Instant>,
+    weeks: HashMap<i64, power_feed::Week>,
+    asked: HashMap<i64, Instant>,
+    problem: Option<String>,
+    /// The quarter hour shown, and the shares of capacity running then.
+    shown: Option<(power_feed::Moment, [f32; energy::SOURCES])>,
+}
+
+/// What the energy bars show now, and what they were last built from.
+#[derive(Default)]
+struct EnergyLayer {
+    level: Option<energy::Level>,
+    selected: Option<energy::Subject>,
+    /// The areas outlined on the ground, and what they were made for.
+    outlines: Option<Arc<import::Imported>>,
+    /// Level, sources, choice, and the month where the ground's shade follows it (close up).
+    outlines_from: Option<OutlineKey>,
+    version: u64,
+    bars: Vec<energy::Bar>,
+    scale: Option<energy::Scale>,
+    /// The level, month, sources, centre and tile count the mesh was built for, and when.
+    built_from: Option<EnergyBuild>,
+    built_at: Option<Instant>,
+    /// The view's aspect and height in pixels, for finding the bar under a click.
+    view: (f64, f64),
+    /// The data could not be read: said once.
+    missing: bool,
+    power: PowerState,
+    /// What the day chart shows.
+    chart: power_chart::Shared,
 }
 
 /// Sets up tile fetching, including sharing on the LAN if asked for.
@@ -1037,6 +1088,7 @@ impl Scene {
             bodies: Vec::new(),
             bodies_time: f64::NEG_INFINITY,
             bodies_pos: DVec3::ZERO,
+            energy: EnergyLayer::default(),
         };
         scene.loader.set_lines(scene.lines_drawn);
         for path in &args.imports {
@@ -1052,6 +1104,7 @@ impl Scene {
         scene.ui.add(info::window_panel(scene.info.clone()));
         scene.ui.add(time_dialog::icon_panel());
         scene.ui.add(time_dialog::window_panel(scene.time_model.clone()));
+        scene.ui.add(power_chart::window_panel(scene.energy.chart.clone()));
         scene
     }
 
@@ -1289,6 +1342,9 @@ impl Scene {
             if let (true, Some(a)) = info::handle(&mut self.ui, event) {
                 self.info_action(a);
             }
+            if power_chart::handle(&mut self.ui, event) {
+                self.view.energy_chart = false;
+            }
         }
         let bit = 1 << (b == Button::Right) as u8;
         if r.consumed || self.map_buttons & bit == 0 {
@@ -1364,6 +1420,9 @@ impl Scene {
             self.info_id += 1;
             self.info_pending = false;
             self.info_changed = true;
+            return;
+        }
+        if click.kind == clicks::ClickKind::Single && self.energy_click(click.pos) {
             return;
         }
         if click.kind == clicks::ClickKind::Single && self.view.info_on_click {
@@ -1522,11 +1581,12 @@ impl Scene {
         let mut docs = (*self.library.snapshot()).clone();
         docs.extend(self.eclipse_path.clone());
         docs.extend(self.markers.clone());
+        docs.extend(self.energy.outlines.clone());
         Arc::new(docs)
     }
 
     fn import_generation(&self) -> u64 {
-        self.library.generation + self.eclipse_path_version + self.markers_version + self.lines_version
+        self.library.generation + self.eclipse_path_version + self.markers_version + self.lines_version + self.energy.version
     }
 
     /// Starts the drawn overlays and labels over from the new contents.
@@ -1592,7 +1652,7 @@ impl Scene {
 
     /// Takes in what the feeds have answered. True if something changed.
     fn poll_feeds(&mut self) -> bool {
-        let mut changed = false;
+        let mut changed = self.poll_power();
         while let Some(reply) = self.feeds.poll() {
             self.feeds_pending = self.feeds_pending.saturating_sub(1);
             match reply.answer {
@@ -1873,6 +1933,295 @@ impl Scene {
     /// Advances the view and works out what to draw and fetch. Returns whether the picture changed.
     /// Draws the overlays again when the kinds of line shown have changed. They come from the
     /// decoded tiles in memory, or the disk cache: nothing is asked of a server.
+    fn energy_sources(&self) -> [bool; energy::SOURCES] {
+        let v = &self.view;
+        [
+            v.energy_solar,
+            v.energy_wind_onshore,
+            v.energy_wind_offshore,
+            v.energy_hydro,
+            v.energy_biomass,
+            v.energy_lignite,
+            v.energy_hard_coal,
+            v.energy_gas,
+            v.energy_oil,
+            v.energy_other_fossil,
+            v.energy_nuclear,
+        ]
+    }
+
+    fn energy_on(&self) -> bool {
+        self.view.energy && self.mode == Mode::Globe && body::current().id == body::EARTH.id
+    }
+
+    /// Keeps the energy bars and the outlines of their areas up to date with the view, the clock
+    /// and the options.
+    fn update_energy(&mut self, r: &mut Renderer, aspect_height: (f64, f64)) {
+        self.energy.view = aspect_height;
+        let data = if self.energy_on() { energy::Energy::bundled() } else { None };
+        if self.energy_on() && data.is_none() && !self.energy.missing {
+            self.energy.missing = true;
+            self.notice = Some("The energy data built into this program could not be read.".to_string());
+        }
+        let Some(data) = data else {
+            if self.ui.is_visible(power_chart::WINDOW) {
+                self.ui.set_visible(power_chart::WINDOW, false);
+            }
+            if self.energy.outlines.is_some() || self.energy.built_from.is_some() {
+                let power = std::mem::take(&mut self.energy.power);
+                let chart = self.energy.chart.clone();
+                self.energy = EnergyLayer { view: aspect_height, missing: self.energy.missing, version: self.energy.version + 1, power, chart, ..Default::default() };
+                r.set_energy(None);
+                self.imports_changed();
+            }
+            return;
+        };
+        let level = energy::Level::for_altitude(self.nav.altitude, self.energy.level);
+        self.energy.level = Some(level);
+        let shown = self.energy_sources();
+        let month = energy::month_of(self.clock.time());
+        let wanted = (level, shown, self.energy.selected, (level == energy::Level::Plants).then_some(month));
+        if self.energy.outlines_from != Some(wanted) {
+            self.energy.outlines = Some(Arc::new(data.outlines(level, shown, self.energy.selected, month)));
+            self.energy.outlines_from = Some(wanted);
+            self.energy.version += 1;
+            self.imports_changed();
+        }
+        self.update_power(data, energy::month_of(self.clock.time()));
+        self.sync_power_chart();
+        let cam = &self.nav.cam;
+        let scale = energy::Scale::for_view(data, level, cam.distance, aspect_height.1);
+        // The centre in steps of a tenth of the bars' reach, so that panning rebuilds only now and then.
+        let reach = (self.nav.altitude * 6.0 / geo::radius()).clamp(0.02, std::f64::consts::PI);
+        let step = reach / 10.0;
+        let centre = ((cam.lat / step).round() as i64, (cam.lon / step).round() as i64);
+        let quarter = self.energy.power.shown.as_ref().map(|m| m.0.time as i64);
+        let key = (level, month, shown, centre, r.tile_count(), quarter);
+        let rescaled = self.energy.scale.is_none_or(|s| (s.per_kw / scale.per_kw - 1.0).abs() > 0.03);
+        let same_but_terrain = self.energy.built_from.is_some_and(|b| (b.0, b.1, b.2, b.3, b.5) == (key.0, key.1, key.2, key.3, key.5));
+        let terrain_due = self.energy.built_at.is_none_or(|t| t.elapsed() > Duration::from_millis(500));
+        if !rescaled && (self.energy.built_from == Some(key) || (same_but_terrain && !terrain_due)) {
+            return;
+        }
+        let near = match level {
+            energy::Level::States | energy::Level::Districts => None,
+            _ => Some((cam.lat, cam.lon, reach)),
+        };
+        self.energy.bars = data.bars(level, month, shown, near);
+        let ground = |lat: f64, lon: f64| r.ground(lat, lon).unwrap_or(0.0);
+        let shares = self.energy.power.shown.as_ref().map(|m| m.1);
+        let mesh = energy::mesh(&self.energy.bars, scale, geo::geodetic_to_ecef(cam.lat, cam.lon, 0.0), &ground, shares.as_ref());
+        r.set_energy(Some(&mesh));
+        self.energy.scale = Some(scale);
+        self.energy.built_from = Some(key);
+        self.energy.built_at = Some(Instant::now());
+    }
+
+    /// Asks SMARD for the week of the clock when the bars are to show output, and finds the
+    /// quarter hour to show.
+    fn update_power(&mut self, data: &energy::Energy, month: u16) {
+        if !self.view.energy_output {
+            self.energy.power.shown = None;
+            return;
+        }
+        let time = self.clock.time();
+        let fresh = Duration::from_secs(600);
+        let now = Instant::now();
+        let p = &mut self.energy.power;
+        let feed = p.feed.get_or_insert_with(|| power_feed::PowerFeed::new(self.fetcher.clone()));
+        // The index grows by a week each Monday; it is asked again every ten minutes while in use.
+        if p.index_asked.is_none_or(|t| now.duration_since(t) > fresh) {
+            p.index_asked = Some(now);
+            feed.ask_index();
+            self.feeds_pending += 1;
+        }
+        // The clock's week, and for the day chart the weeks of the day's first and last quarter hours.
+        let day = (time / 86_400.0).floor() * 86_400.0;
+        let chart = self.view.energy_chart;
+        let wanted: Vec<i64> = [Some(time), chart.then_some(day), chart.then_some(day + 86_399.0)]
+            .into_iter()
+            .flatten()
+            .filter_map(|t| p.index.as_deref().and_then(|i| power_feed::week_for(i, t)))
+            .collect();
+        for &w in &wanted {
+            let latest = p.index.as_deref().and_then(|i| i.last()) == Some(&w);
+            let due = match p.asked.get(&w) {
+                None => true,
+                // The latest week fills up as the day goes on.
+                Some(t) => latest && now.duration_since(*t) > fresh && p.weeks.contains_key(&w),
+            };
+            if due {
+                p.asked.insert(w, now);
+                feed.ask_week(w);
+                self.feeds_pending += 1;
+            }
+        }
+        let Some(week) = p.index.as_deref().and_then(|i| power_feed::week_for(i, time)) else {
+            p.shown = None;
+            return;
+        };
+        let latest = p.index.as_deref().and_then(|i| i.last()) == Some(&week);
+        // Live, SMARD is about three quarters of an hour behind: its latest values stand in.
+        let moment = p.weeks.get(&week).and_then(|w| w.moment(time).or_else(|| w.last_moment().filter(|m| latest && m.time < time)));
+        p.shown = moment.map(|m| {
+            let shares = m.shares(&data.national(month));
+            (m, shares)
+        });
+    }
+
+    /// Fills the day chart for the clock's day, and shows it while it is wanted.
+    fn sync_power_chart(&mut self) {
+        let wanted = self.energy_on() && self.view.energy_output && self.view.energy_chart;
+        if self.ui.is_visible(power_chart::WINDOW) != wanted {
+            self.ui.set_visible(power_chart::WINDOW, wanted);
+        }
+        if !wanted {
+            return;
+        }
+        let time = self.clock.time();
+        let day = (time / 86_400.0).floor() * 86_400.0;
+        let p = &self.energy.power;
+        let moment = |t: f64| p.index.as_deref().and_then(|i| power_feed::week_for(i, t)).and_then(|w| p.weeks.get(&w)).and_then(|w| w.moment(t));
+        let moments: Vec<Option<power_feed::Moment>> = (0..96).map(|k| moment(day + k as f64 * 900.0)).collect();
+        let have = moments.iter().filter(|m| m.is_some()).count();
+        let date = &sky_time::format_utc(day, false)[..10];
+        let model = power_chart::Model {
+            title: format!("Germany {date} UTC, GW: generation, use"),
+            chart: (have > 0).then(|| power_chart::chart(&moments, Some((time - day) / 86_400.0))),
+            note: if have > 0 {
+                "Generation stacked by source, consumption in white, the clock in yellow. Area above the line: surplus; line above the areas: shortfall.".to_string()
+            } else if self.feeds_pending > 0 {
+                "Asking SMARD...".to_string()
+            } else {
+                "SMARD has no values for this day (they run from 2015 to about an hour ago).".to_string()
+            },
+        };
+        if *self.energy.chart.borrow() != model {
+            *self.energy.chart.borrow_mut() = model;
+            self.ui.refresh(power_chart::WINDOW);
+        }
+    }
+
+    /// Takes in what SMARD answered. Returns whether anything arrived.
+    fn poll_power(&mut self) -> bool {
+        let mut changed = false;
+        let p = &mut self.energy.power;
+        while let Some(reply) = p.feed.as_ref().and_then(|f| f.poll()) {
+            self.feeds_pending = self.feeds_pending.saturating_sub(1);
+            changed = true;
+            match reply {
+                power_feed::Reply::Index(Ok(index)) => p.index = Some(index),
+                power_feed::Reply::Week(start, Ok(week)) => {
+                    p.weeks.insert(start, week);
+                    p.problem = None;
+                }
+                power_feed::Reply::Index(Err(e)) | power_feed::Reply::Week(_, Err(e)) => p.problem = Some(e),
+            }
+        }
+        if changed {
+            // Rebuild the bars with what came.
+            self.energy.built_from = None;
+        }
+        changed
+    }
+
+    /// Chooses the bar under a click and tells about it. Returns whether there was one.
+    fn energy_click(&mut self, pos: DVec2) -> bool {
+        let (Some(data), Some(scale), true) = (energy::Energy::bundled(), self.energy.scale, self.energy_on()) else { return false };
+        let (aspect, height) = self.energy.view;
+        let screen = Screen { basis: self.nav.cam.basis(), size: DVec2::new(aspect * height, height), reserved: Vec::new() };
+        // The ground as the bars were built on it is not kept, so sea level is close enough for picking.
+        let mut hit = energy::hit(&self.energy.bars, scale, &|_, _| 0.0, &|p| screen.project(p), pos);
+        // Close up, a municipality's units without a position are its shade on the ground.
+        if hit.is_none() && self.energy.level == Some(energy::Level::Plants) {
+            let shown = self.energy_sources();
+            let month = energy::month_of(self.clock.time());
+            hit = self
+                .nav
+                .ground_at(pos)
+                .and_then(|(lat, lon)| data.town_at(lat, lon))
+                .filter(|&i| data.unplaced_density(i, month, shown).is_some_and(|d| d > 0.0))
+                .map(energy::Subject::Unplaced);
+        }
+        let Some(subject) = hit else {
+            if self.energy.selected.take().is_some() {
+                self.energy.outlines_from = None;
+            }
+            return false;
+        };
+        self.energy.selected = Some(subject);
+        self.energy.outlines_from = None;
+        let month = energy::month_of(self.clock.time());
+        self.info_id += 1;
+        self.info_pending = false;
+        let at = match subject {
+            energy::Subject::Unplaced(i) => Some(data.areas[i as usize].label),
+            _ => self.energy.bars.iter().find(|b| b.subject == subject).map(|b| (b.lat, b.lon)),
+        }
+        .map(|(lat, lon)| (lat.to_degrees(), lon.to_degrees()));
+        *self.info.borrow_mut() = info::Model {
+            title: data.subject_title(subject),
+            at,
+            content: info::Content::Message({
+                let when = self.energy.power.shown.as_ref().map(|(m, sh)| (sh, sky_time::format_utc(m.time, false)[11..16].to_string() + " UTC"));
+                data.describe(subject, month, self.energy_sources(), when.as_ref().map(|(sh, w)| (*sh, w.as_str())))
+            }),
+            note: None,
+        };
+        self.show_info();
+        true
+    }
+
+    /// The display's line about the bars: what they stand for and their scale.
+    fn energy_status(&self) -> Option<String> {
+        let (level, scale) = (self.energy.level?, self.energy.scale?);
+        if !self.energy_on() {
+            return None;
+        }
+        let (_, height) = self.energy.view;
+        let metres_per_px = 2.0 * self.nav.cam.distance * (camera::FOV_Y / 2.0).tan() / height.max(1.0);
+        let per_100px = 100.0 * metres_per_px / scale.per_kw;
+        let month = energy::month_name(energy::month_of(self.clock.time()));
+        let mut line = format!("Energy: one bar per {}, {month}; 100 px of height = {}", level.name(), energy::format_power(per_100px as f32));
+        if self.view.energy_output {
+            line.push('\n');
+            line.push_str(&self.power_status());
+        }
+        if level == energy::Level::Plants {
+            let dense = energy::Energy::bundled().map_or(0.0, |d| d.dense());
+            line.push_str(&format!("\nShade: units without a position, per municipality; full at {}/km²", energy::format_power(dense)));
+        }
+        if self.nav.cam.total_tilt() < 0.3 {
+            line.push_str("\nTilt the view (right-drag) to see the bars' heights");
+        }
+        Some(line)
+    }
+
+    /// Germany's generation against consumption at the quarter hour shown, or why there is none.
+    fn power_status(&self) -> String {
+        let p = &self.energy.power;
+        let Some((m, _)) = &p.shown else {
+            return match (&p.problem, &p.index) {
+                (Some(e), _) => format!("Output: {e}; bars show capacity"),
+                (None, None) => "Output: asking SMARD...".to_string(),
+                (None, Some(_)) if p.feed.is_some() && self.feeds_pending > 0 => "Output: asking SMARD...".to_string(),
+                _ => "Output: SMARD has no values for this time (from 2015 to about an hour ago); bars show capacity".to_string(),
+            };
+        };
+        let gw = |mw: f32| format!("{:.1} GW", mw / 1000.0);
+        let (generation, consumption) = (m.generation(), m.consumption());
+        let balance = generation - consumption;
+        format!(
+            "Germany {}: generation {} ({:.0}% renewable), consumption {}, {} {}\nBars: estimated output in colour, idle capacity grey",
+            &sky_time::format_utc(m.time, false)[..16].replace('T', " "),
+            gw(generation),
+            100.0 * m.renewable() / generation.max(1.0),
+            gw(consumption),
+            if balance >= 0.0 { "surplus" } else { "shortfall" },
+            gw(balance.abs()),
+        )
+    }
+
     fn sync_lines(&mut self) {
         let kinds = LineKinds::of(&self.view);
         if kinds == self.lines_drawn {
@@ -1996,6 +2345,7 @@ impl Scene {
             }
         }
         r.set_visible_buildings(visible);
+        self.update_energy(r, aspect_height);
         self.update_shadows(r, aspect_height, atlas);
         self.loader.set_wanted(&wanted, &overlays, &building_jobs);
         // Once everything has arrived, the terrain under the start view is known for good.
@@ -2251,6 +2601,10 @@ impl Scene {
             text.push('\n');
             text.push_str(status);
         }
+        if let Some(line) = self.energy_status() {
+            text.push('\n');
+            text.push_str(&line);
+        }
         for line in network_status(&self.fetcher, SystemTime::now()) {
             text.push('\n');
             text.push_str(&line);
@@ -2274,6 +2628,14 @@ impl Scene {
         for c in &self.marker_credits {
             credits.push('\n');
             credits.push_str(c);
+        }
+        if self.energy_on() {
+            credits.push('\n');
+            credits.push_str(energy::CREDIT);
+            if self.energy.power.shown.is_some() {
+                credits.push('\n');
+                credits.push_str(power_feed::CREDIT);
+            }
         }
         if self.search.credit_due() {
             credits.push('\n');
@@ -3393,6 +3755,9 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                         KeyCode::KeyB if !self.mods.ctrl => {
                             gfx.scene.view.buildings = !gfx.scene.view.buildings;
+                        }
+                        KeyCode::KeyW if !self.mods.ctrl => {
+                            gfx.scene.view.energy = !gfx.scene.view.energy;
                         }
                         KeyCode::KeyO if !self.mods.ctrl => {
                             gfx.scene.view.stars = !gfx.scene.view.stars;

@@ -149,6 +149,23 @@ settings! {
     sunlight: bool = true, "sunlight";
     stars: bool = true, "stars_and_planets";
     event_markers: bool = true, "event_markers";
+    /// Bars of renewable generating capacity in Germany, and the areas they stand for.
+    energy: bool = false, "energy";
+    /// The bars show the estimated output at the clock's time, from SMARD, as far as there is data.
+    energy_output: bool = true, "energy_output";
+    /// A chart of the clock's day of generation and consumption, while the bars show output.
+    energy_chart: bool = true, "energy_chart";
+    energy_solar: bool = true, "energy_solar";
+    energy_wind_onshore: bool = true, "energy_wind_onshore";
+    energy_wind_offshore: bool = true, "energy_wind_offshore";
+    energy_hydro: bool = true, "energy_hydro";
+    energy_biomass: bool = true, "energy_biomass";
+    energy_lignite: bool = true, "energy_lignite";
+    energy_hard_coal: bool = true, "energy_hard_coal";
+    energy_gas: bool = true, "energy_gas";
+    energy_oil: bool = true, "energy_oil";
+    energy_other_fossil: bool = true, "energy_other_fossil";
+    energy_nuclear: bool = true, "energy_nuclear";
     /// A click on the map looks up Wikipedia and Wikidata for the place.
     info_on_click: bool = true, "info_on_click";
     view: ViewKind = ViewKind::Globe, "view";

@@ -1,7 +1,7 @@
 //! Paints a panel of the interface into an RGBA image, with the built-in bitmap font.
 
 use crate::text::glyph;
-use crate::ui::{slider_thumb, Kind, Panel, Rect, Tone, Ui, Widget, WidgetId};
+use crate::ui::{slider_thumb, Chart, Kind, Panel, Rect, Tone, Ui, Widget, WidgetId, CHART_LEGEND_COLS};
 
 type Color = [u8; 4];
 
@@ -164,6 +164,7 @@ fn widget(cv: &mut Canvas, w: &Widget, origin: (f64, f64), scale: usize, hover: 
             cv.fill(Rect::new(cx - t, cy - t, 2.0 * t, 2.0 * t), white);
         }
         Kind::Label { text, tone: t } => cv.text(r.x, r.y, text, scale, tone(*t)),
+        Kind::Chart(c) => chart(cv, r, c, scale),
         Kind::Button { label, text_mult } => {
             let bg = if pressed { BUTTON_PRESSED } else if hover { BUTTON_HOVER } else { BUTTON };
             cv.fill(r, bg);
@@ -171,6 +172,84 @@ fn widget(cv: &mut Canvas, w: &Widget, origin: (f64, f64), scale: usize, hover: 
             let tw = (label.chars().count() * 8 * s) as f64;
             cv.text(r.x + (r.w - tw) / 2.0, r.y + (r.h - (8 * s) as f64) / 2.0, label, s, tone(Tone::Normal));
         }
+    }
+}
+
+/// A day chart: the axis on the left, the plot, the hours below it, then the legend.
+fn chart(cv: &mut Canvas, r: Rect, c: &Chart, scale: usize) {
+    let s = scale.max(1) as f64;
+    let glyph = 8.0 * s;
+    let dim = tone(Tone::Dim);
+    let (per_row, rows) = c.legend_rows(r.w, s);
+    let legend_h = rows as f64 * 11.0 * s;
+    let left = 5.0 * glyph;
+    let plot = Rect::new(r.x + left, r.y + glyph / 2.0, r.w - left - glyph, r.h - legend_h - 2.5 * glyph);
+    let steps = c.line.1.len().max(c.layers.iter().map(|l| l.2.len()).max().unwrap_or(0)).max(1);
+    let stack = |i: usize| c.layers.iter().map(|l| l.2.get(i).copied().flatten().unwrap_or(0.0)).sum::<f32>();
+    let top = (0..steps).map(|i| stack(i).max(c.line.1.get(i).copied().flatten().unwrap_or(0.0))).fold(0.0f32, f32::max);
+    // The axis goes up in whole steps of 10 units.
+    let tick = 10.0 * c.unit.1;
+    let max = ((top / tick).ceil().max(1.0) * tick) as f64;
+    let y_of = |v: f64| plot.y + plot.h - v / max * plot.h;
+    cv.fill(plot, [255, 255, 255, 12]);
+    let mut v = 0.0;
+    while v <= max + 1.0 {
+        let y = y_of(v);
+        cv.fill(Rect::new(plot.x, y, plot.w, 1.0), [255, 255, 255, 30]);
+        let label = format!("{:>3.0}", v / c.unit.1 as f64);
+        cv.text(r.x, y - glyph / 2.0, &label, scale, dim);
+        v += tick as f64;
+    }
+    // The areas, one pixel column at a time.
+    let px_w = plot.w.round().max(1.0) as i64;
+    for px in 0..px_w {
+        let i = ((px as f64 + 0.5) / plot.w * steps as f64) as usize;
+        let mut base = 0.0f64;
+        for (colour, _, values) in &c.layers {
+            let Some(v) = values.get(i).copied().flatten() else { continue };
+            let (y0, y1) = (y_of(base + v as f64), y_of(base));
+            cv.fill(Rect::new(plot.x + px as f64, y0, 1.0, (y1 - y0).max(0.0)), [colour[0], colour[1], colour[2], 235]);
+            base += v as f64;
+        }
+    }
+    // The line, two pixels thick and joined between columns.
+    let mut last: Option<f64> = None;
+    for px in 0..px_w {
+        let i = ((px as f64 + 0.5) / plot.w * steps as f64) as usize;
+        match c.line.1.get(i).copied().flatten() {
+            Some(v) => {
+                let y = y_of(v as f64);
+                let (a, b) = last.map_or((y, y), |l| (l.min(y), l.max(y)));
+                cv.fill(Rect::new(plot.x + px as f64, a - s, 1.0, b - a + 2.0 * s), [255, 255, 255, 255]);
+                last = Some(y);
+            }
+            None => last = None,
+        }
+    }
+    if let Some(m) = c.marker {
+        let x = plot.x + m.clamp(0.0, 1.0) * plot.w;
+        cv.fill(Rect::new(x - s / 2.0, plot.y, s, plot.h), [255, 230, 90, 255]);
+    }
+    for h in (0..=24).step_by(3) {
+        let x = plot.x + plot.w * h as f64 / 24.0;
+        cv.fill(Rect::new(x, plot.y + plot.h, 1.0, 3.0 * s), dim);
+        let label = format!("{h:02}");
+        cv.text(x - glyph, plot.y + plot.h + 4.0 * s, &label, scale, dim);
+    }
+    // The legend: the line first, then the areas from the top of the stack down.
+    let mut items: Vec<([u8; 4], &str)> = vec![([255, 255, 255, 255], c.line.0.as_str())];
+    items.extend(c.layers.iter().rev().map(|l| ([l.0[0], l.0[1], l.0[2], 255], l.1.as_str())));
+    let ly = r.y + r.h - legend_h;
+    for (k, (colour, name)) in items.iter().enumerate() {
+        let x = r.x + (k % per_row) as f64 * CHART_LEGEND_COLS as f64 * glyph;
+        let y = ly + (k / per_row) as f64 * 11.0 * s;
+        if k == 0 {
+            cv.fill(Rect::new(x, y + glyph / 2.0 - s, glyph, 2.0 * s), *colour);
+        } else {
+            cv.fill(Rect::new(x, y, glyph, glyph), *colour);
+        }
+        let name: String = name.chars().take(CHART_LEGEND_COLS - 2).collect();
+        cv.text(x + glyph * 1.5, y, &name, scale, tone(Tone::Normal));
     }
 }
 

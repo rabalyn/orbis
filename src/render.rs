@@ -169,6 +169,8 @@ pub struct Renderer {
     buildings: HashMap<TileKey, GpuBuildings>,
     /// Which building tiles to draw this frame.
     visible_buildings: Vec<TileKey>,
+    /// The energy bars, drawn like buildings.
+    energy: Option<GpuBuildings>,
     format: wgpu::TextureFormat,
     samples: u32,
     /// The multisampled colour image, when anti-aliasing is available.
@@ -924,6 +926,7 @@ impl Renderer {
             building_pipeline,
             buildings: HashMap::new(),
             visible_buildings: Vec::new(),
+            energy: None,
             format,
             samples,
             msaa: None,
@@ -1181,6 +1184,26 @@ impl Renderer {
             &self.shadow_sampler,
         );
         self.shadow_map = maps;
+    }
+
+    /// Sets the energy bars to draw, or none.
+    pub fn set_energy(&mut self, mesh: Option<&BuildingMesh>) {
+        self.energy = mesh.filter(|m| !m.indices.is_empty()).map(|mesh| GpuBuildings {
+            vertices: self.device.create_buffer_init(&BufferInitDescriptor {
+                label: Some("energy vertices"),
+                contents: bytemuck::cast_slice(&mesh.vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+            indices: self.device.create_buffer_init(&BufferInitDescriptor {
+                label: Some("energy indices"),
+                contents: bytemuck::cast_slice(&mesh.indices),
+                usage: wgpu::BufferUsages::INDEX,
+            }),
+            index_count: mesh.indices.len() as u32,
+            center: mesh.center,
+            radius: 0.0,
+            last_used: 0,
+        });
     }
 
     /// Chooses the building tiles to draw. Ones not loaded yet are simply left out.
@@ -1601,6 +1624,10 @@ impl Renderer {
                 origins.push((b.center - basis.pos).as_vec3().to_array());
             }
         }
+        let energy_instance = origins.len() as u32;
+        if let Some(e) = &self.energy {
+            origins.push((e.center - basis.pos).as_vec3().to_array());
+        }
         // Shadow casters: the drawn tiles and buildings, and loaded ones beyond them that reach into the maps.
         let cast = if self.atlas.is_none() && self.shadows_on { self.cast.take() } else { None };
         let mut casters: Vec<(Caster, u32, DVec3, f64)> = Vec::new();
@@ -1785,6 +1812,14 @@ impl Renderer {
                     pass.set_index_buffer(b.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..b.index_count, 0, instance..instance + 1);
                 }
+            }
+
+            if let (Some(e), None) = (&self.energy, &self.atlas) {
+                pass.set_pipeline(&self.building_pipeline);
+                pass.set_vertex_buffer(1, self.instances.slice(..));
+                pass.set_vertex_buffer(0, e.vertices.slice(..));
+                pass.set_index_buffer(e.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..e.index_count, 0, energy_instance..energy_instance + 1);
             }
 
             if self.label_count > 0 {

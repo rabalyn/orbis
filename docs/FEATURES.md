@@ -9,7 +9,7 @@ Contents: [Controls](#controls) · [Globe](#globe) · [Map lines and names](#map
 [3D buildings](#3d-buildings) · [Flat map](#flat-map) · [Clock](#clock) · [Sun and light](#sun-and-light) ·
 [Cast shadows](#cast-shadows) · [Time window](#time-window) · [Sky](#sky) · [Other bodies](#other-bodies) ·
 [Search](#search) · [Saved places](#saved-places) · [File import](#file-import) · [Map services](#map-services) ·
-[Eclipses](#eclipses) · [Event feeds](#event-feeds) · [Information on click](#information-on-click) ·
+[Eclipses](#eclipses) · [Event feeds](#event-feeds) · [Renewable energy in Germany](#renewable-energy-in-germany) · [Information on click](#information-on-click) ·
 [Smooth flight](#smooth-flight) · [Interface](#interface) · [View options and settings](#view-options-and-settings) ·
 [SpaceMouse](#spacemouse) · [Frame rate](#frame-rate) · [Saved images](#saved-images) ·
 [How far this is tested](#how-far-this-is-tested)
@@ -47,7 +47,7 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | T | Set the clock back to the real time, running at normal speed |
 | C | Show or hide the time window |
 | S | Switch between sunlight and flat, always-lit imagery |
-| O | Show or hide stars, planets and the Moon (globe only) |
+| O, W | Show or hide stars, planets and the Moon (O), or the bars of renewable generating capacity in Germany (W); globe only |
 | F | Switch the frame rate limit between 120 and 90 fps |
 | Ctrl-F | Open the search box |
 | Ctrl-S | Name and save the current view as a place |
@@ -442,6 +442,94 @@ G lists map services, for use as the Earth's imagery or laid over it.
 - The eruptions database holds significant eruptions only and gives dates with no time, so the clock is set to the start of the day. Tsunami and eruption dates before 1800 are ignored.
 - Markers are drawn like imported points, so they are on the Earth only and have no labels or click. Only the panel's choice shows an event's details.
 
+## Renewable energy in Germany
+
+W, the view options or `--energy` show bars of the generating capacity registered in Germany. Renewable sources (solar, wind
+on land, wind at sea, hydro, biomass) stack in one column, and for comparison fossil and nuclear sources (lignite, hard coal,
+natural gas, oil, other fossil, nuclear) in a second column just east of it, at the same scale. Each part's colour is its
+source, stacked in the order of the view options, which have a switch for each.
+
+### What a bar stands for
+Every bar stands for one clearly bounded thing, and that thing is marked on the ground, so that bars of different detail are
+never confused:
+- **Square bars** stand for an area, whose outline is drawn on the ground in magenta, apart from the map's own white boundaries. From far away the areas are the states,
+  closer the districts, then the municipalities. The level follows the camera altitude (about 900 km, 170 km and 30 km, held a
+  little past each limit so that it does not flicker), and the display names it ("one bar per district"). All bars on screen
+  are of one level, so they can be compared with each other.
+- Offshore wind parks are areas of their own: the outline round a park's turbines, and from far away the outline round all
+  parks of the North Sea or the Baltic.
+- Close up (below about 30 km), **round bars** stand for plant sites: units of one source at one published position, within
+  about 11 m. A clicked site is ringed on the ground.
+- Close up, the register's units **without a published position** (mostly small rooftop solar of private owners, which it gives
+  only by municipality) are no bar: each municipality that has some is outlined faintly and **shaded** by their capacity per km²
+  at the clock's month. The shade is full at the density that 98% of municipalities stay below, as the display says. So a bar is
+  always a place or an area that stands alone, and nothing is drawn at a position the register does not give. A click on the
+  shaded ground opens the municipality's figures.
+- Most large power plants are given **only by district**, with no municipality or position. Where the bars are finer than
+  districts, these stand as one square bar per district, at the district's point, with the district outlined in orange. They
+  are counted in their district and state, and in no municipality.
+- A click on a bar outlines its area in yellow (or rings its site) and opens the information box: what the bar stands for, its
+  capacity by source at the clock's month, and the register's date. A click elsewhere clears the choice.
+- Square bars (areas) and round bars (sites) never appear together: areas from far away, sites and shading close up.
+
+### Size and time
+- Height is linear in capacity. A bar taller than 98% of a level's bars at the register's date reaches about 40% of the view's
+  height (the few largest go higher), so a level keeps one scale whatever the date. The display gives the scale as the capacity of 100 pixels of height. Bars are about
+  12 pixels wide at any distance. Their heights show only in a tilted view, and the display says so in a straight-down view.
+- The bars follow the clock by month: a unit counts from the month it went into operation and stops in the month it was shut
+  down for good. Dragging the year slider of the time window shows the build-out over the years.
+
+### Output and consumption
+- With "Output at the clock's time" in the view options (on by default), each column shows the estimated output at the clock's
+  quarter hour in its sources' colours, and the rest of its capacity in grey above it. The status line gives Germany's
+  generation, its renewable share, consumption, and the surplus or shortfall between them at that quarter hour, which
+  goes into exports, imports and storage.
+- The figures are SMARD's (Bundesnetzagentur): public net generation by source and total consumption (Netzlast) for Germany,
+  every 15 minutes, from 2015 to about three quarters of an hour ago. With the clock at the real time, the latest quarter hour
+  stands in, and the status line gives its time. Before 2015, or in the future, the bars show capacity and the status line
+  says why.
+- Output per bar is estimated: Germany's output of a source is shared out by capacity, so every bar of a source runs at the
+  same share of its capacity, capped at its full capacity. SMARD reports oil and other fossil fuels together; they share one
+  share. Nuclear, which SMARD no longer lists since the last plants shut down in 2023, counts as zero.
+- A click on a bar gives each source's output and capacity.
+- A **day chart** at the top left shows the clock's day (UTC) for Germany: generation stacked by source (steady sources at the
+  bottom, wind and sun on top), consumption as a white line and the clock as a yellow marker that moves with it. Where the areas
+  rise above the line there is a surplus, where the line rises above them a shortfall. It shows while the bars show output; its
+  close button or "Day chart of output and use" in the view options turns it off. It needs the day's one or two weekly files.
+- Weekly files of all thirteen series are fetched only while the bars show output, at most one request per 0.3 s, and kept on
+  disk: weeks that ended over a day ago for good, the current week and the index for ten minutes. `--offline` uses what is
+  stored.
+
+### Data
+- Units come from the Marktstammdatenregister of the Bundesnetzagentur (full export of 7 November 2026), areas from BKG's VG250
+  (as of 1 January 2026), both under the Datenlizenz Deutschland – Namensnennung 2.0. `tools/gen_energy.py` turns them into
+  `data/energy_de.bin`, which is built into the program; nothing is requested at runtime.
+- Counted: units in operation, temporarily shut down (such as reserve plants), or shut down for good with a date. Capacity is
+  the net rated power (AC). Other fossil is other gases, non-biogenic waste, heat and hydrogen.
+- The register began in 2019. Units shut down before then are not in it, so dates before 2019 lack them: most nuclear and many
+  coal units. Nuclear shows only the last six units, which ran until 2021 to 2023.
+- Of 6.74 million units counted, 341,000 stand at 301,000 sites, 6.40 million (95%) have no published position, and 8,800 are
+  given only by district. 7,100 units whose position lies outside their municipality are counted as having none, 47 with
+  neither are left out, and 77,000 planned units are not counted. In operation at the export date: solar 117.5 GW, wind on land
+  71.8 GW, wind at sea 11.7 GW, hydro 5.3 GW, biomass 9.0 GW, lignite 14.8 GW, hard coal 15.1 GW, natural gas 35.8 GW, oil
+  7.5 GW, other fossil 6.3 GW, nuclear none.
+- The file is about 11 MB, so the program is that much larger. Building it takes the 3 GB export, VG250 and about 20 seconds:
+  `tools/gen_energy.py Gesamtdatenexport_YYYYMMDD_*.zip vg250_ebenen_0101/ data/energy_de.bin`.
+
+### Limitations
+- Planned units are left out.
+- Output is estimated from national figures, not measured per plant or region: a sunny south and a cloudy north show the same
+  share of solar running. Generation for owners' own use (much rooftop solar, industrial plants) is not in SMARD's public net
+  generation, so shares run low for those sources. No regional consumption is published, so consumption is shown for Germany
+  only.
+- Germany only, and no bars on the flat map (the outlines do show there).
+- A unit whose published position lies outside its municipality is counted with the units without a position.
+- Municipalities are those of 1 January 2026; a unit is placed by the key the register gives it, and by its position where the
+  key is unknown. Outlines are simplified (by about 400 m for states, 150 m for districts and 60 m for municipalities).
+- The bars stand on terrain as loaded when they were built, and are rebuilt every half second at most as tiles arrive, so they
+  can float or sink a little while tiles load. They cast no shadows.
+- A picked bar is found as if it stood at sea level, which can be a few pixels off in high mountains.
+
 ## Information on click
 
 - A single click on the map asks about what is under the pointer: a placed label if there is one, else the ground point. Nothing is asked at start, on hover or while moving. The checkbox "Information on click" in the view options (saved, default on) or `--no-info` switches it off: no box and no requests.
@@ -509,7 +597,7 @@ G lists map services, for use as the Earth's imagery or laid over it.
 ### View options window
 The second icon at the bottom right, between the clock and the question mark, and the key V open it; Escape or its close button closes it.
 
-- It has checkboxes for the six map layers, 3D buildings, sunlight, cast shadows, stars and planets, event markers and information on click. It also offers a choice of globe or flat map, a projection (usable on the flat map only), a body, the Earth's imagery (the usual imagery, or a service of the user's library) and the frame rate limit. Clicking acts at once and is saved.
+- It has checkboxes for the six map layers, 3D buildings, sunlight, cast shadows, stars and planets, event markers, information on click, and the energy bars with a switch for each renewable, fossil and nuclear source. It also offers a choice of globe or flat map, a projection (usable on the flat map only), a body, the Earth's imagery (the usual imagery, or a service of the user's library) and the frame rate limit. Clicking acts at once and is saved.
 - The window sits at the bottom left and the help window at the bottom right. Where they would overlap, opening one closes the other.
 - Keys that change one of these options go through the same path, and the window shows the live state, whichever way it changed.
 
@@ -518,7 +606,7 @@ The second icon at the bottom right, between the clock and the question mark, an
 - Order of precedence: defaults, then saved settings, then the command line. A flag applies to that run only and is not written back. Only what the user changes in the window is written, one field at a time, through a temporary file and a rename.
 - A value that is missing, of the wrong kind or unknown is the default for that field, with a warning on standard error, and other keys are kept when the file is written. A file that is not JSON is moved to `settings.json.bad`.
 - A `--screenshot` ignores saved settings and saves none, so that pictures are reproducible, unless `--config-dir` is given.
-- Saved: the map layers, 3D buildings, sunlight, cast shadows, stars and planets, event markers, information on click, globe or flat map, projection, frame rate limit, the body for the next start, the library service used as the base imagery, and a language code for names (empty follows the system; set in the file only). Not saved: the camera, the clock and which windows are open.
+- Saved: the map layers, 3D buildings, sunlight, cast shadows, stars and planets, event markers, information on click, the energy bars and their sources, globe or flat map, projection, frame rate limit, the body for the next start, the library service used as the base imagery, and a language code for names (empty follows the system; set in the file only). Not saved: the camera, the clock and which windows are open.
 
 ### Limitations
 - The body's choice takes effect at the next start, and the window says so.

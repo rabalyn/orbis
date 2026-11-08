@@ -2,7 +2,7 @@
 //! the terrain like the roads do. Works on Web Mercator tiles, which is what Earth uses.
 
 use crate::geo::{lat_to_merc_v, lon_to_merc_u, TileKey};
-use crate::import::{Imported, Item, Mark, Pos, Shape};
+use crate::import::{Imported, Item, Mark, Outline, Pos, Shape};
 use crate::overlay::OVERLAY_SIZE;
 use std::sync::Arc;
 use tiny_skia::{Color, FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, Transform};
@@ -187,7 +187,7 @@ fn draw_line(pixmap: &mut Pixmap, points: &[(f64, f64)]) {
     pixmap.stroke_path(&path, &paint(LINE), &stroke(width), Transform::identity(), None);
 }
 
-fn draw_area(pixmap: &mut Pixmap, rings: &[Vec<(f64, f64)>]) {
+fn draw_area(pixmap: &mut Pixmap, rings: &[Vec<(f64, f64)>], style: Option<Outline>) {
     let mut path = PathBuilder::new();
     for ring in rings {
         let ring = clip_ring(&thin(ring, false));
@@ -202,10 +202,14 @@ fn draw_area(pixmap: &mut Pixmap, rings: &[Vec<(f64, f64)>]) {
         path.close();
     }
     let Some(path) = path.finish() else { return };
-    pixmap.fill_path(&path, &paint(AREA_FILL), FillRule::EvenOdd, Transform::identity(), None);
-    let width = 1.8 * TEXELS_PER_PIXEL;
-    pixmap.stroke_path(&path, &paint([20, 20, 30, 170]), &stroke(width + 1.2 * TEXELS_PER_PIXEL), Transform::identity(), None);
-    pixmap.stroke_path(&path, &paint(AREA_EDGE), &stroke(width), Transform::identity(), None);
+    let style = style.unwrap_or(Outline { edge: AREA_EDGE, fill: AREA_FILL, width: 1.8 });
+    if style.fill[3] > 0 {
+        pixmap.fill_path(&path, &paint(style.fill), FillRule::EvenOdd, Transform::identity(), None);
+    }
+    let width = style.width * TEXELS_PER_PIXEL;
+    let halo = [20, 20, 30, (style.edge[3] as f32 * 0.7) as u8];
+    pixmap.stroke_path(&path, &paint(halo), &stroke(width + 1.2 * TEXELS_PER_PIXEL), Transform::identity(), None);
+    pixmap.stroke_path(&path, &paint(style.edge), &stroke(width), Transform::identity(), None);
 }
 
 fn draw_dot(pixmap: &mut Pixmap, (x, y): (f64, f64), mark: Option<Mark>) {
@@ -244,7 +248,7 @@ pub fn draw(pixmap: &mut Pixmap, docs: &[Arc<Imported>], tile: TileKey) {
     let items = || docs.iter().flat_map(|d| d.items.iter()).filter(|i| item_touches(i, tile));
     for item in items() {
         if let Shape::Polygon(rings) = &item.shape {
-            draw_projected(pixmap, tile, rings.iter().map(Vec::as_slice), draw_area);
+            draw_projected(pixmap, tile, rings.iter().map(Vec::as_slice), |p, r| draw_area(p, r, item.outline));
         }
     }
     for item in items() {

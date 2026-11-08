@@ -56,6 +56,30 @@ const TOGGLES: &[(&str, &[Toggle])] = &[
             ("Information on click", |s| s.info_on_click, |s, v| s.info_on_click = v),
         ],
     ),
+    (
+        "Renewable energy, Germany",
+        &[
+            ("Capacity bars", |s| s.energy, |s, v| s.energy = v),
+            ("Output at the clock's time", |s| s.energy_output, |s, v| s.energy_output = v),
+            ("Day chart of output and use", |s| s.energy_chart, |s, v| s.energy_chart = v),
+            ("Solar", |s| s.energy_solar, |s, v| s.energy_solar = v),
+            ("Wind on land", |s| s.energy_wind_onshore, |s, v| s.energy_wind_onshore = v),
+            ("Wind at sea", |s| s.energy_wind_offshore, |s, v| s.energy_wind_offshore = v),
+            ("Hydro", |s| s.energy_hydro, |s, v| s.energy_hydro = v),
+            ("Biomass", |s| s.energy_biomass, |s, v| s.energy_biomass = v),
+        ],
+    ),
+    (
+        "For comparison: fossil and nuclear",
+        &[
+            ("Lignite", |s| s.energy_lignite, |s, v| s.energy_lignite = v),
+            ("Hard coal", |s| s.energy_hard_coal, |s, v| s.energy_hard_coal = v),
+            ("Natural gas", |s| s.energy_gas, |s, v| s.energy_gas = v),
+            ("Oil", |s| s.energy_oil, |s, v| s.energy_oil = v),
+            ("Other fossil (gases, waste)", |s| s.energy_other_fossil, |s, v| s.energy_other_fossil = v),
+            ("Nuclear", |s| s.energy_nuclear, |s, v| s.energy_nuclear = v),
+        ],
+    ),
 ];
 
 /// Sets the checkbox number `index` of [`TOGGLES`].
