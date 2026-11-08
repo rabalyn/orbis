@@ -11,6 +11,7 @@
 use crate::buildings::{BuildingMesh, BuildingVertex};
 use crate::geo::{enu, geodetic_to_ecef};
 use crate::import::{Imported, Item, Mark, Outline, Pos, Shape};
+use crate::info::Card;
 use crate::sky_time::civil_from_days;
 use glam::DVec3;
 use std::collections::HashMap;
@@ -681,64 +682,85 @@ impl Energy {
         }
     }
 
-    /// What the information box says about a bar.
-    pub fn describe(&self, subject: Subject, month: u16, shown: [bool; SOURCES], output: Option<(&[f32; SOURCES], &str)>) -> String {
-        let mut text = String::new();
-        let what = match subject {
-            Subject::Area(i) => match self.areas[i as usize].kind {
-                AreaKind::Admin => format!("All units registered in this {}, outlined on the ground.", level_noun(self.areas[i as usize].level)),
-                AreaKind::Sea => "All offshore wind parks in this sea, outlined together.".to_string(),
-                AreaKind::Park => "All turbines of this offshore wind park, outlined together.".to_string(),
-            },
-            Subject::Unplaced(i) if self.areas[i as usize].level == Level::Districts => {
-                "The register gives only the district for these units, no municipality or position: mostly large power plants. So they stand as one bar for the district, outlined in orange, beside the finer bars.".to_string()
-            }
-            Subject::Unplaced(i) => format!(
-                "The register gives no position for these units, only the municipality (outlined): mostly small rooftop solar of private owners. So they are not a bar but the municipality's shade: its capacity per km², full at {} per km². Units with a position stand as round bars of their own.\n\nArea {:.1} km², {} per km².",
-                format_power(self.dense),
-                self.km2[i as usize],
-                format_power(self.unplaced_density(i, month, shown).unwrap_or(0.0)),
-            ),
-            Subject::Site(_) => "Units at one published position, ringed on the ground.".to_string(),
-        };
-        text.push_str(&what);
-        match output {
-            Some((_, when)) => text.push_str(&format!("\n\nEstimated output at {when} of the installed capacity:\n")),
-            None => text.push_str(&format!("\n\nInstalled capacity, {}:\n", month_name(month))),
-        }
-        let (mut total, mut renewable, mut fossil) = (0.0, 0.0, 0.0);
-        for s in Source::ALL {
-            if !shown[s as usize] {
+    /// What the information box says about a bar: the gist, the figures by source, then what
+    /// the bar stands for and how far to trust the figures. With `output`, the estimated output
+    /// at a time (the shares of capacity running, and the time as text) beside the capacity.
+    pub fn describe(&self, subject: Subject, month: u16, shown: [bool; SOURCES], output: Option<(&[f32; SOURCES], &str)>) -> Card {
+        let mut card = Card::default();
+        let (mut renewable, mut fossil, mut running) = (0.0f32, 0.0f32, 0.0f32);
+        let mut largest: Option<(Source, f32)> = None;
+        for s in Source::ALL.into_iter().filter(|s| shown[*s as usize]) {
+            let kw = self.subject_kw(subject, s, month);
+            if kw <= 0.0 {
                 continue;
             }
-            let kw = self.subject_kw(subject, s, month);
-            if kw > 0.0 {
-                match output {
-                    Some((shares, _)) => text.push_str(&format!("{}: {} of {}\n", s.name(), format_power(kw * shares[s as usize]), format_power(kw))),
-                    None => text.push_str(&format!("{}: {}\n", s.name(), format_power(kw))),
+            let value = match output {
+                Some((shares, _)) => {
+                    let out = kw * shares[s as usize].clamp(0.0, 1.0);
+                    running += out;
+                    format!("{} of {}", format_power(out), format_power(kw))
                 }
-                total += kw;
-                if s.fossil() {
-                    fossil += kw;
-                } else {
-                    renewable += kw;
-                }
+                None => format_power(kw),
+            };
+            card.facts.push((s.name().to_string(), value));
+            if s.fossil() {
+                fossil += kw;
+            } else {
+                renewable += kw;
+            }
+            if largest.is_none_or(|l| kw > l.1) {
+                largest = Some((s, kw));
             }
         }
-        let _ = total;
-        text.push_str(&format!("Renewable capacity: {}\nFossil and nuclear capacity: {}", format_power(renewable), format_power(fossil)));
+        let total = renewable + fossil;
+        let pct = |part: f32| 100.0 * part / total.max(1e-6);
+        if total > 0.0 {
+            card.facts.push((String::new(), String::new()));
+            card.facts.push(("Renewable".to_string(), format!("{} ({:.0}%)", format_power(renewable), pct(renewable))));
+            card.facts.push(("Fossil, nuclear".to_string(), format!("{} ({:.0}%)", format_power(fossil), pct(fossil))));
+        }
+        let main = largest.map_or(String::new(), |(s, kw)| format!(" Largest: {} ({:.0}%).", s.name().to_lowercase(), pct(kw)));
+        card.summary = match (total > 0.0, output) {
+            (false, _) => format!("No capacity of the shown sources in {}.", month_name(month)),
+            (true, Some((_, when))) => format!(
+                "About {} running at {when}, of {} installed ({:.0}%).{main}",
+                format_power(running),
+                format_power(total),
+                pct(running)
+            ),
+            (true, None) => format!("{} installed in {}, {:.0}% renewable.{main}", format_power(total), month_name(month), pct(renewable)),
+        };
+        match subject {
+            Subject::Unplaced(i) if self.areas[i as usize].level != Level::Districts => {
+                card.facts.push(("Area".to_string(), format!("{:.1} km²", self.km2[i as usize])));
+                card.facts.push(("Per km²".to_string(), format_power(self.unplaced_density(i, month, shown).unwrap_or(0.0))));
+            }
+            Subject::Site(i) => card.facts.push(("Units running".to_string(), self.sites[i as usize].running(month).to_string())),
+            _ => {}
+        }
+        card.notes.push(match subject {
+            Subject::Area(i) => match self.areas[i as usize].kind {
+                AreaKind::Admin => format!("All units registered in this {}.", level_noun(self.areas[i as usize].level)),
+                AreaKind::Sea => "All offshore wind parks in this sea.".to_string(),
+                AreaKind::Park => "All turbines of this offshore wind park.".to_string(),
+            },
+            Subject::Unplaced(i) if self.areas[i as usize].level == Level::Districts => {
+                "Units the register gives only by district, mostly large power plants: one bar for the district, outlined in orange.".to_string()
+            }
+            Subject::Unplaced(_) => format!(
+                "Units without a published position, mostly private rooftop solar. They shade the municipality instead of standing as a bar, fully at {} per km².",
+                format_power(self.dense)
+            ),
+            Subject::Site(_) => "Units of one source at one published position.".to_string(),
+        });
         if output.is_some() {
-            text.push_str("\n\nOutput is estimated: Germany's output of each source (SMARD) is shared out by capacity, so every bar of a source runs at the same share. Units that feed only their owners, and a source's units outside the public grid, make the true shares differ.");
+            card.notes.push("Output is estimated: Germany's output of each source (SMARD) shared out by capacity.".to_string());
         }
-        if let Subject::Site(i) = subject {
-            let site = &self.sites[i as usize];
-            text.push_str(&format!("\n{} unit(s) running", site.running(month)));
-        }
-        text.push_str(&format!(
-            "\n\nMarktstammdatenregister as of {}-{:02}-{:02}. Net rated power (AC) of units in operation; planned units are not shown.",
+        card.notes.push(format!(
+            "Marktstammdatenregister, {}-{:02}-{:02}: net power of units in operation.",
             self.exported.0, self.exported.1, self.exported.2
         ));
-        text
+        card
     }
 }
 
@@ -1227,10 +1249,15 @@ pub(crate) mod tests {
         assert_eq!(e.town_at(48.3f64.to_radians(), 11.1f64.to_radians()), Some(2));
         assert_eq!(e.town_at(48.1f64.to_radians(), 11.1f64.to_radians()), Some(3));
         assert_eq!(e.town_at(47.0f64.to_radians(), 11.1f64.to_radians()), None);
-        assert!(e.describe(Subject::Area(1), 115 * 12, all, None).contains("Wind on land: 3.0 MW"));
+        let card = e.describe(Subject::Area(1), 115 * 12, all, None);
+        assert!(card.facts.contains(&("Wind on land".to_string(), "3.0 MW".to_string())), "{card:?}");
+        assert!(card.summary.starts_with("903.0 MW installed in January 2015, 0% renewable. Largest: lignite"), "{}", card.summary);
         let mut shares = [0.0; SOURCES];
         shares[1] = 0.5;
-        assert!(e.describe(Subject::Area(1), 115 * 12, all, Some((&shares, "12:00"))).contains("Wind on land: 1.5 MW of 3.0 MW"));
+        let card = e.describe(Subject::Area(1), 115 * 12, all, Some((&shares, "12:00 UTC")));
+        assert!(card.facts.contains(&("Wind on land".to_string(), "1.5 MW of 3.0 MW".to_string())), "{card:?}");
+        assert!(card.summary.starts_with("About 1.5 MW running at 12:00 UTC, of 903.0 MW installed (0%)"), "{}", card.summary);
+        assert!(card.notes.iter().any(|n| n.contains("estimated")));
         assert_eq!(e.national(115 * 12)[1], 3000.0);
         assert_eq!(e.subject_title(Subject::Area(3)), "Süd, Kreis, Land");
     }

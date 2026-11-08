@@ -2143,14 +2143,14 @@ impl Scene {
         let have = moments.iter().filter(|m| m.is_some()).count();
         let date = &sky_time::format_utc(day, false)[..10];
         let model = power_chart::Model {
-            title: format!("Germany {date} UTC, GW: generation, use"),
+            title: format!("Germany {date}, GW"),
             chart: (have > 0).then(|| power_chart::chart(&moments, Some((time - day) / 86_400.0), self.view.energy_palette)),
             note: if have > 0 {
-                "Generation stacked by source, consumption in white, the clock in yellow. Area above the line: surplus; line above the areas: shortfall.".to_string()
+                "Areas above the white line: surplus.".to_string()
             } else if self.feeds_pending > 0 {
                 "Asking SMARD...".to_string()
             } else {
-                "SMARD has no values for this day (they run from 2015 to about an hour ago).".to_string()
+                "No data for this day (SMARD has 2015 to an hour ago).".to_string()
             },
         };
         if *self.energy.chart.borrow() != model {
@@ -2219,7 +2219,7 @@ impl Scene {
         *self.info.borrow_mut() = info::Model {
             title: data.subject_title(subject),
             at,
-            content: info::Content::Message({
+            content: info::Content::Facts({
                 let when = self.energy.power.shown.as_ref().map(|(m, sh)| (sh, sky_time::format_utc(m.time, false)[11..16].to_string() + " UTC"));
                 data.describe(subject, month, self.energy_sources(), when.as_ref().map(|(sh, w)| (*sh, w.as_str())))
             }),
@@ -2239,14 +2239,14 @@ impl Scene {
         let metres_per_px = 2.0 * self.nav.cam.distance * (camera::FOV_Y / 2.0).tan() / height.max(1.0);
         let per_100px = 100.0 * metres_per_px / scale.per_kw;
         let month = energy::month_name(energy::month_of(self.clock.time()));
-        let mut line = format!("Energy: one bar per {}, {month}; 100 px of height = {}", level.name(), energy::format_power(per_100px as f32));
+        let mut line = format!("Energy: bars per {}, {month}, 100 px = {}", level.name(), energy::format_power(per_100px as f32));
         if self.view.energy_output {
             line.push('\n');
             line.push_str(&self.power_status());
         }
         if level == energy::Level::Plants {
             let dense = energy::Energy::bundled().map_or(0.0, |d| d.dense());
-            line.push_str(&format!("\nShade: units without a position, per municipality; full at {}/km²", energy::format_power(dense)));
+            line.push_str(&format!("\nShade: units without position, full at {}/km²", energy::format_power(dense)));
         }
         if self.nav.cam.total_tilt() < 0.3 {
             line.push_str("\nTilt the view (right-drag) to see the bars' heights");
@@ -2259,22 +2259,23 @@ impl Scene {
         let p = &self.energy.power;
         let Some((m, _)) = &p.shown else {
             return match (&p.problem, &p.index) {
-                (Some(e), _) => format!("Output: {e}; bars show capacity"),
+                (Some(e), _) => format!("Output unavailable ({e}): bars show capacity"),
                 (None, None) => "Output: asking SMARD...".to_string(),
                 (None, Some(_)) if p.feed.is_some() && self.feeds_pending > 0 => "Output: asking SMARD...".to_string(),
-                _ => "Output: SMARD has no values for this time (from 2015 to about an hour ago); bars show capacity".to_string(),
+                _ => "No output data for this time: bars show capacity".to_string(),
             };
         };
         let gw = |mw: f32| format!("{:.1} GW", mw / 1000.0);
         let (generation, consumption) = (m.generation(), m.consumption());
         let balance = generation - consumption;
+        // The date is the clock's, shown above; only the quarter hour can differ.
         format!(
-            "Germany {}: generation {} ({:.0}% renewable), consumption {}, {} {}\nBars: estimated output solid, capacity not running see-through",
-            &sky_time::format_utc(m.time, false)[..16].replace('T', " "),
+            "{} UTC: {} generated, {:.0}% renewable; use {}, {} {}",
+            &sky_time::format_utc(m.time, false)[11..16],
             gw(generation),
             100.0 * m.renewable() / generation.max(1.0),
             gw(consumption),
-            if balance >= 0.0 { "surplus" } else { "shortfall" },
+            if balance >= 0.0 { "surplus" } else { "short" },
             gw(balance.abs()),
         )
     }

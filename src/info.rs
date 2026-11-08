@@ -21,8 +21,21 @@ const KEY_COLS: usize = 11;
 pub enum Content {
     Looking,
     Message(String),
+    /// Figures in a table under a one-line summary, with explanations in grey below.
+    Facts(Card),
     Article(Article),
     Nearby { items: Vec<NearItem>, radius: f64 },
+}
+
+/// What the box shows about something measured: the gist first, then the figures, then how to
+/// read them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Card {
+    pub summary: String,
+    /// Rows of name and value; an empty row leaves a gap.
+    pub facts: Vec<(String, String)>,
+    /// Short paragraphs, in grey.
+    pub notes: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -132,6 +145,32 @@ fn body_lines(m: &Model, cols: usize) -> Vec<Line> {
         Content::Looking => {
             wrapped("Looking up...", Tone::Dim, 0, cols, &mut lines);
             if let Some(c) = &coords {
+                wrapped(c, Tone::Dim, 0, cols, &mut lines);
+            }
+        }
+        Content::Facts(card) => {
+            wrapped(&card.summary, Tone::Normal, 0, cols, &mut lines);
+            lines.push(blank());
+            // A key column as wide as the longest name, within limits, so that the values line up.
+            let key_cols = card.facts.iter().map(|f| f.0.chars().count() + 1).max().unwrap_or(0).clamp(KEY_COLS, 18).min(cols / 2);
+            for (k, v) in &card.facts {
+                // An empty row separates groups of figures.
+                if k.is_empty() && v.is_empty() {
+                    lines.push(blank());
+                    continue;
+                }
+                let before = lines.len();
+                wrapped(v, Tone::Normal, key_cols, cols, &mut lines);
+                if let Some(first) = lines.get_mut(before) {
+                    first.0 = Some(wiki::shorten(k, key_cols - 1));
+                }
+            }
+            for note in &card.notes {
+                lines.push(blank());
+                wrapped(note, Tone::Dim, 0, cols, &mut lines);
+            }
+            if let Some(c) = &coords {
+                lines.push(blank());
                 wrapped(c, Tone::Dim, 0, cols, &mut lines);
             }
         }
