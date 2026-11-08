@@ -4,7 +4,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::wtime::{Duration, SystemTime, UNIX_EPOCH};
 
 /// How many server errors within the window take a server out.
 pub const STRIKES: usize = 3;

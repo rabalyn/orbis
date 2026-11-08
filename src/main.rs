@@ -1,10 +1,16 @@
+#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused))]
 mod atlas;
 mod atlas_nav;
 mod blend;
 mod body;
 mod buildings;
+#[cfg(not(target_arch = "wasm32"))]
+mod cache;
+#[cfg(target_arch = "wasm32")]
+#[path = "cache_mem.rs"]
 mod cache;
 mod clicks;
+mod compass;
 mod camera;
 mod capabilities;
 mod fetcher;
@@ -29,7 +35,11 @@ mod render;
 mod import;
 mod import_draw;
 mod places;
+mod power_chart;
+mod power_feed;
 mod eclipse;
+mod energy;
+mod energy_style;
 mod event_feeds;
 mod events;
 mod flight;
@@ -55,6 +65,11 @@ mod ui;
 mod ui_draw;
 mod vector;
 mod wiki;
+mod wtime;
+mod worker;
+mod paths;
+#[cfg(target_arch = "wasm32")]
+mod web;
 mod wikilookup;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -78,7 +93,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use crate::wtime::{Duration, Instant, SystemTime};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -133,6 +148,7 @@ Usage: orbis [options]
   --no-labels             start with all names hidden (key L)
   --no-cities  --no-names start with just place names, or just other names (peaks, water, streets) hidden
   --no-markers            start with event markers hidden
+  --energy                start with the bars of renewable capacity in Germany (W)
   --no-info               start with the information box on click off (clicks look nothing up)
   --config-dir DIR        keep the saved options (settings.json) in DIR. Without it they are in ./config
                           if that exists, else in orbis/ in your config folder. The command line wins
@@ -193,6 +209,7 @@ Usage: orbis [options]
   --services-panel        with --screenshot, also show the list of map services
   --show-help             with --screenshot, also show the help window (key H)
   --show-options          with --screenshot, also show the view options dialog (key V)
+  --show-energy-style     with --screenshot, also show the energy display window (colours and size of the bars)
   --show-time             with --screenshot, also show the time dialog (key C)
   --help-scroll N         with --screenshot, scroll the help window down by N wheel notches (implies --show-help)
   --simulate-click X,Y    with --screenshot, click there (pixels from the top left) before the image is taken,
@@ -277,6 +294,7 @@ struct Args {
     services: service_ui::Cli,
     show_help: bool,
     show_options: bool,
+    show_energy_style: bool,
     show_time: bool,
     simulate_drags: Vec<(DVec2, DVec2)>,
     help_scroll: f64,
@@ -290,6 +308,16 @@ struct Args {
     flight_stop_at: Option<f64>,
 }
 
+#[cfg(target_arch = "wasm32")]
+fn locale_language() -> String {
+    // The browser's language, such as "de-AT", read like a locale.
+    web_sys::window()
+        .and_then(|w| w.navigator().language())
+        .map(|l| vector::language_from_locale(&l.replace('-', "_")))
+        .unwrap_or_default()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn locale_language() -> String {
     ["LC_ALL", "LC_MESSAGES", "LANG"]
         .iter()
@@ -363,6 +391,7 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
         services: Default::default(),
         show_help: false,
         show_options: false,
+        show_energy_style: false,
         show_time: false,
         simulate_drags: Vec::new(),
         help_scroll: 0.0,
@@ -418,6 +447,10 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
             }
             "--no-markers" => {
                 a.settings.event_markers = false;
+                continue;
+            }
+            "--energy" => {
+                a.settings.energy = true;
                 continue;
             }
             "--no-info" => {
@@ -486,6 +519,10 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
             }
             "--show-options" => {
                 a.show_options = true;
+                continue;
+            }
+            "--show-energy-style" => {
+                a.show_energy_style = true;
                 continue;
             }
             "--show-time" => {
@@ -728,7 +765,10 @@ struct Scene {
     lines_version: u64,
     /// What the view options dialog shows; filled from the live state before each frame.
     options: options::Shared,
+    energy_style: energy_style::Shared,
     time_model: time_dialog::Shared,
+    /// What the compass among the icons shows.
+    compass: compass::Shared,
     eclipse_watch: time_slider::EclipseWatch,
     /// The planets and the Moon as of `bodies_time`.
     bodies: Vec<planets::Body>,
@@ -779,17 +819,66 @@ struct Scene {
     info_changed: bool,
     /// Keeps a slow tick going for tiles waiting out a retry delay.
     last_retry_tick: Instant,
+    energy: EnergyLayer,
+}
+
+type OutlineKey = (energy::Level, [bool; energy::SOURCES], Option<energy::Subject>, Option<u16>);
+
+/// Level, month, sources, centre, tile count, and the quarter hour of the output shown.
+type EnergyBuild = (energy::Level, u16, [bool; energy::SOURCES], (i64, i64), usize, Option<i64>);
+
+/// Generation and consumption from SMARD: what has arrived and what was asked.
+#[derive(Default)]
+struct PowerState {
+    feed: Option<power_feed::PowerFeed>,
+    index: Option<Vec<i64>>,
+    index_asked: Option<Instant>,
+    weeks: HashMap<i64, power_feed::Week>,
+    asked: HashMap<i64, Instant>,
+    problem: Option<String>,
+    /// The quarter hour shown, and the shares of capacity running then.
+    shown: Option<(power_feed::Moment, [f32; energy::SOURCES])>,
+}
+
+/// What the energy bars show now, and what they were last built from.
+#[derive(Default)]
+struct EnergyLayer {
+    level: Option<energy::Level>,
+    selected: Option<energy::Subject>,
+    /// The areas outlined on the ground, and what they were made for.
+    outlines: Option<Arc<import::Imported>>,
+    /// Level, sources, choice, and the month where the ground's shade follows it (close up).
+    outlines_from: Option<OutlineKey>,
+    version: u64,
+    bars: Vec<energy::Bar>,
+    scale: Option<energy::Scale>,
+    /// The level, month, sources, centre and tile count the mesh was built for, and when.
+    built_from: Option<EnergyBuild>,
+    built_at: Option<Instant>,
+    /// The view's aspect and height in pixels, for finding the bar under a click.
+    view: (f64, f64),
+    /// The data could not be read: said once.
+    missing: bool,
+    power: PowerState,
+    /// What the day chart shows.
+    chart: power_chart::Shared,
+    /// The look the bars and outlines were built with; a change rebuilds them.
+    style: Option<energy::Style>,
 }
 
 /// Sets up tile fetching, including sharing on the LAN if asked for.
 fn make_fetcher(args: &Args) -> Arc<Fetcher> {
     let cache = DiskCache::new(args.cache_dir.clone());
-    let trimmer = cache.clone();
-    let limit = args.cache_limit_gib * GIB;
-    std::thread::spawn(move || loop {
-        trimmer.trim(limit);
-        std::thread::sleep(TRIM_EVERY);
-    });
+    // In a browser the cache is in memory, and keeps itself within bounds.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let trimmer = cache.clone();
+        let limit = args.cache_limit_gib * GIB;
+        std::thread::spawn(move || loop {
+            trimmer.trim(limit);
+            std::thread::sleep(TRIM_EVERY);
+        });
+    }
     let peers = Peers::new(args.cache_servers.clone());
     Arc::new(Fetcher::new(cache, peers, args.offline))
 }
@@ -1032,11 +1121,14 @@ impl Scene {
             lines_drawn: LineKinds::of(&args.settings),
             lines_version: 0,
             options: Default::default(),
+            energy_style: Default::default(),
             time_model: Default::default(),
+            compass: Default::default(),
             eclipse_watch: Default::default(),
             bodies: Vec::new(),
             bodies_time: f64::NEG_INFINITY,
             bodies_pos: DVec3::ZERO,
+            energy: EnergyLayer::default(),
         };
         scene.loader.set_lines(scene.lines_drawn);
         for path in &args.imports {
@@ -1051,7 +1143,12 @@ impl Scene {
         scene.ui.add(options::window_panel(scene.options.clone()));
         scene.ui.add(info::window_panel(scene.info.clone()));
         scene.ui.add(time_dialog::icon_panel());
+        scene.ui.add(compass::icon_panel(scene.compass.clone()));
         scene.ui.add(time_dialog::window_panel(scene.time_model.clone()));
+        scene.ui.add(power_chart::window_panel(scene.energy.chart.clone()));
+        scene.ui.add(energy_style::window_panel(scene.energy_style.clone()));
+        // The renderer has a fixed number of places for the interface's panels; one beyond them is never drawn.
+        assert!(scene.ui.panels().len() <= Renderer::ui_panel_count(), "more panels than the renderer draws");
         scene
     }
 
@@ -1109,6 +1206,7 @@ impl Scene {
         match action {
             Action::Set(index, value) => {
                 options::set_toggle(&mut self.view, index, value);
+                self.sync_energy_style();
                 if !self.view.info_on_click {
                     self.ui.set_visible(info::WINDOW, false);
                     self.info_id += 1;
@@ -1124,6 +1222,7 @@ impl Scene {
             Action::Body(id) => self.view.body = id.to_string(),
             Action::Base(id) => self.services.choose_base(id.as_deref()),
             Action::FrameRate(limit) => self.view.frame_rate = limit,
+            Action::EnergyStyle => self.toggle_dialog(energy_style::WINDOW),
         }
     }
 
@@ -1136,7 +1235,8 @@ impl Scene {
     fn separate_dialogs(&mut self, opened: ui::PanelId) {
         self.sync_options();
         self.sync_time_dialog();
-        self.ui.close_overlapping(opened, &[help::WINDOW, options::WINDOW, info::WINDOW, time_dialog::WINDOW]);
+        self.sync_energy_style();
+        self.ui.close_overlapping(opened, &[help::WINDOW, options::WINDOW, info::WINDOW, time_dialog::WINDOW, energy_style::WINDOW]);
     }
 
     /// Keeps the time dialog true to the clock, whatever moved it. A drag that ended without the
@@ -1209,6 +1309,33 @@ impl Scene {
         action.is_some_and(|a| self.time_action(a))
     }
 
+    /// An event from a slider, which the time dialog or the energy display window may own.
+    fn slider_event(&mut self, event: ui::UiEvent) -> bool {
+        let time = self.time_event(event);
+        self.energy_style_event(event) || time
+    }
+
+    /// An event the energy display window may own. True if the picture changes.
+    fn energy_style_event(&mut self, event: ui::UiEvent) -> bool {
+        let (handled, action) = energy_style::handle(&mut self.ui, &self.energy_style, event);
+        if handled && matches!(event, ui::UiEvent::Clicked { .. }) {
+            self.separate_dialogs(energy_style::WINDOW);
+        }
+        let Some(energy_style::Action::Set(style)) = action else { return false };
+        self.view.set_energy_style(style);
+        self.sync_energy_style();
+        true
+    }
+
+    /// Keeps the energy display window true to the settings.
+    fn sync_energy_style(&mut self) {
+        let model = energy_style::Model { style: self.view.energy_style(), output: self.view.energy_output };
+        if *self.energy_style.borrow() != model {
+            *self.energy_style.borrow_mut() = model;
+            self.ui.refresh(energy_style::WINDOW);
+        }
+    }
+
     /// Notes what the user changed since the last call, and saves it. A value that only the
     /// command line set is not a change, so it is not saved.
     fn persist(&mut self) {
@@ -1231,7 +1358,7 @@ impl Scene {
         self.pointer = pos;
         let r = self.ui.pointer_moved(pos);
         if let Some(e) = r.event {
-            return self.time_event(e);
+            return self.slider_event(e);
         }
         if r.consumed {
             return r.redraw;
@@ -1248,7 +1375,7 @@ impl Scene {
     fn mouse_pressed(&mut self, b: Button, mods: Mods) -> bool {
         let r = self.ui.press(b, self.pointer);
         if let Some(e) = r.event {
-            self.time_event(e);
+            self.slider_event(e);
         }
         if r.consumed {
             return true;
@@ -1280,6 +1407,9 @@ impl Scene {
             if help::handle(&mut self.ui, event) {
                 self.separate_dialogs(help::WINDOW);
             }
+            if compass::handle(event) {
+                self.nav.face_north();
+            }
             self.time_event(event);
             let (_, action) = options::handle(&mut self.ui, &self.options, event);
             self.separate_dialogs(options::WINDOW);
@@ -1288,6 +1418,12 @@ impl Scene {
             }
             if let (true, Some(a)) = info::handle(&mut self.ui, event) {
                 self.info_action(a);
+            }
+            self.energy_style_event(event);
+            match power_chart::handle(&mut self.ui, event) {
+                Some(power_chart::Event::Closed) => self.view.energy_chart = false,
+                Some(power_chart::Event::Style) => self.toggle_dialog(energy_style::WINDOW),
+                None => {}
             }
         }
         let bit = 1 << (b == Button::Right) as u8;
@@ -1312,7 +1448,7 @@ impl Scene {
     fn mouse_wheel(&mut self, lines: f64, mods: Mods) -> bool {
         let r = self.ui.wheel(lines, self.pointer);
         if let Some(e) = r.event {
-            return self.time_event(e);
+            return self.slider_event(e);
         }
         if r.consumed {
             return r.redraw;
@@ -1364,6 +1500,9 @@ impl Scene {
             self.info_id += 1;
             self.info_pending = false;
             self.info_changed = true;
+            return;
+        }
+        if click.kind == clicks::ClickKind::Single && self.energy_click(click.pos) {
             return;
         }
         if click.kind == clicks::ClickKind::Single && self.view.info_on_click {
@@ -1522,11 +1661,12 @@ impl Scene {
         let mut docs = (*self.library.snapshot()).clone();
         docs.extend(self.eclipse_path.clone());
         docs.extend(self.markers.clone());
+        docs.extend(self.energy.outlines.clone());
         Arc::new(docs)
     }
 
     fn import_generation(&self) -> u64 {
-        self.library.generation + self.eclipse_path_version + self.markers_version + self.lines_version
+        self.library.generation + self.eclipse_path_version + self.markers_version + self.lines_version + self.energy.version
     }
 
     /// Starts the drawn overlays and labels over from the new contents.
@@ -1592,7 +1732,7 @@ impl Scene {
 
     /// Takes in what the feeds have answered. True if something changed.
     fn poll_feeds(&mut self) -> bool {
-        let mut changed = false;
+        let mut changed = self.poll_power();
         while let Some(reply) = self.feeds.poll() {
             self.feeds_pending = self.feeds_pending.saturating_sub(1);
             match reply.answer {
@@ -1873,6 +2013,305 @@ impl Scene {
     /// Advances the view and works out what to draw and fetch. Returns whether the picture changed.
     /// Draws the overlays again when the kinds of line shown have changed. They come from the
     /// decoded tiles in memory, or the disk cache: nothing is asked of a server.
+    fn energy_sources(&self) -> [bool; energy::SOURCES] {
+        let v = &self.view;
+        [
+            v.energy_solar,
+            v.energy_wind_onshore,
+            v.energy_wind_offshore,
+            v.energy_hydro,
+            v.energy_biomass,
+            v.energy_lignite,
+            v.energy_hard_coal,
+            v.energy_gas,
+            v.energy_oil,
+            v.energy_other_fossil,
+            v.energy_nuclear,
+        ]
+    }
+
+    fn energy_on(&self) -> bool {
+        self.view.energy && self.mode == Mode::Globe && body::current().id == body::EARTH.id
+    }
+
+    /// Keeps the energy bars and the outlines of their areas up to date with the view, the clock
+    /// and the options.
+    fn update_energy(&mut self, r: &mut Renderer, aspect_height: (f64, f64)) {
+        self.energy.view = aspect_height;
+        let data = if self.energy_on() { energy::Energy::bundled() } else { None };
+        if self.energy_on() && data.is_none() && !self.energy.missing {
+            self.energy.missing = true;
+            self.notice = Some("The energy data built into this program could not be read.".to_string());
+        }
+        let Some(data) = data else {
+            if self.ui.is_visible(power_chart::WINDOW) {
+                self.ui.set_visible(power_chart::WINDOW, false);
+            }
+            if self.energy.outlines.is_some() || self.energy.built_from.is_some() {
+                let power = std::mem::take(&mut self.energy.power);
+                let chart = self.energy.chart.clone();
+                self.energy = EnergyLayer { view: aspect_height, missing: self.energy.missing, version: self.energy.version + 1, power, chart, ..Default::default() };
+                r.set_energy(None);
+                self.imports_changed();
+            }
+            return;
+        };
+        let style = self.view.energy_style();
+        if self.energy.style != Some(style) {
+            self.energy.style = Some(style);
+            self.energy.outlines_from = None;
+            self.energy.built_from = None;
+        }
+        let level = energy::Level::for_altitude(self.nav.altitude, self.energy.level);
+        self.energy.level = Some(level);
+        let shown = self.energy_sources();
+        let month = energy::month_of(self.clock.time());
+        // Close up the shade, finer down the dashing of district outlines and with a choice its fill
+        // follow the clock's month.
+        let monthly = level >= energy::Level::Towns || self.energy.selected.is_some();
+        let wanted = (level, shown, self.energy.selected, monthly.then_some(month));
+        if self.energy.outlines_from != Some(wanted) {
+            self.energy.outlines = Some(Arc::new(data.outlines(level, shown, self.energy.selected, month, style.palette)));
+            self.energy.outlines_from = Some(wanted);
+            self.energy.version += 1;
+            self.imports_changed();
+        }
+        self.update_power(data, energy::month_of(self.clock.time()));
+        self.sync_power_chart();
+        let cam = &self.nav.cam;
+        let scale = style.apply(energy::Scale::for_view(data, level, cam.distance, aspect_height.1));
+        // The centre in steps of a tenth of the bars' reach, so that panning rebuilds only now and then.
+        let reach = (self.nav.altitude * 6.0 / geo::radius()).clamp(0.02, std::f64::consts::PI);
+        let step = reach / 10.0;
+        let centre = ((cam.lat / step).round() as i64, (cam.lon / step).round() as i64);
+        let quarter = self.energy.power.shown.as_ref().map(|m| m.0.time as i64);
+        let key = (level, month, shown, centre, r.tile_count(), quarter);
+        let rescaled = self.energy.scale.is_none_or(|s| (s.per_kw / scale.per_kw - 1.0).abs() > 0.03);
+        let same_but_terrain = self.energy.built_from.is_some_and(|b| (b.0, b.1, b.2, b.3, b.5) == (key.0, key.1, key.2, key.3, key.5));
+        let terrain_due = self.energy.built_at.is_none_or(|t| t.elapsed() > Duration::from_millis(500));
+        if !rescaled && (self.energy.built_from == Some(key) || (same_but_terrain && !terrain_due)) {
+            return;
+        }
+        let near = match level {
+            energy::Level::States | energy::Level::Districts => None,
+            _ => Some((cam.lat, cam.lon, reach)),
+        };
+        self.energy.bars = data.bars(level, month, shown, near);
+        let ground = |lat: f64, lon: f64| r.ground(lat, lon).unwrap_or(0.0);
+        let shares = self.energy.power.shown.as_ref().map(|m| m.1);
+        let bars = energy::mesh(&self.energy.bars, scale, geo::geodetic_to_ecef(cam.lat, cam.lon, 0.0), &ground, shares.as_ref(), &style);
+        r.set_energy(Some((&bars.mesh, bars.solid)));
+        self.energy.scale = Some(scale);
+        self.energy.built_from = Some(key);
+        self.energy.built_at = Some(Instant::now());
+    }
+
+    /// Asks SMARD for the week of the clock when the bars are to show output, and finds the
+    /// quarter hour to show.
+    fn update_power(&mut self, data: &energy::Energy, month: u16) {
+        if !self.view.energy_output {
+            self.energy.power.shown = None;
+            return;
+        }
+        let time = self.clock.time();
+        let fresh = Duration::from_secs(600);
+        let now = Instant::now();
+        let p = &mut self.energy.power;
+        let feed = p.feed.get_or_insert_with(|| power_feed::PowerFeed::new(self.fetcher.clone()));
+        // The index grows by a week each Monday; it is asked again every ten minutes while in use.
+        if p.index_asked.is_none_or(|t| now.duration_since(t) > fresh) {
+            p.index_asked = Some(now);
+            feed.ask_index();
+            self.feeds_pending += 1;
+        }
+        // The clock's week, and for the day chart the weeks of the day's first and last quarter hours.
+        let day = (time / 86_400.0).floor() * 86_400.0;
+        let chart = self.view.energy_chart;
+        let wanted: Vec<i64> = [Some(time), chart.then_some(day), chart.then_some(day + 86_399.0)]
+            .into_iter()
+            .flatten()
+            .filter_map(|t| p.index.as_deref().and_then(|i| power_feed::week_for(i, t)))
+            .collect();
+        for &w in &wanted {
+            let latest = p.index.as_deref().and_then(|i| i.last()) == Some(&w);
+            let due = match p.asked.get(&w) {
+                None => true,
+                // The latest week fills up as the day goes on.
+                Some(t) => latest && now.duration_since(*t) > fresh && p.weeks.contains_key(&w),
+            };
+            if due {
+                p.asked.insert(w, now);
+                feed.ask_week(w);
+                self.feeds_pending += 1;
+            }
+        }
+        let Some(week) = p.index.as_deref().and_then(|i| power_feed::week_for(i, time)) else {
+            p.shown = None;
+            return;
+        };
+        let latest = p.index.as_deref().and_then(|i| i.last()) == Some(&week);
+        // Live, SMARD is about three quarters of an hour behind: its latest values stand in.
+        let moment = p.weeks.get(&week).and_then(|w| w.moment(time).or_else(|| w.last_moment().filter(|m| latest && m.time < time)));
+        p.shown = moment.map(|m| {
+            let shares = m.shares(&data.national(month));
+            (m, shares)
+        });
+    }
+
+    /// Fills the day chart for the clock's day, and shows it while it is wanted.
+    fn sync_power_chart(&mut self) {
+        let wanted = self.energy_on() && self.view.energy_output && self.view.energy_chart;
+        if self.ui.is_visible(power_chart::WINDOW) != wanted {
+            self.ui.set_visible(power_chart::WINDOW, wanted);
+        }
+        if !wanted {
+            return;
+        }
+        let time = self.clock.time();
+        let day = (time / 86_400.0).floor() * 86_400.0;
+        let p = &self.energy.power;
+        let moment = |t: f64| p.index.as_deref().and_then(|i| power_feed::week_for(i, t)).and_then(|w| p.weeks.get(&w)).and_then(|w| w.moment(t));
+        let moments: Vec<Option<power_feed::Moment>> = (0..96).map(|k| moment(day + k as f64 * 900.0)).collect();
+        let have = moments.iter().filter(|m| m.is_some()).count();
+        let date = &sky_time::format_utc(day, false)[..10];
+        let model = power_chart::Model {
+            title: format!("Germany {date}, GW"),
+            chart: (have > 0).then(|| power_chart::chart(&moments, Some((time - day) / 86_400.0), self.view.energy_palette)),
+            note: if have > 0 {
+                "Areas above the white line: surplus.".to_string()
+            } else if self.feeds_pending > 0 {
+                "Asking SMARD...".to_string()
+            } else {
+                "No data for this day (SMARD has 2015 to an hour ago).".to_string()
+            },
+        };
+        if *self.energy.chart.borrow() != model {
+            *self.energy.chart.borrow_mut() = model;
+            self.ui.refresh(power_chart::WINDOW);
+        }
+    }
+
+    /// Takes in what SMARD answered. Returns whether anything arrived.
+    fn poll_power(&mut self) -> bool {
+        let mut changed = false;
+        let p = &mut self.energy.power;
+        while let Some(reply) = p.feed.as_ref().and_then(|f| f.poll()) {
+            self.feeds_pending = self.feeds_pending.saturating_sub(1);
+            changed = true;
+            match reply {
+                power_feed::Reply::Index(Ok(index)) => p.index = Some(index),
+                power_feed::Reply::Week(start, Ok(week)) => {
+                    p.weeks.insert(start, week);
+                    p.problem = None;
+                }
+                power_feed::Reply::Index(Err(e)) | power_feed::Reply::Week(_, Err(e)) => p.problem = Some(e),
+            }
+        }
+        if changed {
+            // Rebuild the bars with what came.
+            self.energy.built_from = None;
+        }
+        changed
+    }
+
+    /// Chooses the bar under a click and tells about it. Returns whether there was one.
+    fn energy_click(&mut self, pos: DVec2) -> bool {
+        let (Some(data), Some(scale), true) = (energy::Energy::bundled(), self.energy.scale, self.energy_on()) else { return false };
+        let (aspect, height) = self.energy.view;
+        let screen = Screen { basis: self.nav.cam.basis(), size: DVec2::new(aspect * height, height), reserved: Vec::new() };
+        // The ground as the bars were built on it is not kept, so sea level is close enough for picking.
+        let mut hit = energy::hit(&self.energy.bars, scale, &|_, _| 0.0, &|p| screen.project(p), pos);
+        // Close up, a municipality's units without a position are its shade on the ground.
+        if hit.is_none() && self.energy.level == Some(energy::Level::Plants) {
+            let shown = self.energy_sources();
+            let month = energy::month_of(self.clock.time());
+            hit = self
+                .nav
+                .ground_at(pos)
+                .and_then(|(lat, lon)| data.town_at(lat, lon))
+                .filter(|&i| data.unplaced_density(i, month, shown).is_some_and(|d| d > 0.0))
+                .map(energy::Subject::Unplaced);
+        }
+        let Some(subject) = hit else {
+            if self.energy.selected.take().is_some() {
+                self.energy.outlines_from = None;
+            }
+            return false;
+        };
+        self.energy.selected = Some(subject);
+        self.energy.outlines_from = None;
+        let month = energy::month_of(self.clock.time());
+        self.info_id += 1;
+        self.info_pending = false;
+        let at = match subject {
+            energy::Subject::Unplaced(i) => Some(data.areas[i as usize].label),
+            _ => self.energy.bars.iter().find(|b| b.subject == subject).map(|b| (b.lat, b.lon)),
+        }
+        .map(|(lat, lon)| (lat.to_degrees(), lon.to_degrees()));
+        *self.info.borrow_mut() = info::Model {
+            title: data.subject_title(subject),
+            at,
+            content: info::Content::Facts({
+                let when = self.energy.power.shown.as_ref().map(|(m, sh)| (sh, sky_time::format_utc(m.time, false)[11..16].to_string() + " UTC"));
+                data.describe(subject, month, self.energy_sources(), when.as_ref().map(|(sh, w)| (*sh, w.as_str())))
+            }),
+            note: None,
+        };
+        self.show_info();
+        true
+    }
+
+    /// The display's line about the bars: what they stand for and their scale.
+    fn energy_status(&self) -> Option<String> {
+        let (level, scale) = (self.energy.level?, self.energy.scale?);
+        if !self.energy_on() {
+            return None;
+        }
+        let (_, height) = self.energy.view;
+        let metres_per_px = 2.0 * self.nav.cam.distance * (camera::FOV_Y / 2.0).tan() / height.max(1.0);
+        let per_100px = 100.0 * metres_per_px / scale.per_kw;
+        let month = energy::month_name(energy::month_of(self.clock.time()));
+        let mut line = format!("Energy: bars per {}, {month}, 100 px = {}", level.name(), energy::format_power(per_100px as f32));
+        if self.view.energy_output {
+            line.push('\n');
+            line.push_str(&self.power_status());
+        }
+        if level == energy::Level::Plants {
+            let dense = energy::Energy::bundled().map_or(0.0, |d| d.dense());
+            line.push_str(&format!("\nShade: units without position, full at {}/km²", energy::format_power(dense)));
+        }
+        if self.nav.cam.total_tilt() < 0.3 {
+            line.push_str("\nTilt the view (right-drag) to see the bars' heights");
+        }
+        Some(line)
+    }
+
+    /// Germany's generation against consumption at the quarter hour shown, or why there is none.
+    fn power_status(&self) -> String {
+        let p = &self.energy.power;
+        let Some((m, _)) = &p.shown else {
+            return match (&p.problem, &p.index) {
+                (Some(e), _) => format!("Output unavailable ({e}): bars show capacity"),
+                (None, None) => "Output: asking SMARD...".to_string(),
+                (None, Some(_)) if p.feed.is_some() && self.feeds_pending > 0 => "Output: asking SMARD...".to_string(),
+                _ => "No output data for this time: bars show capacity".to_string(),
+            };
+        };
+        let gw = |mw: f32| format!("{:.1} GW", mw / 1000.0);
+        let (generation, consumption) = (m.generation(), m.consumption());
+        let balance = generation - consumption;
+        // The date is the clock's, shown above; only the quarter hour can differ.
+        format!(
+            "{} UTC: {} generated, {:.0}% renewable; use {}, {} {}",
+            &sky_time::format_utc(m.time, false)[11..16],
+            gw(generation),
+            100.0 * m.renewable() / generation.max(1.0),
+            gw(consumption),
+            if balance >= 0.0 { "surplus" } else { "short" },
+            gw(balance.abs()),
+        )
+    }
+
     fn sync_lines(&mut self) {
         let kinds = LineKinds::of(&self.view);
         if kinds == self.lines_drawn {
@@ -1996,6 +2435,7 @@ impl Scene {
             }
         }
         r.set_visible_buildings(visible);
+        self.update_energy(r, aspect_height);
         self.update_shadows(r, aspect_height, atlas);
         self.loader.set_wanted(&wanted, &overlays, &building_jobs);
         // Once everything has arrived, the terrain under the start view is known for good.
@@ -2251,6 +2691,10 @@ impl Scene {
             text.push('\n');
             text.push_str(status);
         }
+        if let Some(line) = self.energy_status() {
+            text.push('\n');
+            text.push_str(&line);
+        }
         for line in network_status(&self.fetcher, SystemTime::now()) {
             text.push('\n');
             text.push_str(&line);
@@ -2262,6 +2706,8 @@ impl Scene {
         self.ui.resize(DVec2::new(width as f64, height as f64), scale as f64);
         self.sync_options();
         self.sync_time_dialog();
+        let heading = (self.mode == Mode::Globe).then_some(self.nav.cam.heading);
+        compass::update(&mut self.ui, &self.compass, heading);
         let columns = ((width as usize).saturating_sub(40) / (8 * scale)).max(20);
         // The icons sit at the bottom right, so the credits wrap in the space left of them.
         let icons = self.ui.icons_width() as usize;
@@ -2274,6 +2720,14 @@ impl Scene {
         for c in &self.marker_credits {
             credits.push('\n');
             credits.push_str(c);
+        }
+        if self.energy_on() {
+            credits.push('\n');
+            credits.push_str(energy::CREDIT);
+            if self.energy.power.shown.is_some() {
+                credits.push('\n');
+                credits.push_str(power_feed::CREDIT);
+            }
         }
         if self.search.credit_due() {
             credits.push('\n');
@@ -2570,12 +3024,34 @@ fn format_distance(m: f64) -> String {
     }
 }
 
-fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue)> {
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("orbis"),
-        ..Default::default()
-    }))
-    .context("no suitable graphics device")
+async fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue)> {
+    // A browser's limits are its own, often below the native defaults.
+    #[cfg(target_arch = "wasm32")]
+    let required_limits = adapter.limits();
+    #[cfg(not(target_arch = "wasm32"))]
+    let required_limits = wgpu::Limits::default();
+    adapter
+        .request_device(&wgpu::DeviceDescriptor {
+            label: Some("orbis"),
+            required_limits,
+            ..Default::default()
+        })
+        .await
+        .context("no suitable graphics device")
+}
+
+/// The graphics adapter and device for a window's surface.
+async fn open_gpu(instance: &wgpu::Instance, surface: &wgpu::Surface<'static>) -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: Some(surface),
+            ..Default::default()
+        })
+        .await
+        .context("no graphics adapter for this window")?;
+    let (device, queue) = request_device(&adapter).await?;
+    Ok((adapter, device, queue))
 }
 
 /// Whether a saved image must keep waiting. A flight in progress counts: the tiles of the view it
@@ -2584,6 +3060,7 @@ fn screenshot_busy(loader_idle: bool, waiting: usize, text_idle: bool, feeds_pen
     !loader_idle || waiting > 0 || !text_idle || feeds_pending > 0 || animating || click_pending
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     let (width, height) = args.size;
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
@@ -2592,7 +3069,7 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
         ..Default::default()
     }))
     .context("no graphics adapter")?;
-    let (device, queue) = request_device(&adapter)?;
+    let (device, queue) = pollster::block_on(request_device(&adapter))?;
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let samples = render::sample_count(&adapter, format);
     let mut r = Renderer::new(device, queue, format, samples);
@@ -2646,6 +3123,10 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     }
     if args.show_options {
         scene.ui.set_visible(options::WINDOW, true);
+    }
+    if args.show_energy_style {
+        scene.sync_energy_style();
+        scene.ui.set_visible(energy_style::WINDOW, true);
     }
     if args.show_time {
         scene.ui.set_visible(time_dialog::WINDOW, true);
@@ -2832,6 +3313,8 @@ fn frame_state(scene: &Scene, size: (u32, u32), dt: f64, draw: &[TileKey]) -> se
 
 struct Gfx {
     window: Arc<Window>,
+    /// The format frames are drawn in: the surface's, or an sRGB view of it.
+    draw_format: wgpu::TextureFormat,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     renderer: Renderer,
@@ -2857,6 +3340,20 @@ struct Benchmark {
 #[derive(Debug)]
 enum UserEvent {
     SpaceMouse,
+    /// The browser has opened the graphics device.
+    #[cfg(target_arch = "wasm32")]
+    GpuReady,
+    /// A request made from the page was answered.
+    #[cfg(target_arch = "wasm32")]
+    Answer,
+}
+
+#[cfg(target_arch = "wasm32")]
+type OpenedGpu = Result<(Arc<Window>, wgpu::Surface<'static>, (wgpu::Adapter, wgpu::Device, wgpu::Queue))>;
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static PENDING_GPU: std::cell::RefCell<Option<OpenedGpu>> = const { std::cell::RefCell::new(None) };
 }
 
 struct App {
@@ -2866,27 +3363,47 @@ struct App {
     gfx: Option<Gfx>,
     error: Option<anyhow::Error>,
     mods: Mods,
+    /// The browser is still opening the graphics device.
+    #[cfg(target_arch = "wasm32")]
+    opening: bool,
 }
 
 impl App {
-    fn start(&self, event_loop: &ActiveEventLoop) -> Result<Gfx> {
+    /// Opens the window and its surface; the graphics device comes after, in `finish_start`.
+    fn open_window(&self, event_loop: &ActiveEventLoop) -> Result<Arc<Window>> {
         let (width, height) = if self.args.size_given { self.args.size } else { (1280, 800) };
-        let window = Arc::new(event_loop.create_window(
-            Window::default_attributes()
-                .with_title("Orbis")
-                .with_inner_size(PhysicalSize::new(width, height)),
-        )?);
+        let attributes = Window::default_attributes().with_title("Orbis");
+        // In a browser, the page decides the canvas's size.
+        #[cfg(not(target_arch = "wasm32"))]
+        let attributes = attributes.with_inner_size(PhysicalSize::new(width, height));
+        #[cfg(target_arch = "wasm32")]
+        let attributes = {
+            let _ = (width, height);
+            use winit::platform::web::WindowAttributesExtWebSys;
+            attributes.with_canvas(web::canvas()).with_prevent_default(true).with_focusable(true)
+        };
+        Ok(Arc::new(event_loop.create_window(attributes)?))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start(&self, event_loop: &ActiveEventLoop) -> Result<Gfx> {
+        let window = self.open_window(event_loop)?;
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(
             Box::new(event_loop.owned_display_handle()),
         ));
         let surface = instance.create_surface(window.clone())?;
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
-            ..Default::default()
-        }))
-        .context("no graphics adapter for this window")?;
-        let (device, queue) = request_device(&adapter)?;
+        let (adapter, device, queue) = pollster::block_on(open_gpu(&instance, &surface))?;
+        self.finish_start(window, surface, adapter, device, queue)
+    }
+
+    fn finish_start(
+        &self,
+        window: Arc<Window>,
+        surface: wgpu::Surface<'static>,
+        adapter: wgpu::Adapter,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+    ) -> Result<Gfx> {
         let size = window.inner_size();
         let (w, h) = (size.width.max(1), size.height.max(1));
         let mut config = surface
@@ -2899,6 +3416,11 @@ impl App {
             .copied()
             .find(wgpu::TextureFormat::is_srgb)
             .unwrap_or(caps.formats[0]);
+        // A browser's canvas has no sRGB format, but can be drawn through an sRGB view of it.
+        let draw_format = config.format.add_srgb_suffix();
+        if draw_format != config.format {
+            config.view_formats.push(draw_format);
+        }
         config.present_mode = pacing::present_mode(&caps.present_modes);
         if self.args.record.is_some() {
             if !caps.usages.contains(wgpu::TextureUsages::COPY_SRC) {
@@ -2907,12 +3429,12 @@ impl App {
             config.usage |= wgpu::TextureUsages::COPY_SRC;
         }
         surface.configure(&device, &config);
-        let samples = render::sample_count(&adapter, config.format);
+        let samples = render::sample_count(&adapter, draw_format);
         let recorder = match &self.args.record {
             Some(dir) => Some(recorder::Recorder::start(dir, self.args.record_limit_gib, device.clone(), config.format)?),
             None => None,
         };
-        let renderer = Renderer::new(device, queue, config.format, samples);
+        let renderer = Renderer::new(device, queue, draw_format, samples);
         let mut scene = Scene::new(&self.args, DVec2::new(w as f64, h as f64));
         scene.start_feeds(&self.args);
         let now = Instant::now();
@@ -2922,6 +3444,7 @@ impl App {
             intervals: Vec::new(),
         });
         Ok(Gfx {
+            draw_format,
             present_mode: config.present_mode,
             window,
             surface,
@@ -2938,6 +3461,16 @@ impl App {
     }
 
     fn redraw(gfx: &mut Gfx) {
+        // A page's canvas may have been resized while the graphics device was still opening.
+        #[cfg(target_arch = "wasm32")]
+        {
+            if let Some((width, height)) = web::fit_canvas().filter(|&s| s != (gfx.config.width, gfx.config.height)) {
+                gfx.config.width = width;
+                gfx.config.height = height;
+                gfx.surface.configure(&gfx.renderer.device, &gfx.config);
+                gfx.scene.nav.size = DVec2::new(width as f64, height as f64);
+            }
+        }
         let now = Instant::now();
         gfx.pacer.frame_started(now);
         gfx.meter.record(now);
@@ -2957,6 +3490,13 @@ impl App {
             .map(|mhz| mhz as f64 / 1000.0);
         gfx.scene.frame_status =
             Some(pacing::status_line(gfx.pacer.limit(), gfx.meter.rate(), display_hz));
+        // In a browser, the work threads would do runs here, in the frame's spare time.
+        #[cfg(target_arch = "wasm32")]
+        {
+            web::set_budget(Duration::from_millis(6));
+            gfx.scene.loader.pump();
+            web::set_budget(Duration::from_millis(4));
+        }
         let (w, h) = (gfx.config.width, gfx.config.height);
         let aspect = w as f64 / h as f64;
         gfx.scene.update(&mut gfx.renderer, dt, (aspect, h as f64));
@@ -2978,7 +3518,7 @@ impl App {
                 return;
             }
         };
-        let view = frame.texture.create_view(&Default::default());
+        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(gfx.draw_format), ..Default::default() });
         let draw = gfx.scene.draw.clone();
         gfx.scene.prepare_draw(&mut gfx.renderer);
         let (cam, altitude) = (gfx.scene.nav.cam, gfx.scene.nav.altitude);
@@ -3066,6 +3606,36 @@ impl App {
 }
 
 impl ApplicationHandler<UserEvent> for App {
+    #[cfg(target_arch = "wasm32")]
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.gfx.is_some() || self.opening {
+            return;
+        }
+        self.opening = true;
+        let opened = self.open_window(event_loop);
+        let proxy = self.proxy.clone();
+        let wake = proxy.clone();
+        web::set_waker(move || {
+            let _ = wake.send_event(UserEvent::Answer);
+        });
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = async {
+                let window = opened?;
+                // WebGPU where the browser can do it, WebGL 2 otherwise.
+                let instance = wgpu::util::new_instance_with_webgpu_detection(wgpu::InstanceDescriptor::new_without_display_handle()).await;
+                let surface = instance.create_surface(window.clone())?;
+                let gpu = open_gpu(&instance, &surface).await?;
+                let info = gpu.0.get_info();
+                web::log(&format!("graphics: {} through {:?}", info.name, info.backend));
+                Ok((window, surface, gpu))
+            }
+            .await;
+            PENDING_GPU.with(|p| *p.borrow_mut() = Some(result));
+            let _ = proxy.send_event(UserEvent::GpuReady);
+        });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.gfx.is_some() {
             return;
@@ -3091,7 +3661,29 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
-    fn user_event(&mut self, _: &ActiveEventLoop, event: UserEvent) {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+        #[cfg(target_arch = "wasm32")]
+        match event {
+            UserEvent::GpuReady => {
+                let Some(result) = PENDING_GPU.with(|p| p.borrow_mut().take()) else { return };
+                match result.and_then(|(window, surface, (adapter, device, queue))| self.finish_start(window, surface, adapter, device, queue)) {
+                    Ok(g) => {
+                        web::started();
+                        g.window.request_redraw();
+                        self.gfx = Some(g);
+                    }
+                    Err(e) => web::fail(&format!("{e:#}")),
+                }
+                return;
+            }
+            UserEvent::Answer => {
+                if let Some(g) = &mut self.gfx {
+                    g.redraw_wanted = true;
+                }
+                return;
+            }
+            UserEvent::SpaceMouse => {}
+        }
         let (UserEvent::SpaceMouse, Some(gfx), Some(sm)) = (event, &mut self.gfx, &self.spacemouse) else { return };
         let u = sm.shared.drain();
         let scene = &mut gfx.scene;
@@ -3110,6 +3702,15 @@ impl ApplicationHandler<UserEvent> for App {
         // A slow tick picks up tiles whose retry time has come.
         let mut wake = now + Duration::from_secs(1);
         if let Some(g) = &mut self.gfx {
+            // Tiles keep loading between frames too, which a hidden page hardly draws.
+            #[cfg(target_arch = "wasm32")]
+            {
+                web::set_budget(Duration::from_millis(8));
+                g.scene.loader.pump();
+                if !g.scene.loader.is_idle() {
+                    wake = wake.min(now + Duration::from_millis(50));
+                }
+            }
             // Whatever the user changed, by key, click or list, is noted and saved here.
             g.scene.persist();
             if g.pacer.limit() != g.scene.view.frame_rate {
@@ -3189,6 +3790,10 @@ impl ApplicationHandler<UserEvent> for App {
                 Self::redraw(gfx);
                 return;
             }
+            // In a browser the canvas is fitted on each frame instead (see `redraw`).
+            #[cfg(target_arch = "wasm32")]
+            WindowEvent::Resized(_) => gfx.redraw_wanted = true,
+            #[cfg(not(target_arch = "wasm32"))]
             WindowEvent::Resized(size) => {
                 if size.width > 0 && size.height > 0 {
                     gfx.config.width = size.width;
@@ -3394,6 +3999,9 @@ impl ApplicationHandler<UserEvent> for App {
                         KeyCode::KeyB if !self.mods.ctrl => {
                             gfx.scene.view.buildings = !gfx.scene.view.buildings;
                         }
+                        KeyCode::KeyW if !self.mods.ctrl => {
+                            gfx.scene.view.energy = !gfx.scene.view.energy;
+                        }
                         KeyCode::KeyO if !self.mods.ctrl => {
                             gfx.scene.view.stars = !gfx.scene.view.stars;
                         }
@@ -3458,6 +4066,41 @@ fn search_key(event: &KeyEvent, mods: Mods) -> Option<search::Key> {
     }
 }
 
+/// In a browser, the page's address holds the options: `?lat=46.5&lon=11.8` is `--lat 46.5 --lon 11.8`.
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    console_error_panic_hook::set_once();
+    let argv = web::address_args();
+    let store = settings::Store::in_memory();
+    let mut args = match parse_args(argv.into_iter(), &store.values) {
+        Ok(Some(a)) => a,
+        Ok(None) => return web::fail(USAGE),
+        Err(e) => return web::fail(&format!("{e:#}")),
+    };
+    body::select(args.body);
+    if !args.distance_given {
+        args.cam.distance = nav::whole_body();
+    }
+    // Nothing is kept between visits, and nothing is shared on a LAN.
+    args.spacemouse = false;
+    let event_loop = match EventLoop::<UserEvent>::with_user_event().build() {
+        Ok(e) => e,
+        Err(e) => return web::fail(&format!("{e}")),
+    };
+    let app = App {
+        args,
+        proxy: event_loop.create_proxy(),
+        spacemouse: None,
+        gfx: None,
+        error: None,
+        mods: Mods::default(),
+        opening: false,
+    };
+    use winit::platform::web::EventLoopExtWebSys;
+    event_loop.spawn_app(app);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> Result<()> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let (dir, flag) = settings_dir(&argv);

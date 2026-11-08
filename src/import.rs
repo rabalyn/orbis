@@ -54,6 +54,16 @@ pub struct Mark {
     pub colour: [u8; 4],
 }
 
+/// How an area is drawn when it is not the plain yellow one: edge and fill colours, the
+/// edge's width in pixels, and whether the edge is dashed and the fill hatched instead of solid.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Outline {
+    pub edge: [u8; 4],
+    pub fill: [u8; 4],
+    pub width: f32,
+    pub dashed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
     pub name: String,
@@ -61,11 +71,12 @@ pub struct Item {
     /// South, west, north and east limits of the positions, not allowing for the antimeridian.
     pub extent: [f64; 4],
     pub mark: Option<Mark>,
+    pub outline: Option<Outline>,
 }
 
 impl Item {
     pub fn new(name: &str, shape: Shape) -> Item {
-        let mut item = Item { name: clean(name), shape, extent: [0.0; 4], mark: None };
+        let mut item = Item { name: clean(name), shape, extent: [0.0; 4], mark: None, outline: None };
         let mut e = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
         for p in item.positions() {
             e = [e[0].min(p.lat), e[1].min(p.lon), e[2].max(p.lat), e[3].max(p.lon)];

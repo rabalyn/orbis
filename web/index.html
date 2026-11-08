@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orbis</title>
+<meta name="description" content="A globe viewer with satellite imagery, terrain, roads and 3D buildings, running in the browser.">
+<style>
+  :root { color-scheme: dark; --bg: #05070c; --fg: #d8dee9; --dim: #8a93a6; --accent: #7fb3ff; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden;
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  canvas#orbis { position: fixed; inset: 0; width: 100vw !important; height: 100vh !important; height: 100dvh !important; display: block; outline: none; touch-action: none; }
+  #notice { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; pointer-events: none; }
+  #notice > div { max-width: 34rem; text-align: center; }
+  #notice h1 { font-size: 1.4rem; font-weight: 600; margin: 0 0 .4rem; letter-spacing: .02em; }
+  #notice p { margin: .3rem 0; color: var(--dim); }
+  #notice pre { text-align: left; white-space: pre-wrap; color: var(--fg); background: #11151f; padding: .8rem; border-radius: 6px; font-size: 13px; }
+  #notice.failed { pointer-events: auto; background: var(--bg); }
+  #bar { width: 12rem; height: 3px; margin: 1rem auto 0; background: #1b2130; border-radius: 2px; overflow: hidden; }
+  #bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  #hint { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); padding: 4px 10px; border-radius: 4px;
+    background: rgba(5,7,12,.7); color: var(--dim); font-size: 13px; pointer-events: none; transition: opacity 1s; }
+  a { color: var(--accent); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<canvas id="orbis" tabindex="0"></canvas>
+<div id="notice"><div>
+  <h1>Orbis</h1>
+  <p id="status">Unpacking the program...</p>
+  <div id="bar"><i></i></div>
+</div></div>
+<div id="hint" hidden>Press H for the controls. Drag to move, scroll to zoom, right-drag to tilt.</div>
+<script>
+// The program, gzipped and in base64, so that this one file is all there is to it.
+const ORBIS_WASM_GZ_B64 = "@@WASM@@";
+</script>
+<script>
+@@GLUE@@
+</script>
+<script>
+(function () {
+  const notice = document.getElementById("notice");
+  const status = document.getElementById("status");
+  const bar = document.querySelector("#bar > i");
+  const canvas = document.getElementById("orbis");
+  const step = (text, part) => { status.textContent = text; bar.style.width = (part * 100) + "%"; };
+
+  window.orbisStarted = () => {
+    notice.hidden = true;
+    canvas.focus();
+    const hint = document.getElementById("hint");
+    hint.hidden = false;
+    setTimeout(() => { hint.style.opacity = 0; }, 6000);
+  };
+  window.orbisFailed = (why) => {
+    notice.hidden = false;
+    notice.className = "failed";
+    notice.firstElementChild.innerHTML =
+      "<h1>Orbis could not start</h1>" +
+      "<p>It needs WebGPU or WebGL 2. Recent Chrome, Edge, Firefox and Safari have one of them; " +
+      "on Linux, Chrome may need hardware acceleration switched on.</p><pre></pre>";
+    notice.querySelector("pre").textContent = why;
+  };
+
+  async function bytes() {
+    const raw = Uint8Array.from(atob(ORBIS_WASM_GZ_B64), (c) => c.charCodeAt(0));
+    if (!("DecompressionStream" in window)) throw new Error("This browser cannot unpack the program (no DecompressionStream).");
+    const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream("gzip"));
+    return new Response(stream).arrayBuffer();
+  }
+
+  async function start() {
+    step("Unpacking the program...", 0.2);
+    await new Promise((r) => setTimeout(r, 30));
+    const wasm = await bytes();
+    step("Starting...", 0.6);
+    await new Promise((r) => setTimeout(r, 30));
+    try {
+      await wasm_bindgen({ module_or_path: wasm });
+    } catch (e) {
+      // winit hands control to the browser by throwing; that is not a failure.
+      if (!String(e).includes("Using exceptions for control flow")) throw e;
+    }
+    step("Opening the graphics device...", 0.9);
+  }
+
+  start().catch((e) => window.orbisFailed(String(e && e.stack || e)));
+})();
+</script>
+</body>
+</html>

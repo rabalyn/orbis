@@ -1,6 +1,6 @@
 //! Keeps drawing to a chosen rate, and measures the rate actually reached.
 
-use std::time::{Duration, Instant};
+use crate::wtime::{Duration, Instant};
 
 /// A pause longer than this means drawing had stopped, rather than a slow frame.
 const IDLE_GAP: Duration = Duration::from_millis(250);

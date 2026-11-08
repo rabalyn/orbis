@@ -187,3 +187,27 @@ user opens the events panel (key E) or gives `--event-feed`.
 Requests are one per feed, at least 1.2 s apart, with the program's user agent and the usual pauses. Because no limits are
 published for the NOAA and NASA services, the program stays well below any plausible one. The eruptions database is of significant
 eruptions only (a dozen or so a year), and tsunami events come year by year, so the panel keeps those within 90 days of the clock.
+
+### Renewable energy in Germany (`data/energy_de.bin`)
+Built offline by `tools/gen_energy.py` and bundled; the program requests nothing for it.
+
+| Data | Source | Terms | Credit shown |
+|---|---|---|---|
+| Generating units: source, net rated power, commissioning and final shutdown dates, municipality key, position | Marktstammdatenregister of the Bundesnetzagentur, full export `download.marktstammdatenregister.de/Gesamtdatenexport_20261107_26.2.zip` (zipped UTF-16 XML), files `EinheitenSolar_*`, `EinheitenWind`, `EinheitenWasser`, `EinheitenBiomasse`, `EinheitenVerbrennung`, `EinheitenKernkraft` | Datenlizenz Deutschland – Namensnennung – Version 2.0, as the register's download page states (read 2026-11-08) | `Plants: Marktstammdatenregister, Bundesnetzagentur, dl-de/by-2-0 (summed)` |
+| States, districts and municipalities (as of 1 January 2026) | BKG VG250, `daten.gdz.bkg.bund.de/produkte/vg/vg250_ebenen_0101/aktuell/vg250_01-01.utm32s.shape.ebenen.zip` | Datenlizenz Deutschland – Namensnennung 2.0 (`dokumentation/nutzungsbedingungen_vg250.pdf` in the archive, read 2026-11-08). It requires a clearly visible source note, `© BKG (year of retrieval) dl-de/by-2-0, Datenquellen: https://sgx.geodatenzentrum.de/web_public/gdz/datenquellen/datenquellen_vg_nuts.pdf`, and a note of changes for edited data | `Areas: © BKG (2026) dl-de/by-2-0 (simplified), Datenquellen: https://sgx.geodatenzentrum.de/web_public/gdz/datenquellen/datenquellen_vg_nuts.pdf` |
+
+The tool reads the shapefiles, projects them from ETRS89 / UTM 32N with the Krüger series and simplifies them with
+Douglas–Peucker, using only Python's standard library. Offshore park outlines are convex hulls round each park's turbines, made
+by the tool. Outlines are simplified, units are summed, and positions are rounded to 1e-4 degrees; the data is otherwise
+unchanged.
+
+### Generation and consumption in Germany (SMARD)
+Evaluated on 2026-11-08 from the publisher's page `smard.de/home/datennutzung`, with real requests to see the format. Nothing is
+bundled; answers are cached on disk and fetched only while the energy bars show output.
+
+| Data | Address and format | Terms read | Credit shown |
+|---|---|---|---|
+| Public net generation by source and total consumption (Netzlast), Germany, 15 minutes | `www.smard.de/app/chart_data/{filter}/DE/index_quarterhour.json` lists the weekly files; `.../{filter}/DE/{filter}_DE_quarterhour_{start}.json` holds `series` of [milliseconds, MWh per quarter hour or null]. Filters 4068, 4067, 1225, 1226, 4066, 1223, 4069, 4071, 1227, 1224, 1228, 4070, 410 | Data under § 111d EnWG for free use; market data under CC BY 4.0, attribution "Bundesnetzagentur \| SMARD.de". SMARD takes the data from ENTSO-E | `Generation and consumption: Bundesnetzagentur \| SMARD.de (CC BY 4.0)` |
+
+Energy-Charts (Fraunhofer ISE) offers similar data, but its publishing notes allow its material for personal use only and
+require written approval for distribution, so it is not used.

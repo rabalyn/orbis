@@ -335,6 +335,13 @@ impl Nav {
         self.fly_to(to);
     }
 
+    /// Turns the view to face north, keeping where it looks from and how it is tilted.
+    pub fn face_north(&mut self) {
+        if wrap(self.cam.heading).abs() > 1e-3 {
+            self.fly_to(Camera { heading: 0.0, ..self.cam });
+        }
+    }
+
     /// One step back towards a familiar view; what is already right is skipped.
     pub fn straighten(&mut self) {
         const EPS: f64 = 1e-3;

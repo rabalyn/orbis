@@ -18,7 +18,7 @@ use crate::render::Renderer;
 use crate::{Args, Scene};
 use anyhow::{anyhow, bail, Context, Result};
 use glam::DVec2;
-use std::time::Duration;
+use crate::wtime::Duration;
 
 #[derive(Debug, PartialEq)]
 pub enum Step {
@@ -344,7 +344,7 @@ pub fn run(args: &Args, script: &[Step], scene: &mut Scene, r: &mut Renderer, ta
     let mut list = false;
     let aspect = size.0 as f64 / size.1 as f64;
     let mut n = 0;
-    let started = std::time::Instant::now();
+    let started = crate::wtime::Instant::now();
     let mut jumps = Jumps::default();
     for step in script {
         match step {

@@ -10,6 +10,7 @@
 //! keys in the file are kept as they are, and a missing or damaged value means the default.
 
 use crate::atlas::Projection;
+use crate::energy::{Idle, Palette, Style};
 use crate::pacing::FrameLimit;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
@@ -37,6 +38,35 @@ impl Setting for String {
     }
     fn to_json(&self) -> Value {
         Value::String(self.clone())
+    }
+}
+
+/// A number; one that is not finite is unusable.
+impl Setting for f64 {
+    fn from_json(v: &Value) -> Option<Self> {
+        v.as_f64().filter(|x| x.is_finite())
+    }
+    fn to_json(&self) -> Value {
+        // Rounded, so that the file stays readable after a slider was dragged.
+        serde_json::Number::from_f64((self * 1000.0).round() / 1000.0).map_or(Value::Null, Value::Number)
+    }
+}
+
+impl Setting for Palette {
+    fn from_json(v: &Value) -> Option<Self> {
+        Palette::parse(v.as_str()?)
+    }
+    fn to_json(&self) -> Value {
+        Value::from(self.key())
+    }
+}
+
+impl Setting for Idle {
+    fn from_json(v: &Value) -> Option<Self> {
+        Idle::parse(v.as_str()?)
+    }
+    fn to_json(&self) -> Value {
+        Value::from(self.key())
     }
 }
 
@@ -149,6 +179,32 @@ settings! {
     sunlight: bool = true, "sunlight";
     stars: bool = true, "stars_and_planets";
     event_markers: bool = true, "event_markers";
+    /// Bars of renewable generating capacity in Germany, and the areas they stand for.
+    energy: bool = false, "energy";
+    /// The bars show the estimated output at the clock's time, from SMARD, as far as there is data.
+    energy_output: bool = true, "energy_output";
+    /// A chart of the clock's day of generation and consumption, while the bars show output.
+    energy_chart: bool = true, "energy_chart";
+    energy_solar: bool = true, "energy_solar";
+    energy_wind_onshore: bool = true, "energy_wind_onshore";
+    energy_wind_offshore: bool = true, "energy_wind_offshore";
+    energy_hydro: bool = true, "energy_hydro";
+    energy_biomass: bool = true, "energy_biomass";
+    energy_lignite: bool = true, "energy_lignite";
+    energy_hard_coal: bool = true, "energy_hard_coal";
+    energy_gas: bool = true, "energy_gas";
+    energy_oil: bool = true, "energy_oil";
+    energy_other_fossil: bool = true, "energy_other_fossil";
+    energy_nuclear: bool = true, "energy_nuclear";
+    /// The colours of the sources, on the bars and in the day chart.
+    energy_palette: Palette = Palette::Standard, "energy_palette";
+    /// How the capacity not running at the clock's time shows above the output.
+    energy_idle: Idle = Idle::Source, "energy_idle";
+    /// Its opacity, 0 to 1.
+    energy_idle_opacity: f64 = 0.3, "energy_idle_opacity";
+    /// Factors on the usual height and width of the bars.
+    energy_bar_height: f64 = 1.0, "energy_bar_height";
+    energy_bar_width: f64 = 1.0, "energy_bar_width";
     /// A click on the map looks up Wikipedia and Wikidata for the place.
     info_on_click: bool = true, "info_on_click";
     view: ViewKind = ViewKind::Globe, "view";
@@ -163,6 +219,25 @@ settings! {
 }
 
 impl Settings {
+    /// How the energy bars and the day chart look.
+    pub fn energy_style(&self) -> Style {
+        Style {
+            palette: self.energy_palette,
+            idle: self.energy_idle,
+            idle_opacity: self.energy_idle_opacity,
+            height: self.energy_bar_height,
+            width: self.energy_bar_width,
+        }
+    }
+
+    pub fn set_energy_style(&mut self, style: Style) {
+        self.energy_palette = style.palette;
+        self.energy_idle = style.idle;
+        self.energy_idle_opacity = style.idle_opacity;
+        self.energy_bar_height = style.height;
+        self.energy_bar_width = style.width;
+    }
+
     /// The text of `settings.json` for these values.
     #[cfg(test)]
     pub fn to_text(&self) -> String {
@@ -213,7 +288,7 @@ pub fn config_dir(flag: Option<&Path>, work_dir: &Path, user: Option<PathBuf>) -
 }
 
 pub fn user_config_dir() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("orbis"))
+    Some(crate::paths::config_dir()?.join("orbis"))
 }
 
 /// The saved values, and the file they are kept in.

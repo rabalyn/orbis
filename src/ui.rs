@@ -64,7 +64,42 @@ pub enum Kind {
     Slider { pos: f64, thumb_w: f64 },
     /// A clock face that clicks like a button, for the icon that opens the time dialog.
     ClockFace,
+    /// A compass needle that clicks like a button; `heading` is the view's, in radians clockwise
+    /// from north, so north on the screen lies that far anticlockwise from up.
+    Compass { heading: f64 },
+    /// A chart over one day, drawn into the rect; see [`Chart`].
+    Chart(Box<Chart>),
+    /// A patch of colour for a legend, with straight alpha, hatched for a fossil source.
+    Swatch { colour: [u8; 4], hatched: bool },
 }
+
+/// One stacked area of a [`Chart`]: colour, name, values, and whether it is hatched rather than solid.
+pub type ChartLayer = ([u8; 3], String, Vec<Option<f32>>, bool);
+
+/// A day of stacked areas with a line over them, as drawn by [`Kind::Chart`]: values per equal
+/// step from midnight to midnight, `None` where there is none.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Chart {
+    /// Stacked from the bottom.
+    pub layers: Vec<ChartLayer>,
+    /// Drawn over the areas in white: name and values.
+    pub line: (String, Vec<Option<f32>>),
+    /// Where a vertical marker stands, from 0 (midnight) to 1 (the next midnight).
+    pub marker: Option<f64>,
+    /// The values' unit for the axis, and how many values one unit is: ("GW", 1000.0) for MW.
+    pub unit: (String, f32),
+}
+
+impl Chart {
+    /// Legend rows for a chart `width` wide at `scale`: the items per row and the row count.
+    pub fn legend_rows(&self, width: f64, scale: f64) -> (usize, usize) {
+        let per_row = ((width / (CHART_LEGEND_COLS as f64 * 8.0 * scale)) as usize).max(1);
+        (per_row, (self.layers.len() + 1).div_ceil(per_row))
+    }
+}
+
+/// Characters per legend item, swatch included.
+pub const CHART_LEGEND_COLS: usize = 15;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Widget {
@@ -99,10 +134,22 @@ impl Widget {
         Self { id, rect, kind: Kind::ClockFace }
     }
 
+    pub fn compass(id: WidgetId, rect: Rect, heading: f64) -> Self {
+        Self { id, rect, kind: Kind::Compass { heading } }
+    }
+
+    pub fn swatch(rect: Rect, colour: [u8; 4], hatched: bool) -> Self {
+        Self { id: 0, rect, kind: Kind::Swatch { colour, hatched } }
+    }
+
+    pub fn chart(rect: Rect, chart: Chart) -> Self {
+        Self { id: 0, rect, kind: Kind::Chart(Box::new(chart)) }
+    }
+
     fn clickable(&self) -> bool {
         match self.kind {
-            Kind::Label { .. } => false,
-            Kind::Button { .. } | Kind::Slider { .. } | Kind::ClockFace => true,
+            Kind::Label { .. } | Kind::Chart(_) | Kind::Swatch { .. } => false,
+            Kind::Button { .. } | Kind::Slider { .. } | Kind::ClockFace | Kind::Compass { .. } => true,
             Kind::Checkbox { enabled, .. } | Kind::Choice { enabled, .. } => enabled,
         }
     }

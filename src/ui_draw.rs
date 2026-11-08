@@ -1,7 +1,7 @@
 //! Paints a panel of the interface into an RGBA image, with the built-in bitmap font.
 
 use crate::text::glyph;
-use crate::ui::{slider_thumb, Kind, Panel, Rect, Tone, Ui, Widget, WidgetId};
+use crate::ui::{slider_thumb, Chart, Kind, Panel, Rect, Tone, Ui, Widget, WidgetId, CHART_LEGEND_COLS};
 
 type Color = [u8; 4];
 
@@ -10,6 +10,8 @@ const BORDER: Color = [255, 255, 255, 80];
 const BUTTON: Color = [255, 255, 255, 45];
 const BUTTON_HOVER: Color = [255, 255, 255, 100];
 const BUTTON_PRESSED: Color = [255, 255, 255, 150];
+/// The north end of the compass needle.
+const NEEDLE_NORTH: Color = [230, 60, 50, 255];
 const TRACK: Color = [255, 255, 255, 35];
 const THUMB: Color = [255, 255, 255, 120];
 const THUMB_HELD: Color = [255, 255, 255, 190];
@@ -56,6 +58,36 @@ impl Canvas {
         for y in r.y.round() as i64..(r.y + r.h).round() as i64 {
             for x in r.x.round() as i64..(r.x + r.w).round() as i64 {
                 self.put(x, y, c);
+            }
+        }
+    }
+
+    /// A filled triangle, its edges smoothed by sampling each pixel 4 by 4.
+    fn triangle(&mut self, p: [(f64, f64); 3], c: Color) {
+        let edge = |a: (f64, f64), b: (f64, f64), x: f64, y: f64| (b.0 - a.0) * (y - a.1) - (b.1 - a.1) * (x - a.0);
+        let area = edge(p[0], p[1], p[2].0, p[2].1);
+        if area.abs() < 1e-9 {
+            return;
+        }
+        let xs = p.map(|q| q.0);
+        let ys = p.map(|q| q.1);
+        let (x0, x1) = (xs.iter().cloned().fold(f64::MAX, f64::min), xs.iter().cloned().fold(f64::MIN, f64::max));
+        let (y0, y1) = (ys.iter().cloned().fold(f64::MAX, f64::min), ys.iter().cloned().fold(f64::MIN, f64::max));
+        for y in y0.floor() as i64..y1.ceil() as i64 {
+            for x in x0.floor() as i64..x1.ceil() as i64 {
+                let mut inside = 0u32;
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        let (fx, fy) = (x as f64 + (sx as f64 + 0.5) / 4.0, y as f64 + (sy as f64 + 0.5) / 4.0);
+                        let w = [edge(p[1], p[2], fx, fy), edge(p[2], p[0], fx, fy), edge(p[0], p[1], fx, fy)];
+                        if w.iter().all(|w| w * area >= 0.0) {
+                            inside += 1;
+                        }
+                    }
+                }
+                if inside > 0 {
+                    self.put(x, y, [c[0], c[1], c[2], (c[3] as u32 * inside / 16) as u8]);
+                }
             }
         }
     }
@@ -163,13 +195,145 @@ fn widget(cv: &mut Canvas, w: &Widget, origin: (f64, f64), scale: usize, hover: 
             cv.fill(Rect::new(cx, cy, rad * 0.45, t), white);
             cv.fill(Rect::new(cx - t, cy - t, 2.0 * t, 2.0 * t), white);
         }
+        Kind::Compass { heading } => {
+            let bg = if pressed { BUTTON_PRESSED } else if hover { BUTTON_HOVER } else { BUTTON };
+            cv.fill(r, bg);
+            let t = scale.max(1) as f64;
+            let face = Rect::new(r.x + 3.0 * t, r.y + 3.0 * t, r.w - 6.0 * t, r.h - 6.0 * t);
+            cv.disc(face, false, tone(Tone::Dim));
+            let (cx, cy, rad) = (face.x + face.w / 2.0, face.y + face.h / 2.0, face.w / 2.0);
+            // North on the screen, and the needle's side; y grows downwards.
+            let (s, c) = heading.sin_cos();
+            let north = (-s, -c);
+            let side = (c, -s);
+            let at = |along: f64, across: f64| (cx + north.0 * along + side.0 * across, cy + north.1 * along + side.1 * across);
+            let (tip, half) = (rad * 0.8, rad * 0.26);
+            cv.triangle([at(tip, 0.0), at(0.0, half), at(0.0, -half)], NEEDLE_NORTH);
+            cv.triangle([at(-tip, 0.0), at(0.0, -half), at(0.0, half)], tone(Tone::Normal));
+        }
         Kind::Label { text, tone: t } => cv.text(r.x, r.y, text, scale, tone(*t)),
+        Kind::Chart(c) => chart(cv, r, c, scale),
+        Kind::Swatch { colour, hatched } => {
+            cv.fill(r, *colour);
+            if *hatched {
+                hatch(cv, r, [colour[0], colour[1], colour[2]], scale.max(1) as f64);
+            }
+        }
         Kind::Button { label, text_mult } => {
             let bg = if pressed { BUTTON_PRESSED } else if hover { BUTTON_HOVER } else { BUTTON };
             cv.fill(r, bg);
             let s = scale * text_mult;
             let tw = (label.chars().count() * 8 * s) as f64;
             cv.text(r.x + (r.w - tw) / 2.0, r.y + (r.h - (8 * s) as f64) / 2.0, label, s, tone(Tone::Normal));
+        }
+    }
+}
+
+/// A day chart: the axis on the left, the plot, the hours below it, then the legend.
+fn chart(cv: &mut Canvas, r: Rect, c: &Chart, scale: usize) {
+    let s = scale.max(1) as f64;
+    let glyph = 8.0 * s;
+    let dim = tone(Tone::Dim);
+    let (per_row, rows) = c.legend_rows(r.w, s);
+    let legend_h = rows as f64 * 11.0 * s;
+    let left = 5.0 * glyph;
+    let plot = Rect::new(r.x + left, r.y + glyph / 2.0, r.w - left - glyph, r.h - legend_h - 2.5 * glyph);
+    let steps = c.line.1.len().max(c.layers.iter().map(|l| l.2.len()).max().unwrap_or(0)).max(1);
+    let stack = |i: usize| c.layers.iter().map(|l| l.2.get(i).copied().flatten().unwrap_or(0.0)).sum::<f32>();
+    let top = (0..steps).map(|i| stack(i).max(c.line.1.get(i).copied().flatten().unwrap_or(0.0))).fold(0.0f32, f32::max);
+    // The axis goes up in whole steps of 10 units.
+    let tick = 10.0 * c.unit.1;
+    let max = ((top / tick).ceil().max(1.0) * tick) as f64;
+    let y_of = |v: f64| plot.y + plot.h - v / max * plot.h;
+    cv.fill(plot, [255, 255, 255, 12]);
+    let mut v = 0.0;
+    while v <= max + 1.0 {
+        let y = y_of(v);
+        cv.fill(Rect::new(plot.x, y, plot.w, 1.0), [255, 255, 255, 30]);
+        let label = format!("{:>3.0}", v / c.unit.1 as f64);
+        cv.text(r.x, y - glyph / 2.0, &label, scale, dim);
+        v += tick as f64;
+    }
+    // The areas, one pixel column at a time.
+    let px_w = plot.w.round().max(1.0) as i64;
+    for px in 0..px_w {
+        let i = ((px as f64 + 0.5) / plot.w * steps as f64) as usize;
+        let mut base = 0.0f64;
+        for (colour, _, values, hatched) in &c.layers {
+            let Some(v) = values.get(i).copied().flatten() else { continue };
+            let (y0, y1) = (y_of(base + v as f64), y_of(base));
+            let x = plot.x + px as f64;
+            cv.fill(Rect::new(x, y0, 1.0, (y1 - y0).max(0.0)), [colour[0], colour[1], colour[2], 235]);
+            if *hatched {
+                hatch(cv, Rect::new(x, y0, 1.0, (y1 - y0).max(0.0)), *colour, s);
+            }
+            base += v as f64;
+        }
+    }
+    // The line, two pixels thick and joined between columns.
+    let mut last: Option<f64> = None;
+    for px in 0..px_w {
+        let i = ((px as f64 + 0.5) / plot.w * steps as f64) as usize;
+        match c.line.1.get(i).copied().flatten() {
+            Some(v) => {
+                let y = y_of(v as f64);
+                let (a, b) = last.map_or((y, y), |l| (l.min(y), l.max(y)));
+                cv.fill(Rect::new(plot.x + px as f64, a - s, 1.0, b - a + 2.0 * s), [255, 255, 255, 255]);
+                last = Some(y);
+            }
+            None => last = None,
+        }
+    }
+    if let Some(m) = c.marker {
+        let x = plot.x + m.clamp(0.0, 1.0) * plot.w;
+        cv.fill(Rect::new(x - s / 2.0, plot.y, s, plot.h), [255, 230, 90, 255]);
+    }
+    for h in (0..=24).step_by(3) {
+        let x = plot.x + plot.w * h as f64 / 24.0;
+        cv.fill(Rect::new(x, plot.y + plot.h, 1.0, 3.0 * s), dim);
+        let label = format!("{h:02}");
+        cv.text(x - glyph, plot.y + plot.h + 4.0 * s, &label, scale, dim);
+    }
+    // The legend: the line first, then the areas from the top of the stack down.
+    let mut items: Vec<([u8; 4], &str, bool)> = vec![([255, 255, 255, 255], c.line.0.as_str(), false)];
+    items.extend(c.layers.iter().rev().map(|l| ([l.0[0], l.0[1], l.0[2], 255], l.1.as_str(), l.3)));
+    let ly = r.y + r.h - legend_h;
+    for (k, (colour, name, hatched)) in items.iter().enumerate() {
+        let x = r.x + (k % per_row) as f64 * CHART_LEGEND_COLS as f64 * glyph;
+        let y = ly + (k / per_row) as f64 * 11.0 * s;
+        if k == 0 {
+            cv.fill(Rect::new(x, y + glyph / 2.0 - s, glyph, 2.0 * s), *colour);
+        } else {
+            cv.fill(Rect::new(x, y, glyph, glyph), *colour);
+            if *hatched {
+                hatch(cv, Rect::new(x, y, glyph, glyph), [colour[0], colour[1], colour[2]], s);
+            }
+        }
+        let name: String = name.chars().take(CHART_LEGEND_COLS - 2).collect();
+        cv.text(x + glyph * 1.5, y, &name, scale, tone(Tone::Normal));
+    }
+}
+
+/// Darkens diagonal stripes of `r`, as the hatching of a fossil area: the stripes lie on lines of
+/// equal x + y on the canvas, so neighbouring columns join up into one pattern.
+fn hatch(cv: &mut Canvas, r: Rect, colour: [u8; 3], s: f64) {
+    let step = (5.0 * s).round().max(3.0) as i64;
+    let on = (2.0 * s).round().max(1.0) as i64;
+    let dark = colour.map(|c| (c as f32 * 0.4) as u8);
+    let (x0, x1) = (r.x.round() as i64, (r.x + r.w).round() as i64);
+    let (y0, y1) = (r.y.round() as i64, (r.y + r.h).round() as i64);
+    for x in x0..x1 {
+        let mut y = y0;
+        while y < y1 {
+            // Runs of `on` pixels out of each `step`, down the column.
+            let phase = (x + y).rem_euclid(step);
+            if phase < on {
+                let run = (on - phase).min(y1 - y);
+                cv.fill(Rect::new(x as f64, y as f64, 1.0, run as f64), [dark[0], dark[1], dark[2], 255]);
+                y += run;
+            } else {
+                y += step - phase;
+            }
         }
     }
 }

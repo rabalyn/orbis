@@ -12,12 +12,13 @@
 
 use std::fs::File;
 use std::io::{self, Read};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use crate::wtime::Duration;
 
 pub const SOCKET: &str = "/var/run/spnav.sock";
 /// How long to wait before looking for the device again.
@@ -350,6 +351,7 @@ pub fn spawn(cfg: Config, wake: Wake) -> Handle {
 
 /// One try at each source. Every failure is quiet: no device is the usual case.
 fn connect_once(cfg: &Config, sink: &mut Sink) {
+    #[cfg(unix)]
     if let Ok(mut s) = UnixStream::connect(&cfg.socket) {
         sink.connected("spacenavd");
         let _ = read_spnav(&mut s, sink);

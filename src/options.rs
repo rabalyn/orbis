@@ -24,6 +24,7 @@ const BODY_BASE: WidgetId = 300;
 /// The usual imagery; the library's services follow.
 const IMAGERY_BASE: WidgetId = 400;
 const FPS_BASE: WidgetId = 500;
+const ENERGY_STYLE_BUTTON: WidgetId = 600;
 
 type Toggle = (&'static str, fn(&Settings) -> bool, fn(&mut Settings, bool));
 
@@ -54,6 +55,30 @@ const TOGGLES: &[(&str, &[Toggle])] = &[
             ("Stars and planets", |s| s.stars, |s, v| s.stars = v),
             ("Event markers", |s| s.event_markers, |s, v| s.event_markers = v),
             ("Information on click", |s| s.info_on_click, |s, v| s.info_on_click = v),
+        ],
+    ),
+    (
+        "Renewable energy, Germany",
+        &[
+            ("Capacity bars", |s| s.energy, |s, v| s.energy = v),
+            ("Output at the clock's time", |s| s.energy_output, |s, v| s.energy_output = v),
+            ("Day chart of output and use", |s| s.energy_chart, |s, v| s.energy_chart = v),
+            ("Solar", |s| s.energy_solar, |s, v| s.energy_solar = v),
+            ("Wind on land", |s| s.energy_wind_onshore, |s, v| s.energy_wind_onshore = v),
+            ("Wind at sea", |s| s.energy_wind_offshore, |s, v| s.energy_wind_offshore = v),
+            ("Hydro", |s| s.energy_hydro, |s, v| s.energy_hydro = v),
+            ("Biomass", |s| s.energy_biomass, |s, v| s.energy_biomass = v),
+        ],
+    ),
+    (
+        "For comparison: fossil and nuclear",
+        &[
+            ("Lignite", |s| s.energy_lignite, |s, v| s.energy_lignite = v),
+            ("Hard coal", |s| s.energy_hard_coal, |s, v| s.energy_hard_coal = v),
+            ("Natural gas", |s| s.energy_gas, |s, v| s.energy_gas = v),
+            ("Oil", |s| s.energy_oil, |s, v| s.energy_oil = v),
+            ("Other fossil (gases, waste)", |s| s.energy_other_fossil, |s, v| s.energy_other_fossil = v),
+            ("Nuclear", |s| s.energy_nuclear, |s, v| s.energy_nuclear = v),
         ],
     ),
 ];
@@ -97,6 +122,8 @@ pub enum Action {
     /// A library service as the base, or the usual imagery.
     Base(Option<String>),
     FrameRate(FrameLimit),
+    /// Open or close the energy display window.
+    EnergyStyle,
 }
 
 pub fn icon_panel() -> Panel {
@@ -145,6 +172,7 @@ fn action_for(id: WidgetId, m: &Model) -> Option<Action> {
         i if (IMAGERY_BASE + 1..IMAGERY_BASE + 1 + m.library.len() as u32).contains(&i) => {
             Some(Action::Base(Some(m.library[(i - IMAGERY_BASE - 1) as usize].0.clone())))
         }
+        ENERGY_STYLE_BUTTON => Some(Action::EnergyStyle),
         FPS_BASE => Some(Action::FrameRate(FrameLimit::Fps120)),
         i if i == FPS_BASE + 1 => Some(Action::FrameRate(FrameLimit::Fps90)),
         _ => None,
@@ -190,6 +218,12 @@ fn layout(p: &mut Panel, m: &Metrics, model: &Model) {
             widgets.push(Widget::checkbox(TOGGLE_BASE + n, cell(y), label, get(st), true));
             n += 1;
             y += row;
+        }
+        if name.starts_with("For comparison") {
+            y += step * 0.4;
+            let text = "Colours and bar size...";
+            widgets.push(Widget::button(ENERGY_STYLE_BUTTON, Rect::new(pad, y, (text.chars().count() + 2) as f64 * glyph, 14.0 * s), text, 1));
+            y += 14.0 * s;
         }
     }
 
@@ -286,6 +320,22 @@ mod tests {
         &ui.panels().iter().find(|p| p.id == WINDOW).unwrap().body.as_ref().unwrap().widgets
     }
 
+    /// Scrolls the dialog until the row is in view, then gives where to click it.
+    fn reveal(ui: &mut Ui, text: &str) -> DVec2 {
+        for _ in 0..200 {
+            let at = row_of(ui, text);
+            let p = ui.panels().iter().find(|p| p.id == WINDOW).unwrap();
+            let v = p.body.as_ref().unwrap().viewport;
+            let (top, bottom) = (p.rect.y + v.y, p.rect.y + v.y + v.h);
+            if at.y > top + 2.0 && at.y < bottom - 2.0 {
+                return at;
+            }
+            let middle = DVec2::new(p.rect.x + p.rect.w / 2.0, (top + bottom) / 2.0);
+            ui.wheel(if at.y >= bottom - 2.0 { -1.0 } else { 1.0 }, middle);
+        }
+        panic!("{text} does not come into view");
+    }
+
     fn row_of(ui: &Ui, text: &str) -> DVec2 {
         let p = ui.panels().iter().find(|p| p.id == WINDOW).unwrap();
         let b = p.body.as_ref().unwrap();
@@ -360,9 +410,32 @@ mod tests {
             ("90 frames per second", Some(Action::FrameRate(FrameLimit::Fps90))),
             ("Flat map", Some(Action::View(ViewKind::Map))),
         ] {
-            let at = row_of(&ui, label);
+            let at = reveal(&mut ui, label);
             assert_eq!(click(&mut ui, &shared, at).1, want, "{label}");
         }
+    }
+
+    #[test]
+    fn a_button_opens_the_energy_display_window() {
+        let (mut ui, shared) = setup(1280.0, 800.0, Model::default());
+        ui.set_visible(WINDOW, true);
+        // Where the button is, and the bottom of the dialog's view.
+        let place = |ui: &Ui| {
+            let p = ui.panels().iter().find(|p| p.id == WINDOW).unwrap();
+            let b = p.body.as_ref().unwrap();
+            let w = b.widgets.iter().find(|w| w.id == ENERGY_STYLE_BUTTON).unwrap();
+            let at = DVec2::new(p.rect.x + b.viewport.x + w.rect.x + 10.0, p.rect.y + b.viewport.y + w.rect.y - b.offset + 5.0);
+            (at, p.rect.y + p.rect.h, DVec2::new(p.rect.x + 20.0, p.rect.y + p.rect.h - 20.0))
+        };
+        for _ in 0..100 {
+            let (at, bottom, wheel_at) = place(&ui);
+            if at.y < bottom - 4.0 {
+                break;
+            }
+            ui.wheel(-1.0, wheel_at);
+        }
+        let (at, ..) = place(&ui);
+        assert_eq!(click(&mut ui, &shared, at).1, Some(Action::EnergyStyle));
     }
 
     #[test]

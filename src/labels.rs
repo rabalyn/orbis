@@ -132,12 +132,62 @@ fn rasterize(fonts: &mut FontSystem, cache: &mut SwashCache, key: TextKey) -> Op
 
 /// Shapes and rasterises text on its own thread, because scanning the system's fonts and
 /// shaping complex scripts would otherwise stall the frame.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct TextWorker {
     requests: Sender<TextKey>,
     results: Receiver<Result<Mask, TextKey>>,
     pending: usize,
 }
 
+/// The fonts that come with the page, since a browser does not let it read the system's.
+#[cfg(target_arch = "wasm32")]
+fn page_fonts() -> FontSystem {
+    let fonts: [&'static [u8]; 4] = [
+        include_bytes!("../web/fonts/NotoSans-Regular.ttf"),
+        include_bytes!("../web/fonts/NotoSans-Bold.ttf"),
+        include_bytes!("../web/fonts/NotoSans-Italic.ttf"),
+        // Arrows and shapes, such as the mark before a peak's name.
+        include_bytes!("../web/fonts/NotoSansSymbols2-Subset.ttf"),
+    ];
+    let sources = fonts.into_iter().map(|f| cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(f)));
+    let mut system = FontSystem::new_with_fonts(sources);
+    system.db_mut().set_sans_serif_family("Noto Sans");
+    system
+}
+
+/// In a browser, text is made between frames, as much as the frame's spare time allows.
+#[cfg(target_arch = "wasm32")]
+pub struct TextWorker {
+    queue: std::collections::VecDeque<TextKey>,
+    fonts: Option<FontSystem>,
+    cache: SwashCache,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl TextWorker {
+    pub fn new() -> Self {
+        Self { queue: Default::default(), fonts: None, cache: SwashCache::new() }
+    }
+
+    pub fn request(&mut self, key: TextKey) {
+        self.queue.push_back(key);
+    }
+
+    pub fn try_result(&mut self) -> Option<Result<Mask, TextKey>> {
+        if self.queue.is_empty() || !crate::web::has_budget() {
+            return None;
+        }
+        let key = self.queue.pop_front()?;
+        let fonts = self.fonts.get_or_insert_with(page_fonts);
+        Some(rasterize(fonts, &mut self.cache, key.clone()).ok_or(key))
+    }
+
+    pub fn is_idle(&self) -> bool {
+        self.queue.is_empty()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl TextWorker {
     pub fn new() -> Self {
         let (requests, incoming) = channel::<TextKey>();

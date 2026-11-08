@@ -146,7 +146,7 @@ struct Panel {
 
 /// Panels 0 to 3 are text panels in corners; the interface's panels follow.
 pub const UI_PANEL_BASE: usize = 4;
-const UI_PANELS: usize = 8;
+const UI_PANELS: usize = 12;
 
 #[derive(Clone, Copy)]
 pub enum Corner {
@@ -166,9 +166,12 @@ pub struct Renderer {
     panel_pipeline: wgpu::RenderPipeline,
     label_pipeline: wgpu::RenderPipeline,
     building_pipeline: wgpu::RenderPipeline,
+    building_ghost_pipeline: wgpu::RenderPipeline,
     buildings: HashMap<TileKey, GpuBuildings>,
     /// Which building tiles to draw this frame.
     visible_buildings: Vec<TileKey>,
+    /// The energy bars, drawn like buildings, and where their see-through indices begin.
+    energy: Option<(GpuBuildings, u32)>,
     format: wgpu::TextureFormat,
     samples: u32,
     /// The multisampled colour image, when anti-aliasing is available.
@@ -633,6 +636,51 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        // The see-through parts of the energy bars: tested against the depth of everything solid,
+        // but not written to it, so that what stands behind them shows.
+        let building_ghost_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("building ghost"),
+            layout: Some(&building_pl),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_building"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: size_of::<BuildingVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &building_attrs,
+                    }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: size_of::<[f32; 3]>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &building_instance_attrs,
+                    }),
+                ],
+            },
+            // Only outward faces, so that a camera inside a building sees out rather than
+            // a screen full of wall.
+            primitive: wgpu::PrimitiveState {
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample,
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_building_ghost"),
+                compilation_options: Default::default(),
+                targets: &blended,
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         let shadow_shader = device.create_shader_module(wgpu::include_wgsl!("shadow.wgsl"));
         let cascade_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("cascade"),
@@ -922,8 +970,10 @@ impl Renderer {
             panel_pipeline,
             label_pipeline,
             building_pipeline,
+            building_ghost_pipeline,
             buildings: HashMap::new(),
             visible_buildings: Vec::new(),
+            energy: None,
             format,
             samples,
             msaa: None,
@@ -1181,6 +1231,26 @@ impl Renderer {
             &self.shadow_sampler,
         );
         self.shadow_map = maps;
+    }
+
+    /// Sets the energy bars to draw, or none: a mesh whose indices from `solid` on are see-through.
+    pub fn set_energy(&mut self, mesh: Option<(&BuildingMesh, u32)>) {
+        self.energy = mesh.filter(|m| !m.0.indices.is_empty()).map(|(mesh, solid)| (GpuBuildings {
+            vertices: self.device.create_buffer_init(&BufferInitDescriptor {
+                label: Some("energy vertices"),
+                contents: bytemuck::cast_slice(&mesh.vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+            indices: self.device.create_buffer_init(&BufferInitDescriptor {
+                label: Some("energy indices"),
+                contents: bytemuck::cast_slice(&mesh.indices),
+                usage: wgpu::BufferUsages::INDEX,
+            }),
+            index_count: mesh.indices.len() as u32,
+            center: mesh.center,
+            radius: 0.0,
+            last_used: 0,
+        }, solid));
     }
 
     /// Chooses the building tiles to draw. Ones not loaded yet are simply left out.
@@ -1601,6 +1671,10 @@ impl Renderer {
                 origins.push((b.center - basis.pos).as_vec3().to_array());
             }
         }
+        let energy_instance = origins.len() as u32;
+        if let Some((e, _)) = &self.energy {
+            origins.push((e.center - basis.pos).as_vec3().to_array());
+        }
         // Shadow casters: the drawn tiles and buildings, and loaded ones beyond them that reach into the maps.
         let cast = if self.atlas.is_none() && self.shadows_on { self.cast.take() } else { None };
         let mut casters: Vec<(Caster, u32, DVec3, f64)> = Vec::new();
@@ -1784,6 +1858,21 @@ impl Renderer {
                     pass.set_vertex_buffer(0, b.vertices.slice(..));
                     pass.set_index_buffer(b.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..b.index_count, 0, instance..instance + 1);
+                }
+            }
+
+            if let (Some((e, solid)), None) = (&self.energy, &self.atlas) {
+                pass.set_vertex_buffer(1, self.instances.slice(..));
+                pass.set_vertex_buffer(0, e.vertices.slice(..));
+                pass.set_index_buffer(e.indices.slice(..), wgpu::IndexFormat::Uint32);
+                let solid = (*solid).min(e.index_count);
+                if solid > 0 {
+                    pass.set_pipeline(&self.building_pipeline);
+                    pass.draw_indexed(0..solid, 0, energy_instance..energy_instance + 1);
+                }
+                if solid < e.index_count {
+                    pass.set_pipeline(&self.building_ghost_pipeline);
+                    pass.draw_indexed(solid..e.index_count, 0, energy_instance..energy_instance + 1);
                 }
             }
 

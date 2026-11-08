@@ -5,7 +5,8 @@ use crate::fetcher::{FetchError, Fetcher};
 use crate::places::{Key, Pick, Picker};
 use crate::service_lib::{self, AddOptions, Library};
 use crate::services::Service;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use crate::worker::Worker;
+use crate::wtime::Duration;
 use std::sync::Arc;
 
 /// Keys the panel understands besides those of any list.
@@ -101,8 +102,8 @@ pub struct Control {
     overlay: Option<String>,
     opacity: f32,
     pub notice: Option<String>,
-    tx: Sender<Result<service_lib::Prepared, String>>,
-    rx: Receiver<Result<service_lib::Prepared, String>>,
+    /// Reads service descriptions; made on the first addition.
+    adder: Option<Worker<String, Result<service_lib::Prepared, String>>>,
     adding: bool,
     earth: bool,
 }
@@ -116,7 +117,6 @@ fn find(library: &Library, name: &str) -> Result<Service, String> {
 impl Control {
     /// `earth` is false on other bodies, where services cannot be shown.
     pub fn new(library: Library, earth: bool) -> Self {
-        let (tx, rx) = channel();
         Self {
             notice: library.notice.clone(),
             library,
@@ -124,8 +124,7 @@ impl Control {
             base: None,
             overlay: None,
             opacity: service_lib::DEFAULT_OPACITY,
-            tx,
-            rx,
+            adder: None,
             adding: false,
             earth,
         }
@@ -296,16 +295,18 @@ impl Control {
         }
         self.adding = true;
         self.notice = Some("Reading the service description...".into());
-        let (tx, fetcher, typed) = (self.tx.clone(), fetcher.clone(), typed.to_string());
-        std::thread::spawn(move || {
-            let result = service_lib::prepare(&typed, &AddOptions::default(), &|url| fetch_text(&fetcher, url));
-            let _ = tx.send(result);
+        let fetcher = fetcher.clone();
+        let adder = self.adder.get_or_insert_with(|| {
+            Worker::new(false, Duration::ZERO, move |typed: String| {
+                service_lib::prepare(&typed, &AddOptions::default(), &|url| fetch_text(&fetcher, url))
+            })
         });
+        adder.submit(typed.to_string());
     }
 
     /// Takes in a finished addition. True if the panel changed.
     pub fn poll(&mut self) -> bool {
-        let Ok(result) = self.rx.try_recv() else { return false };
+        let Some(result) = self.adder.as_ref().and_then(Worker::poll) else { return false };
         self.adding = false;
         self.notice = Some(match result {
             Ok(p) => match self.library.add(p.service.clone()) {

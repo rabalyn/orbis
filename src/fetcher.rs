@@ -8,7 +8,7 @@ use crate::sources::{self, TileSource, MAP_TILEJSON_URL};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use crate::wtime::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const USER_AGENT: &str = "orbis-globe/0.1";
 const WEEK_SECONDS: u64 = 7 * 24 * 3600;
@@ -36,17 +36,41 @@ pub enum Wait {
     Server(String),
     /// Someone else is already getting this tile.
     Tile(String),
+    /// A browser request for this address is under way.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    Download(String),
+}
+
+/// What a server said to one request, before it is judged.
+#[derive(Clone)]
+pub(crate) enum Answer {
+    TimedOut,
+    Unreachable(String),
+    Reply { status: u16, retry_after: Option<Duration>, body: Result<Vec<u8>, BodyError> },
+}
+
+#[derive(Clone)]
+pub(crate) enum BodyError {
+    TimedOut,
+    Broken,
 }
 
 /// Limits how many threads do something at once.
 pub struct Gate {
     free: Mutex<usize>,
     released: Condvar,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    capacity: usize,
 }
 
 impl Gate {
     pub fn new(n: usize) -> Self {
-        Self { free: Mutex::new(n), released: Condvar::new() }
+        Self { free: Mutex::new(n), released: Condvar::new(), capacity: n }
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn capacity(&self) -> usize {
+        self.capacity
     }
 
     pub fn enter(&self) -> GatePass<'_> {
@@ -193,8 +217,12 @@ pub struct Traffic {
 
 pub struct Fetcher {
     cache: DiskCache,
+    #[cfg(not(target_arch = "wasm32"))]
     agent: ureq::Agent,
+    #[cfg(not(target_arch = "wasm32"))]
     lan_agent: ureq::Agent,
+    #[cfg(target_arch = "wasm32")]
+    web: crate::web::Downloads,
     pub servers: Servers,
     pub peers: Peers,
     offline: bool,
@@ -208,6 +236,7 @@ pub struct Fetcher {
     shared_downloads: AtomicU64,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn agent(global: Duration, connect: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(global))
@@ -219,6 +248,7 @@ fn agent(global: Duration, connect: Duration) -> ureq::Agent {
         .into()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn retry_after(response: &ureq::http::Response<ureq::Body>) -> Option<Duration> {
     let value = response.headers().get("retry-after")?.to_str().ok()?;
     value.trim().parse::<u64>().ok().map(Duration::from_secs)
@@ -229,8 +259,12 @@ impl Fetcher {
         let servers = Servers::new(Some(cache.state_path("servers.txt")));
         Self {
             cache,
+            #[cfg(not(target_arch = "wasm32"))]
             agent: agent(Duration::from_secs(30), Duration::from_secs(10)),
+            #[cfg(not(target_arch = "wasm32"))]
             lan_agent: agent(Duration::from_secs(35), Duration::from_secs(1)),
+            #[cfg(target_arch = "wasm32")]
+            web: crate::web::Downloads::default(),
             servers,
             peers,
             offline,
@@ -317,8 +351,15 @@ impl Fetcher {
     /// Whether what a tile was waiting for has passed, so it is worth trying again.
     pub fn is_clear(&self, wait: &Wait) -> bool {
         match wait {
+            #[cfg(target_arch = "wasm32")]
+            Wait::Server(host) => self.gates.lock().unwrap().get(host).is_none_or(|g| self.web.in_flight(host) < g.capacity().max(1)),
+            #[cfg(not(target_arch = "wasm32"))]
             Wait::Server(host) => self.gates.lock().unwrap().get(host).is_none_or(|g| !g.is_full()),
             Wait::Tile(name) => !self.flights.lock().unwrap().contains_key(name),
+            #[cfg(target_arch = "wasm32")]
+            Wait::Download(url) => self.web.is_settled(url),
+            #[cfg(not(target_arch = "wasm32"))]
+            Wait::Download(_) => true,
         }
     }
 
@@ -412,6 +453,12 @@ impl Fetcher {
     }
 
     /// `None` means no cache server has an answer, so the public server must be asked.
+    #[cfg(target_arch = "wasm32")]
+    fn ask_peers(&self, _: &TileSource, _: TileKey) -> Option<Result<Vec<u8>, FetchError>> {
+        None
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn ask_peers(&self, source: &TileSource, k: TileKey) -> Option<Result<Vec<u8>, FetchError>> {
         self.peers.wait_for_answers();
         let now = Instant::now();
@@ -449,6 +496,7 @@ impl Fetcher {
     }
 
     /// One request to a public server, under the rules for that server.
+    #[cfg(not(target_arch = "wasm32"))]
     fn download(&self, url: &str, concurrency: usize, may_wait: bool) -> Result<Vec<u8>, FetchError> {
         let host = host_of(url);
         let gate = self.gate(&host, concurrency);
@@ -459,50 +507,98 @@ impl Fetcher {
         };
         // Asked only now: the server may have been timed out while this request waited.
         self.servers.check(&host, SystemTime::now()).map_err(FetchError::Paused)?;
-        let fail = |failure: Failure| match self.servers.failed(&host, failure, SystemTime::now()) {
+        let answer = match self.agent.get(url).call() {
+            Ok(mut response) => {
+                let status = response.status().as_u16();
+                let retry_after = retry_after(&response);
+                // Only a good answer's body is wanted; the others are judged by their status.
+                let body = if (200..300).contains(&status) {
+                    response.body_mut().read_to_vec().map_err(|e| match e {
+                        ureq::Error::Timeout(_) | ureq::Error::BodyStalled => BodyError::TimedOut,
+                        _ => BodyError::Broken,
+                    })
+                } else {
+                    Ok(Vec::new())
+                };
+                Answer::Reply { status, retry_after, body }
+            }
+            Err(ureq::Error::Timeout(_) | ureq::Error::BodyStalled) => Answer::TimedOut,
+            Err(e) => Answer::Unreachable(e.to_string()),
+        };
+        self.judge(&host, answer)
+    }
+
+    /// One request to a public server from a browser. It cannot wait, so the first call starts
+    /// the request and says `Busy`; once the answer is in, the next call for it gets it.
+    ///
+    /// Callers that would have waited (`may_wait`) are jobs that run again until all their
+    /// answers are in (see `worker`), so their answers stay for the next run; a tile's is taken.
+    #[cfg(target_arch = "wasm32")]
+    fn download(&self, url: &str, concurrency: usize, may_wait: bool) -> Result<Vec<u8>, FetchError> {
+        let host = host_of(url);
+        let answer = if may_wait { self.web.peek(url) } else { self.web.take(url) };
+        if let Some(answer) = answer {
+            return self.judge(&host, answer);
+        }
+        let busy = |wait: Wait| {
+            crate::web::note_waiting();
+            Err(FetchError::Busy(wait))
+        };
+        if self.web.is_pending(url) {
+            return busy(Wait::Download(url.to_string()));
+        }
+        self.gate(&host, concurrency);
+        if self.web.in_flight(&host) >= concurrency.max(1) {
+            return busy(Wait::Server(host));
+        }
+        self.servers.check(&host, SystemTime::now()).map_err(FetchError::Paused)?;
+        self.web.start(url, &host);
+        busy(Wait::Download(url.to_string()))
+    }
+
+    /// Decides what a server's answer means, and keeps its record.
+    fn judge(&self, host: &str, answer: Answer) -> Result<Vec<u8>, FetchError> {
+        let fail = |failure: Failure| match self.servers.failed(host, failure, SystemTime::now()) {
             Some(until) => FetchError::Paused(until),
             None => FetchError::Transient,
         };
-        let mut response = match self.agent.get(url).call() {
-            Ok(r) => r,
-            Err(ureq::Error::Timeout(_) | ureq::Error::BodyStalled) => {
+        let (status, retry_after, body) = match answer {
+            Answer::TimedOut => {
                 eprintln!("{host}: request timed out");
                 return Err(fail(Failure::ServerError { retry_after: None }));
             }
-            Err(e) => {
+            Answer::Unreachable(e) => {
                 eprintln!("{host}: {e}");
                 return Err(fail(Failure::Unreachable));
             }
+            Answer::Reply { status, retry_after, body } => (status, retry_after, body),
         };
-        let status = response.status().as_u16();
         match status {
-            200..=299 => match response.body_mut().read_to_vec() {
+            200..=299 => match body {
                 Ok(data) => {
-                    self.servers.succeeded(&host, data.len() as u64);
+                    self.servers.succeeded(host, data.len() as u64);
                     self.downloads.fetch_add(1, Relaxed);
                     self.downloaded_bytes.fetch_add(data.len() as u64, Relaxed);
                     Ok(data)
                 }
-                Err(ureq::Error::Timeout(_) | ureq::Error::BodyStalled) => {
-                    Err(fail(Failure::ServerError { retry_after: None }))
-                }
-                Err(_) => Err(fail(Failure::Unreachable)),
+                Err(BodyError::TimedOut) => Err(fail(Failure::ServerError { retry_after: None })),
+                Err(BodyError::Broken) => Err(fail(Failure::Unreachable)),
             },
             404 | 410 => {
-                self.servers.succeeded(&host, 0);
+                self.servers.succeeded(host, 0);
                 Err(FetchError::Missing)
             }
             429 => {
                 eprintln!("{host}: told to slow down (HTTP 429)");
-                Err(fail(Failure::TooManyRequests { retry_after: retry_after(&response) }))
+                Err(fail(Failure::TooManyRequests { retry_after }))
             }
             500..=599 | 403 => {
                 eprintln!("{host}: HTTP {status}");
-                Err(fail(Failure::ServerError { retry_after: retry_after(&response) }))
+                Err(fail(Failure::ServerError { retry_after }))
             }
             _ => {
                 eprintln!("{host}: unexpected HTTP {status}");
-                self.servers.succeeded(&host, 0);
+                self.servers.succeeded(host, 0);
                 Err(FetchError::Transient)
             }
         }

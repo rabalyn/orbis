@@ -1,7 +1,7 @@
 //! Turns building footprints into a 3D mesh standing on the terrain.
 
 use crate::geo::{geodetic_to_ecef, TileKey};
-use crate::vector::Building;
+use crate::vector::{Building, Zone};
 use bytemuck::{Pod, Zeroable};
 use earcut::Earcut;
 use glam::DVec3;
@@ -33,7 +33,31 @@ pub struct BuildingMesh {
     pub indices: Vec<u32>,
 }
 
+/// The colours of zoned buildings, as a city builder shows its zones: green for living, blue
+/// for business, yellow for industry. Each from the light shade of low buildings to the dark one
+/// of the tallest.
+const ZONE_COLOURS: [(Zone, [u8; 3], [u8; 3]); 3] = [
+    (Zone::Residential, [178, 228, 150], [36, 118, 50]),
+    (Zone::Commercial, [164, 202, 246], [30, 76, 172]),
+    (Zone::Industrial, [250, 232, 140], [196, 146, 16]),
+];
+/// Heights in metres that get the lightest and the darkest shade: a house of two floors, and a
+/// tower of about thirteen.
+const LOW_RISE: f32 = 5.0;
+const HIGH_RISE: f32 = 40.0;
+
+/// How densely a building is used, from 0 to 1, by its height: the data has no floor area or
+/// residents, and height follows them closely enough. On a log scale, as the step from a house to
+/// a block of flats is as telling as that from a block to a tower.
+fn density(height: f32) -> f32 {
+    ((height.max(1.0).ln() - LOW_RISE.ln()) / (HIGH_RISE.ln() - LOW_RISE.ln())).clamp(0.0, 1.0)
+}
+
 fn base_colour(building: &Building) -> [f32; 3] {
+    if let Some((_, light, dark)) = ZONE_COLOURS.iter().find(|z| Some(z.0) == building.zone) {
+        let t = density(building.height);
+        return [0, 1, 2].map(|i| light[i] as f32 + (dark[i] as f32 - light[i] as f32) * t);
+    }
     let d = DEFAULT_COLOUR.map(|c| c as f32);
     match building.colour {
         Some(c) => [0, 1, 2].map(|i| d[i] + (c[i] as f32 - d[i]) * COLOUR_STRENGTH),
@@ -173,7 +197,7 @@ mod tests {
     }
 
     fn building(rings: Vec<Vec<[f32; 2]>>) -> Building {
-        Building { rings, height: 20.0, min_height: 0.0, colour: None }
+        Building { rings, height: 20.0, min_height: 0.0, colour: None, zone: None }
     }
 
     fn heights(mesh: &BuildingMesh) -> Vec<f64> {
@@ -284,6 +308,21 @@ mod tests {
         let red = Building { colour: Some([255, 0, 0]), ..plain };
         let c = base_colour(&red);
         assert!(c[0] > c[1] && c[1] > 0.0 && c[0] < 255.0, "{c:?}");
+    }
+
+    #[test]
+    fn zoned_buildings_take_their_zones_colour_darker_the_taller() {
+        let at = |zone, height| base_colour(&Building { zone: Some(zone), height, colour: Some([255, 0, 0]), ..building(vec![square(0.4, 0.4, 0.1)]) });
+        let (house, tower) = (at(Zone::Residential, 6.0), at(Zone::Residential, 80.0));
+        assert!(house[1] > house[0] && house[1] > house[2], "green, not the data's red: {house:?}");
+        assert!(tower.iter().sum::<f32>() < house.iter().sum::<f32>() * 0.5, "{house:?} {tower:?}");
+        let shop = at(Zone::Commercial, 10.0);
+        assert!(shop[2] > shop[0] && shop[2] > shop[1], "blue: {shop:?}");
+        let works = at(Zone::Industrial, 10.0);
+        assert!(works[0] > works[2] && works[1] > works[2] * 1.3, "yellow: {works:?}");
+        assert_eq!(density(3.0), 0.0);
+        assert_eq!(density(500.0), 1.0);
+        assert!((density(LOW_RISE * (HIGH_RISE / LOW_RISE).sqrt()) - 0.5).abs() < 1e-4);
     }
 
     #[test]

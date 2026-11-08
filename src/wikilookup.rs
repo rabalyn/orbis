@@ -11,9 +11,9 @@ use crate::fetcher::{FetchError, Fetcher};
 use crate::geocode::MinGap;
 use crate::vector::LabelStyle;
 use crate::wiki::{self, Candidate, Choice, Facts, WikiError};
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use crate::worker::Worker;
+use std::sync::Arc;
+use crate::wtime::{Duration, Instant};
 
 /// Wikipedia asks for serial requests; this keeps them from following each other too closely.
 const MIN_GAP: Duration = Duration::from_millis(300);
@@ -86,38 +86,29 @@ pub struct Reply {
 }
 
 pub struct Lookup {
-    jobs: Sender<(u64, Job)>,
-    replies: Mutex<Receiver<Reply>>,
+    worker: Worker<(u64, Job), Reply>,
 }
 
 impl Lookup {
     pub fn new(fetcher: Arc<Fetcher>, lang: &str) -> Self {
         let lang = wiki::language(lang);
-        let (jobs, job_rx) = channel::<(u64, Job)>();
-        let (reply_tx, replies) = channel();
-        std::thread::spawn(move || {
-            let mut net = Net { fetcher: &fetcher, gap: MinGap::new(MIN_GAP), sent: 0 };
-            while let Ok((mut id, mut job)) = job_rx.recv() {
-                // Only the newest click matters if the user was quicker than the network.
-                while let Ok(newer) = job_rx.try_recv() {
-                    (id, job) = newer;
-                }
-                net.sent = 0;
-                let outcome = run(&mut net, &lang, &job).unwrap_or_else(Outcome::Failed);
-                if reply_tx.send(Reply { id, outcome, requests: net.sent }).is_err() {
-                    break;
-                }
-            }
+        let mut gap = MinGap::new(MIN_GAP);
+        // Only the newest click matters if the user was quicker than the network.
+        let worker = Worker::new(true, MIN_GAP, move |(id, job): (u64, Job)| {
+            let mut net = Net { fetcher: &fetcher, gap: std::mem::replace(&mut gap, MinGap::new(MIN_GAP)), sent: 0 };
+            let outcome = run(&mut net, &lang, &job).unwrap_or_else(Outcome::Failed);
+            gap = net.gap;
+            Reply { id, outcome, requests: net.sent }
         });
-        Self { jobs, replies: Mutex::new(replies) }
+        Self { worker }
     }
 
     pub fn submit(&self, id: u64, job: Job) {
-        let _ = self.jobs.send((id, job));
+        self.worker.submit((id, job));
     }
 
     pub fn poll(&self) -> Option<Reply> {
-        self.replies.lock().ok()?.try_recv().ok()
+        self.worker.poll()
     }
 }
 
@@ -158,7 +149,7 @@ impl Net<'_> {
         if offline {
             return Err(Failure::Offline);
         }
-        std::thread::sleep(self.gap.wait(Instant::now()));
+        crate::wtime::pause(self.gap.wait(Instant::now()));
         self.gap.sent(Instant::now());
         self.sent += 1;
         let stale = |parsed: Option<(f64, T)>, f: Failure| parsed.map(|p| p.1).ok_or(f);
