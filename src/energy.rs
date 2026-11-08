@@ -101,7 +101,8 @@ pub enum Level {
 }
 
 /// Camera altitudes where the level changes, from coarse to fine.
-const LEVEL_ALTITUDES: [f64; 3] = [900e3, 170e3, 30e3];
+/// One country filling the screen shows its states; districts and municipalities need a closer view.
+const LEVEL_ALTITUDES: [f64; 3] = [300e3, 80e3, 15e3];
 /// A level is kept until the altitude is this much past its limit, so that it does not flicker.
 const HYSTERESIS: f64 = 1.2;
 
@@ -275,6 +276,9 @@ pub struct Energy {
     cells: HashMap<(i32, i32), Vec<u32>>,
     /// The largest bar of each level at the export date, for the scale.
     largest: [f32; 4],
+    /// The typical width of an area of each level, in metres: the median of the square roots of
+    /// their areas. Bars are sized against it, so they keep a fixed size in the landscape.
+    widths: [f64; 4],
     /// Each area's size in km² (municipalities only; 0 for others).
     km2: Vec<f64>,
     /// The density of units without a position, in kW per km², that gets the full shade.
@@ -443,7 +447,19 @@ impl Energy {
             cells.entry(cell_of(s.lat, s.lon)).or_default().push(i as u32);
         }
         let km2 = areas.iter().map(|a| if a.level == Level::Towns { area_km2(&a.rings) } else { 0.0 }).collect();
-        let mut energy = Energy { exported, areas, sites, totals, unplaced, cells, largest: [1.0; 4], km2, dense: 1.0 };
+        let mut energy = Energy { exported, areas, sites, totals, unplaced, cells, largest: [1.0; 4], widths: [PLANT_WIDTH; 4], km2, dense: 1.0 };
+        for level in [Level::States, Level::Districts, Level::Towns] {
+            let mut sides: Vec<f64> = energy
+                .areas
+                .iter()
+                .filter(|a| a.level == level && a.kind == AreaKind::Admin)
+                .map(|a| area_km2(&a.rings).sqrt() * 1000.0)
+                .collect();
+            sides.sort_by(f64::total_cmp);
+            if let Some(&median) = sides.get(sides.len() / 2) {
+                energy.widths[level.index()] = median;
+            }
+        }
         let last = ((exported.0 - 1900) * 12 + exported.1 - 1).clamp(0, OPEN as i64 - 1) as u16;
         let all = [true; SOURCES];
         for level in Level::ALL {
@@ -832,6 +848,15 @@ fn angle_between(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     2.0 * h.sqrt().min(1.0).asin()
 }
 
+/// The tall bar of a level, as a share of the typical width of its areas.
+pub const HEIGHT_SHARE: f64 = 0.8;
+/// A bar's width, as a share of the typical width of its level's areas.
+const WIDTH_SHARE: f64 = 0.07;
+/// Bars seen from far away stay this many pixels wide.
+const MIN_WIDTH_PX: f64 = 5.0;
+/// What plant sites are sized against, in metres, in place of an area's width.
+const PLANT_WIDTH: f64 = 2500.0;
+
 /// How the bars are sized: their width and the height of a kilowatt, in metres.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Scale {
@@ -840,11 +865,15 @@ pub struct Scale {
 }
 
 impl Scale {
-    /// Bars about `px` pixels wide, the largest of the level reaching `share` of the view's
-    /// height, for a camera `distance` from what it looks at and a view `height_px` tall.
+    /// Bars in proportion to the ground they stand for: the tall bar of a level (see
+    /// [`Energy::largest`]) is [`HEIGHT_SHARE`] of the typical width of the level's areas, and a
+    /// bar is [`WIDTH_SHARE`] of it wide. They keep that size in the landscape as the camera moves,
+    /// only never thinner than [`MIN_WIDTH_PX`] pixels for a camera `distance` from what it looks
+    /// at and a view `height_px` tall.
     pub fn for_view(energy: &Energy, level: Level, distance: f64, height_px: f64) -> Scale {
         let metres_per_px = 2.0 * distance * (crate::camera::FOV_Y / 2.0).tan() / height_px.max(1.0);
-        Scale { width: 12.0 * metres_per_px, per_kw: 0.4 * height_px * metres_per_px / energy.largest(level) as f64 }
+        let side = energy.widths[level.index()];
+        Scale { width: (WIDTH_SHARE * side).max(MIN_WIDTH_PX * metres_per_px), per_kw: HEIGHT_SHARE * side / energy.largest(level) as f64 }
     }
 }
 
@@ -1337,14 +1366,31 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn bars_keep_their_size_in_the_landscape() {
+        let e = Energy::bundled().unwrap();
+        let near = Scale::for_view(e, Level::States, 4.0e5, 1000.0);
+        let far = Scale::for_view(e, Level::States, 8.0e5, 1000.0);
+        assert_eq!(near.per_kw, far.per_kw, "height doesn't follow the camera");
+        // The tall state bar is a fraction of a state's width: tens of kilometres, not hundreds.
+        let tall = e.largest(Level::States) as f64 * near.per_kw;
+        assert!((2.0e4..1.5e5).contains(&tall), "{tall}");
+        // From far away bars stay a few pixels wide.
+        let globe = Scale::for_view(e, Level::States, 2.0e7, 1000.0);
+        assert!(globe.width > near.width);
+        assert!(e.widths[Level::States.index()] > e.widths[Level::Districts.index()]);
+        assert!(e.widths[Level::Districts.index()] > e.widths[Level::Towns.index()]);
+    }
+
+    #[test]
     fn levels_change_with_altitude_and_hold_near_the_limits() {
         assert_eq!(Level::for_altitude(5e6, None), Level::States);
-        assert_eq!(Level::for_altitude(500e3, None), Level::Districts);
-        assert_eq!(Level::for_altitude(50e3, None), Level::Towns);
+        assert_eq!(Level::for_altitude(620e3, None), Level::States, "Germany filling the screen shows states");
+        assert_eq!(Level::for_altitude(150e3, None), Level::Districts);
+        assert_eq!(Level::for_altitude(30e3, None), Level::Towns);
         assert_eq!(Level::for_altitude(5e3, None), Level::Plants);
-        assert_eq!(Level::for_altitude(950e3, Some(Level::Districts)), Level::Districts);
-        assert_eq!(Level::for_altitude(1200e3, Some(Level::Districts)), Level::States);
-        assert_eq!(Level::for_altitude(28e3, Some(Level::Towns)), Level::Towns);
+        assert_eq!(Level::for_altitude(330e3, Some(Level::Districts)), Level::Districts);
+        assert_eq!(Level::for_altitude(400e3, Some(Level::Districts)), Level::States);
+        assert_eq!(Level::for_altitude(14e3, Some(Level::Towns)), Level::Towns);
     }
 
     #[test]

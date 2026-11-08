@@ -115,6 +115,10 @@ agree and the view may come down to 2 m. Loading never lowers the camera, it onl
   numbers. Road labels follow their road's direction and stay upright.
 - Names use the language from `--lang`, the saved language or the locale, falling back to the local name. Any script
   the system's fonts cover is shown.
+- Detail follows the distance: from afar only countries, seas, states and capitals are named; cities join within about
+  400 km of the camera, towns within 150 km, villages within 50 km, quarters within 15 km. National capitals are marked
+  ★ and named from any distance; capitals of states, provinces and regions are marked with a small star and named
+  within about 1600 km, in every country.
 - Labels never overlap and stay clear of the on-screen panels. They do not hang over the edge of the globe, and
   mountains hide what is behind them. The more important label wins.
 
@@ -467,12 +471,12 @@ day chart and their legend swatches hatched, and on the ground hatched fills and
 Every bar stands for one clearly bounded thing, and that thing is marked on the ground, so that bars of different detail are
 never confused:
 - **Square bars** stand for an area, whose outline is drawn on the ground in magenta, apart from the map's own white boundaries. From far away the areas are the states,
-  closer the districts, then the municipalities. The level follows the camera altitude (about 900 km, 170 km and 30 km, held a
+  closer the districts, then the municipalities. The level follows the camera altitude (about 300 km, 80 km and 15 km, held a
   little past each limit so that it does not flicker), and the display names it ("one bar per district"). All bars on screen
   are of one level, so they can be compared with each other.
 - Offshore wind parks are areas of their own: the outline round a park's turbines, and from far away the outline round all
   parks of the North Sea or the Baltic.
-- Close up (below about 30 km), **round bars** stand for plant sites: units of one source at one published position, within
+- Close up (below about 15 km), **round bars** stand for plant sites: units of one source at one published position, within
   about 11 m. A clicked site is ringed on the ground.
 - Close up, the register's units **without a published position** (mostly small rooftop solar of private owners, which it gives
   only by municipality) are no bar: each municipality that has some is outlined faintly and **shaded** by their capacity per km²
@@ -499,9 +503,12 @@ never confused:
   a slider, and Reset brings back the usual look. Every change is saved with the other options.
 
 ### Size and time
-- Height is linear in capacity. A bar taller than 98% of a level's bars at the register's date reaches about 40% of the view's
-  height (the few largest go higher), so a level keeps one scale whatever the date. The display gives the scale as the capacity of 100 pixels of height. Bars are about
-  12 pixels wide at any distance. Their heights show only in a tilted view, and the display says so in a straight-down view.
+- Height is linear in capacity and fixed in the landscape: it doesn't change as the camera moves. A bar taller than 98% of a
+  level's bars at the register's date is 0.8 times as tall as a typical area of the level is wide (the median of the square
+  roots of their areas; 2.5 km for plant sites), and bars are 7% of that width wide, so a state bar is tens of kilometres
+  tall, a district bar a few. A level keeps one scale whatever the date. The display gives the scale as the height of 1 GW.
+  From far away bars stay at least 5 pixels wide. Their heights show only in a tilted view, and the display says so in a
+  straight-down view.
 - The bars follow the clock by month: a unit counts from the month it went into operation and stops in the month it was shut
   down for good. Dragging the year slider of the time window shows the build-out over the years.
 

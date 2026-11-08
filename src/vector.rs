@@ -648,26 +648,42 @@ fn read_boundaries(layer: &Layer, out: &mut Vec<Boundary>) {
     }
 }
 
+/// The mark before a national capital's name, and its place in the order of labels.
+pub const NATIONAL_CAPITAL_MARK: char = '\u{2605}';
+const NATIONAL_CAPITAL: i32 = 150;
+/// The mark before a state capital's name, and its place in the order of labels.
+pub const STATE_CAPITAL_MARK: char = '\u{2b51}';
+const STATE_CAPITAL: i32 = 270;
+
 fn read_places(layer: &Layer, key: TileKey, names: &[String], out: &mut Vec<Label>) {
     let name_keys = name_indices(layer, names);
     let fields = Fields { layer };
-    let (class_key, rank_key) = (fields.index("class"), fields.index("rank"));
+    let (class_key, rank_key, capital_key) = (fields.index("class"), fields.index("rank"), fields.index("capital"));
     for bytes in &layer.features {
         let Some(f) = parse_feature(bytes) else { continue };
         let Some(Value::Text(class)) = get(layer, &f, class_key) else { continue };
+        // The admin level of the area the place is the capital of: 2 a country, 3 or 4 a state.
+        let capital = get(layer, &f, capital_key).and_then(Value::number).map_or(0, |c| c as i32);
         // Far out, countries are what matters; states and cities join in as the view closes in.
         let (style, base) = match class {
             "country" => (LabelStyle::Country, 100),
             "state" | "province" if key.z >= 5 => (LabelStyle::State, 250),
-            "city" if key.z >= 4 => (LabelStyle::City, 300),
+            "city" if key.z >= 4 || capital == 2 => (LabelStyle::City, 300),
             "town" => (LabelStyle::Town, 500),
             "village" => (LabelStyle::Village, 650),
             "suburb" | "quarter" | "borough" => (LabelStyle::Local, 750),
             "hamlet" | "neighbourhood" | "isolated_dwelling" => (LabelStyle::Local, 850),
             _ => continue,
         };
-        let Some(text) = first_name(layer, &f, &name_keys) else { continue };
+        let Some(name) = first_name(layer, &f, &name_keys) else { continue };
         let rank = get(layer, &f, rank_key).and_then(Value::number).unwrap_or(50.0) as i32;
+        let is_place = matches!(style, LabelStyle::City | LabelStyle::Town | LabelStyle::Village);
+        // Capitals come right after the country and state names, marked with a star.
+        let (style, base, text) = match capital {
+            2 if is_place => (LabelStyle::City, NATIONAL_CAPITAL, format!("{NATIONAL_CAPITAL_MARK} {name}")),
+            3 | 4 if is_place => (LabelStyle::City, STATE_CAPITAL, format!("{STATE_CAPITAL_MARK} {name}")),
+            _ => (style, base, name),
+        };
         for part in parse_geometry(f.geometry, layer.extent) {
             let Some(&p) = part.first().filter(|p| inside(**p)) else { continue };
             let (lat, lon) = point_to_lat_lon(key, p);
@@ -905,6 +921,28 @@ pub mod tests {
         let t = decode(&data, KEY, &names()).unwrap();
         assert_eq!(t.boundaries.len(), 1);
         assert_eq!(t.boundaries[0].admin_level, 2);
+    }
+
+    #[test]
+    fn capitals_are_marked_and_come_before_other_places() {
+        let data = layer(
+            "place",
+            &[
+                (1, vec![("class", V::S("city")), ("rank", V::Sint(1)), ("capital", V::Sint(2)), ("name", V::S("Berlin"))], move_to(10, 10)),
+                (1, vec![("class", V::S("city")), ("rank", V::Sint(2)), ("capital", V::Sint(4)), ("name", V::S("Munich"))], move_to(10, 10)),
+                (1, vec![("class", V::S("town")), ("rank", V::Sint(5)), ("capital", V::Sint(4)), ("name", V::S("Schwerin"))], move_to(10, 10)),
+                (1, vec![("class", V::S("city")), ("rank", V::Sint(1)), ("name", V::S("Hamburg"))], move_to(10, 10)),
+            ],
+        );
+        let t = decode(&data, KEY, &names()).unwrap();
+        let find = |n: &str| t.labels.iter().find(|l| l.text.ends_with(n)).unwrap().clone();
+        let (berlin, munich, schwerin, hamburg) = (find("Berlin"), find("Munich"), find("Schwerin"), find("Hamburg"));
+        assert_eq!(berlin.text, "\u{2605} Berlin");
+        assert_eq!(munich.text, "\u{2b51} Munich");
+        assert_eq!(schwerin.style, LabelStyle::City, "a small state capital is drawn like a city");
+        assert_eq!(hamburg.text, "Hamburg");
+        assert!(berlin.priority < munich.priority && munich.priority < hamburg.priority);
+        assert!(schwerin.priority < hamburg.priority);
     }
 
     #[test]

@@ -2178,7 +2178,7 @@ impl Scene {
             title: format!("Germany {date}, GW"),
             chart: (have > 0).then(|| power_chart::chart(&moments, Some((time - day) / 86_400.0), self.view.energy_palette)),
             note: if have > 0 {
-                "Areas above the white line: surplus.".to_string()
+                "Areas above the line: surplus.".to_string()
             } else if self.feeds_pending > 0 {
                 "Asking SMARD...".to_string()
             } else {
@@ -2267,11 +2267,8 @@ impl Scene {
         if !self.energy_on() {
             return None;
         }
-        let (_, height) = self.energy.view;
-        let metres_per_px = 2.0 * self.nav.cam.distance * (camera::FOV_Y / 2.0).tan() / height.max(1.0);
-        let per_100px = 100.0 * metres_per_px / scale.per_kw;
         let month = energy::month_name(energy::month_of(self.clock.time()));
-        let mut line = format!("Energy: bars per {}, {month}, 100 px = {}", level.name(), energy::format_power(per_100px as f32));
+        let mut line = format!("Energy: bars per {}, {month}, 1 GW = {} tall", level.name(), format_distance(1.0e6 * scale.per_kw));
         if self.view.energy_output {
             line.push('\n');
             line.push_str(&self.power_status());

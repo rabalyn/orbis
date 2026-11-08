@@ -3,7 +3,7 @@
 
 use crate::camera::{Basis, FOV_Y};
 use crate::geo::{ecef_to_geodetic, enu, geodetic_to_ecef, ray_ellipsoid};
-use crate::vector::{Label, LabelStyle};
+use crate::vector::{Label, LabelStyle, NATIONAL_CAPITAL_MARK, STATE_CAPITAL_MARK};
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, SwashCache, Weight};
 use glam::{DVec2, DVec3};
 use std::collections::HashMap;
@@ -98,7 +98,16 @@ fn rasterize(fonts: &mut FontSystem, cache: &mut SwashCache, key: TextKey) -> Op
         attrs = attrs.style(Style::Italic);
     }
     buffer.set_size(None, None);
-    buffer.set_text(&key.text, &attrs, Shaping::Advanced, None);
+    // The small star before a state capital is drawn larger, or it would be a speck.
+    match key.text.strip_prefix(STATE_CAPITAL_MARK) {
+        Some(rest) => {
+            let big = size * 1.5;
+            let mark = attrs.clone().metrics(Metrics::new(big, size * 1.25));
+            let mut buf = [0u8; 4];
+            buffer.set_rich_text([(&*STATE_CAPITAL_MARK.encode_utf8(&mut buf), mark), (rest, attrs.clone())], &attrs, Shaping::Advanced, None);
+        }
+        None => buffer.set_text(&key.text, &attrs, Shaping::Advanced, None),
+    }
     buffer.shape_until_scroll(fonts, false);
     let text_width = buffer.layout_runs().map(|r| r.line_w).fold(0.0, f32::max);
     if text_width <= 0.0 {
@@ -358,11 +367,31 @@ pub fn anchor(label: &Label, ground: &dyn Fn(f64, f64) -> Option<f64>) -> DVec3 
     geodetic_to_ecef(label.lat, label.lon, h + 5.0)
 }
 
+/// How far from the camera a place name may be shown, in metres on Earth. From afar only
+/// countries, states and capitals are named, so the map stays easy to read; cities, towns and
+/// villages join in as the camera comes closer.
+pub fn max_distance(label: &Label) -> f64 {
+    match label.style {
+        LabelStyle::State => 2.5e6,
+        LabelStyle::City if label.text.starts_with(NATIONAL_CAPITAL_MARK) => f64::INFINITY,
+        LabelStyle::City if label.text.starts_with(STATE_CAPITAL_MARK) => 1.6e6,
+        LabelStyle::City => 4.0e5,
+        LabelStyle::Town => 1.5e5,
+        LabelStyle::Village => 5.0e4,
+        LabelStyle::Local => 1.5e4,
+        LabelStyle::Country | LabelStyle::Sea | LabelStyle::Lake | LabelStyle::Peak | LabelStyle::Road => f64::INFINITY,
+    }
+}
+
 /// Whether a label could appear at all in this view, before its text has been rasterised.
 pub fn may_show(screen: &Screen, label: &Label) -> bool {
     let p = geodetic_to_ecef(label.lat, label.lon, 0.0);
     let (_, _, up) = enu(label.lat, label.lon);
-    let facing = (screen.basis.pos - p).normalize().dot(up);
+    let to_camera = screen.basis.pos - p;
+    if to_camera.length() > crate::body::scaled(max_distance(label)) {
+        return false;
+    }
+    let facing = to_camera.normalize().dot(up);
     facing > min_facing(label.style) && screen.project(p).is_some_and(|s| screen.on_screen(s))
 }
 
@@ -538,14 +567,34 @@ mod tests {
     }
 
     #[test]
+    fn from_afar_only_countries_states_and_capitals_are_named() {
+        let s = screen(7.0e5, 0.0);
+        let with = |style, text: &str| Label { style, ..label(text, LAT, LON) };
+        assert!(may_show(&s, &with(LabelStyle::Country, "Germany")));
+        assert!(may_show(&s, &with(LabelStyle::State, "Bavaria")));
+        assert!(may_show(&s, &with(LabelStyle::City, "\u{2605} Berlin")));
+        assert!(may_show(&s, &with(LabelStyle::City, "\u{2b51} Munich")));
+        assert!(!may_show(&s, &with(LabelStyle::City, "Celle")));
+        assert!(!may_show(&s, &with(LabelStyle::Town, "Stendal")));
+        let close = screen(1.0e5, 0.0);
+        assert!(may_show(&close, &with(LabelStyle::City, "Celle")));
+        assert!(may_show(&close, &with(LabelStyle::Town, "Stendal")));
+        assert!(!may_show(&close, &with(LabelStyle::Village, "Hof")));
+        let globe = screen(2.0e7, 0.0);
+        assert!(may_show(&globe, &with(LabelStyle::City, "\u{2605} Berlin")));
+        assert!(!may_show(&globe, &with(LabelStyle::City, "\u{2b51} Munich")));
+    }
+
+    #[test]
     fn labels_at_the_globes_edge_must_fit_on_it() {
         let s = screen(2.2e7, 0.0);
         let size = DVec2::new(160.0, 20.0);
         // Far to the east of the view point, so close to the globe's right-hand edge.
-        let near_edge = label("Edge", LAT - 0.4, LON + 1.45);
+        let country = |text: &str, lat, lon| Label { style: LabelStyle::Country, ..label(text, lat, lon) };
+        let near_edge = country("Edge", LAT - 0.4, LON + 1.45);
         assert!(may_show(&s, &near_edge), "the place itself is in view");
         assert!(place(&s, &[(&near_edge, size)], NO_GROUND).is_empty());
-        let middle = label("Middle", LAT, LON);
+        let middle = country("Middle", LAT, LON);
         assert_eq!(place(&s, &[(&middle, size)], NO_GROUND).len(), 1);
     }
 
