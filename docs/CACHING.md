@@ -107,17 +107,17 @@ everything else, magnified beyond its resolution.
 
 | Source | Area | From zoom | To zoom | Licence or terms | Credit |
 |---|---|---|---|---|---|
-| Berlin TrueDOP | Berlin | 15 | 19 | DL-DE Zero 2.0 | Geoportal Berlin |
-| NRW DOP | North Rhine-Westphalia | 15 | 19 | GovData terms | Geobasis NRW |
-| LGLN DOP20 | Lower Saxony | 15 | 19 | CC BY 4.0 | LGLN (2026) CC BY 4.0 |
-| Bavaria DOP40 | Bavaria | 15 | 18 | CC BY 4.0 | Bayerische Vermessungsverwaltung |
-| basemap.at | Austria | 15 | 19 | CC BY 4.0 | Grundkarte: basemap.at |
-| swisstopo SWISSIMAGE | Switzerland | 15 | 19 | Free under fair use | © swisstopo |
-| IGN BD ORTHO | France | 15 | 19 | Etalab Open Licence by default | © IGN |
-| PDOK Luchtfoto | Netherlands | 15 | 19 | No constraints stated | PDOK Luchtfoto |
-| PNOA | Spain | 15 | 19 | CC BY 4.0 | PNOA CC BY 4.0 scne.es |
-| USGS Imagery | USA | 15 | 16 | US public domain | USGS The National Map |
-| VersaTiles | Rest of Germany, about 15 more European countries | 15 | 18 | Open licences per country | VersaTiles sources https://versatiles.org/sources/ |
+| Berlin TrueDOP | Berlin | 13 | 19 | DL-DE Zero 2.0 | Geoportal Berlin |
+| NRW DOP | North Rhine-Westphalia | 13 | 19 | GovData terms | Geobasis NRW |
+| LGLN DOP20 | Lower Saxony | 13 | 19 | CC BY 4.0 | LGLN (2026) CC BY 4.0 |
+| Bavaria DOP40 | Bavaria | 13 | 18 | CC BY 4.0 | Bayerische Vermessungsverwaltung |
+| basemap.at | Austria | 13 | 19 | CC BY 4.0 | Grundkarte: basemap.at |
+| swisstopo SWISSIMAGE | Switzerland | 13 | 19 | Free under fair use | © swisstopo |
+| IGN BD ORTHO | France | 13 | 19 | Etalab Open Licence by default | © IGN |
+| PDOK Luchtfoto | Netherlands | 13 | 19 | No constraints stated | PDOK Luchtfoto |
+| PNOA | Spain | 13 | 19 | CC BY 4.0 | PNOA CC BY 4.0 scne.es |
+| USGS Imagery | USA | 13 | 16 | US public domain | USGS The National Map |
+| VersaTiles | Rest of Germany, about 15 more European countries | 13 | 18 | Open licences per country | VersaTiles sources https://versatiles.org/sources/ |
 | EOxCloudless (base) | World | 0 | 14 | CC BY-NC-SA 4.0 | See PROVENANCE.md |
 
 Waiting for a slow service holds up only its own tiles. A worker never queues for a server
@@ -146,6 +146,6 @@ Credits on screen follow the sources in view.
   elsewhere. Asking for 512-pixel images makes one request serve four tiles.
 - LGLN asks for the year of retrieval in its credit. The year is fixed in the source list and
   needs updating with each release, and older cached tiles show the newer year.
-- Images change at national borders and between zoom 14 and 15, and differ in date and colour.
+- Images change at national borders and between zoom 12 and 13, and differ in date and colour.
 - A tile crossing a coverage edge can show white or black where the service has no data.
 - basemap.at prints the capture year as a watermark at zooms 17 and above.

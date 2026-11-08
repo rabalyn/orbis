@@ -6,8 +6,10 @@ use crate::geo::{Grid, TileKey};
 const MERCATOR_EDGE: f64 = 20_037_508.342_789_244;
 /// Tiles this far beyond the base imagery still improve terrain and map lines.
 const BASE_TILE_MAX_Z: u8 = 16;
-/// National imagery starts here, just past the base imagery's real resolution.
-const DETAIL_MIN_Z: u8 = 15;
+/// National imagery starts here, two levels before the base imagery reaches its real resolution,
+/// so that the change from Sentinel-2 to aerial photos, which differ in colour, lies far out in a
+/// tilted view rather than across the middle of it. All detail services serve these levels.
+const DETAIL_MIN_Z: u8 = 13;
 pub const ABSOLUTE_MAX_Z: u8 = 19;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -507,7 +509,8 @@ mod tests {
     #[test]
     fn far_views_use_only_the_base() {
         assert_eq!(ids(key_at(47.27, 11.4, 10)), ["eox"]);
-        assert_eq!(ids(key_at(47.27, 11.4, 14)), ["eox"]);
+        assert_eq!(ids(key_at(47.27, 11.4, 12)), ["eox"]);
+        assert_eq!(ids(key_at(47.27, 11.4, 13)), ["basemap-at", "versatiles", "eox"]);
     }
 
     #[test]
