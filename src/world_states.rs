@@ -1,7 +1,9 @@
 //! The States level of the energy layer beyond Germany: one bar per state or province of the
 //! world, from Natural Earth's admin-1 states and provinces at 1:10m (public domain), simplified
 //! by `tools/gen_world_states.py` into `data/states_world.bin` with each state's population from
-//! Wikidata (CC0). Germany's states are BKG's, in `energy.rs`, and are left out here.
+//! Wikidata (CC0). Germany's states are BKG's, in `energy.rs`, and are left out here. Where a
+//! country's admin-1 units are many and fine (France's departments, Italy's provinces), they
+//! come merged into the regions Natural Earth groups them in, to compare with Germany's states.
 //!
 //! Until the world's plants are placed by state, a state's bar is its country's use (Ember's
 //! demand, or its generation where there is none) shared out by population, in the country's
@@ -19,10 +21,10 @@ pub const CREDIT: &str = "Country and state outlines: Natural Earth (public doma
 pub struct State {
     /// The country's code, as in `countries.rs` and `owid.rs`.
     pub country: String,
-    /// ISO 3166-2, such as `FR-75`; empty where Natural Earth has none.
+    /// ISO 3166-2, such as `FR-BRE`; empty where Natural Earth has none.
     pub iso: String,
     pub name: String,
-    /// Natural Earth's kind of unit, such as Province.
+    /// Natural Earth's kind of unit, such as Province, or Region where units are merged.
     pub kind: String,
     pub population: u32,
     /// Whether the population is estimated from the country's density, Wikidata having none.
@@ -280,17 +282,51 @@ mod tests {
     #[test]
     fn outlines_parse_with_a_country_each() {
         let s = states();
-        assert!(s.count() > 3000, "{} states", s.count());
+        assert!(s.count() > 2500, "{} states", s.count());
         let countries = Countries::bundled().unwrap();
         for st in s.all() {
             assert!(countries.get(&st.country).is_some(), "{} ({}) has no country", st.name, st.country);
             assert!(!st.rings.is_empty() && st.rings.iter().all(|r| r.len() >= 3));
             assert!((-90.0..=90.0).contains(&st.label[0]) && (-180.0..=180.0).contains(&st.label[1]));
         }
-        let fr = s.all().iter().find(|st| st.iso == "FR-75").expect("Paris");
-        assert_eq!(fr.country, "FRA");
-        assert!((fr.label[0] - 48.86).abs() < 0.1 && (fr.label[1] - 2.35).abs() < 0.1);
+        let idf = s.all().iter().find(|st| inside(&st.rings, 48.86, 2.35)).expect("Paris lies in a state");
+        assert_eq!((idf.name.as_str(), idf.country.as_str()), ("Île-de-France", "FRA"));
+        assert!((idf.label[0] - 48.7).abs() < 0.5 && (idf.label[1] - 2.5).abs() < 0.7, "{:?}", idf.label);
         assert!(s.all().iter().any(|st| st.iso == "US-CA" && st.country == "USA"));
+    }
+
+    fn inside(rings: &[Vec<[f64; 2]>], lat: f64, lon: f64) -> bool {
+        let mut hit = false;
+        for ring in rings {
+            let mut prev = ring[ring.len() - 1];
+            for &p in ring {
+                let ([y0, x0], [y1, x1]) = (prev, p);
+                if (y0 > lat) != (y1 > lat) && lon < x0 + (lat - y0) * (x1 - x0) / (y1 - y0) {
+                    hit = !hit;
+                }
+                prev = p;
+            }
+        }
+        hit
+    }
+
+    #[test]
+    fn fine_units_are_merged_into_regions_like_germanys_states() {
+        let s = states();
+        let count = |code: &str| s.all().iter().filter(|st| st.country == code).count();
+        assert!((10..=20).contains(&count("FRA")), "France: {}", count("FRA"));
+        assert!((18..=22).contains(&count("ITA")), "Italy: {}", count("ITA"));
+        assert!((15..=20).contains(&count("ESP")), "Spain: {}", count("ESP"));
+        assert!((4..=13).contains(&count("GBR")), "United Kingdom: {}", count("GBR"));
+        assert_eq!(count("POL"), 16);
+        assert_eq!(count("USA"), 51);
+        // Merged outlines are one piece where the region is, not a ring per department.
+        let bzh = s.all().iter().find(|st| st.name == "Bretagne").unwrap();
+        assert_eq!(bzh.iso, "FR-BRE");
+        assert!(bzh.rings.len() <= 3, "{} rings", bzh.rings.len());
+        assert!((3_000_000..4_000_000).contains(&bzh.population));
+        let ni = s.all().iter().find(|st| st.name == "Northern Ireland").unwrap();
+        assert!((1_500_000..2_500_000).contains(&ni.population), "{}", ni.population);
     }
 
     #[test]
@@ -340,14 +376,14 @@ mod tests {
         let sum: f32 = fra.iter().map(|b| b.total()).sum();
         assert!((sum / used - 1.0).abs() < 0.01, "{sum} against {used}");
         assert!(fra.iter().all(|b| (b.demand / b.total() - 1.0).abs() < 1e-3));
-        // Paris: the country's mix, mostly nuclear.
-        let i = s.all().iter().position(|st| st.iso == "FR-75").unwrap();
+        // Brittany: the country's mix, mostly nuclear.
+        let i = s.all().iter().position(|st| st.iso == "FR-BRE").unwrap();
         let card = s.describe(i as u16, month, all, Palette::Standard);
         assert!(card.summary.contains("of France's by population"), "{}", card.summary);
         assert!(card.facts.iter().any(|f| f.0 == "Country" && f.1 == "France"));
-        assert!(card.facts.iter().any(|f| f.0 == "ISO 3166-2" && f.1 == "FR-75"));
+        assert!(card.facts.iter().any(|f| f.0 == "ISO 3166-2" && f.1 == "FR-BRE"));
         assert!(card.meters[0].rows.iter().any(|r| r.label == "Nuclear"));
-        assert_eq!(s.title(i as u16), "Paris, France");
+        assert_eq!(s.title(i as u16), "Bretagne, France");
     }
 
     #[test]

@@ -295,15 +295,19 @@ states: Wikidata (CC0)`, shows at the Countries and States levels and with the m
 
 | Data | Source | Terms | Credit shown |
 |---|---|---|---|
-| Outlines, label points, English names, kinds and ISO 3166-2 codes of 4,561 states and provinces (Germany's 16 left out) | Natural Earth admin-1 states and provinces 1:10m, `github.com/nvkelso/natural-earth-vector`, `geojson/ne_10m_admin_1_states_provinces.geojson` (master, 2026-11-09); the country of each from `geojson/ne_50m_admin_0_countries.geojson` as for `countries.bin` | Public domain (naturalearthdata.com, from general knowledge) | `world_states::CREDIT` |
+| Outlines, label points, English names, kinds and ISO 3166-2 codes of 3,299 states, provinces and regions, merged from 4,561 admin-1 units (Germany's 16 left out) | Natural Earth admin-1 states and provinces 1:10m, `github.com/nvkelso/natural-earth-vector`, `geojson/ne_10m_admin_1_states_provinces.geojson` (master, 2026-11-09); the country of each from `geojson/ne_50m_admin_0_countries.geojson` as for `countries.bin` | Public domain (naturalearthdata.com, from general knowledge) | `world_states::CREDIT` |
 | Population per state | Wikidata, property P1082 of the item Natural Earth gives each state (`wikidataid`), through `query.wikidata.org/sparql`: the preferred figure, else the latest by point in time | CC0 (Wikidata's structured data) | `world_states::CREDIT` |
-| Population of states Wikidata has no usable figure for (731) | estimated by area from Natural Earth's `POP_EST` of the country, less the states with a figure | Public domain | as above |
+| Population of merged regions | Wikidata, P1082 of the item (P131) a third or more of the region's units lie in, if it is at least their sum and under 60% of the country; else their sum | CC0 | `world_states::CREDIT` |
+| Population of units Wikidata has no usable figure for (731 of 4,561; 619 of the 3,299 states end up marked estimated) | estimated by area from Natural Earth's `POP_EST` of the country, less the states with a figure | Public domain | as above |
 
 Choice of population source: Natural Earth's populated places (public domain, 0.6 MB) count cities only, so sums per
 state miss the countryside (Bihar or rural Africa against their capitals); GHS-POP and Kontur (CC BY 4.0) are grids of
 hundreds of MB to GB that need GIS libraries to sum. Wikidata's census figures per state are a few hundred kB and CC0.
 Where several Natural Earth states share one item, its figure is split by area; a figure above the country's whole
-population is dropped as a wrong item. Outlines are simplified by 0.025° and rounded to 1/250°, with islands under 0.005
+population is dropped as a wrong item. In 14 countries with more than 40 units (France, Italy, Spain, the United
+Kingdom, the Philippines and others; not the US, Russia, Japan or Vietnam) units are merged by Natural Earth's `region`
+field (England's regions and the other three nations for the UK), outlines unioned with shapely before simplifying, so
+that the level compares with Germany's states. Outlines are simplified by 0.025° and rounded to 1/250°, with islands under 0.005
 square degrees dropped (never a state's largest ring); the data is otherwise unchanged.
 
 ### Emission factors (`power_feed::EMISSIONS`)
