@@ -661,6 +661,14 @@ never confused:
   the clock as a yellow marker that moves with it. Where the areas
   rise above the line there is a surplus, where the line rises above them a shortfall. It shows while the bars show output; its
   close button or "Day chart of output and use" in the view options turns it off. It needs the day's one or two weekly files.
+- While **another country is selected** (its bar clicked, or an information box open about it), the same window shows that
+  country's **months** instead, titled e.g. "Poland, monthly, TWh": the last 24 months up to the clock's month (the latest 24
+  when the clock is outside Ember's months), each a bar of the month's generation in TWh stacked by source in the day chart's
+  colours and hatching (what the total has beyond the named sources goes with "Oil, other"), demand as the white line, the carbon
+  intensity on the right axis, and the clock's month marked. Countries for which Ember has only yearly figures get the last ten
+  years as bars, and say so; a country without figures gets a short message. A note under it says that the figures are
+  monthly (or yearly) and credits Ember via Our World in Data (CC BY 4.0). It is drawn from the figures built into the program,
+  with no request. Germany, or nothing selected, keeps the SMARD day chart; the country mainly in view does not count.
 - Weekly files of all thirteen series, and for the factors to Ember the monthly files of one year, are fetched only while the bars show output, at most one request per 0.3 s, and kept on
   disk: weeks that ended over a day ago for good, the current week and the index for ten minutes. `--offline` uses what is
   stored.

@@ -384,6 +384,11 @@ impl World {
         name.or_else(|| self.country(i).map(|(_, c)| c.name.clone())).unwrap_or_default()
     }
 
+    /// The OWID code of a country bar's country.
+    pub fn code(&self, i: u16) -> Option<&str> {
+        self.entries.get(i as usize).map(|e| e.code.as_str())
+    }
+
     /// Where a country bar stands, in radians.
     pub fn position(&self, i: u16) -> Option<(f64, f64)> {
         self.entries.get(i as usize).map(|e| (e.lat, e.lon))

@@ -2519,13 +2519,36 @@ impl Scene {
         });
     }
 
-    /// Fills the day chart for the clock's day, and shows it while it is wanted.
+    /// The country a click chose, by code and name: a country's bar, or an open information box
+    /// about a country. None for anything else, such as a German state's bar.
+    fn chosen_country(&self) -> Option<(String, String)> {
+        match (self.energy.selected, world_energy::World::bundled()) {
+            (Some(energy::Subject::Country(i)), Some(w)) => return w.code(i).map(|code| (code.to_string(), w.title(i))),
+            (Some(_), _) => return None,
+            _ => {}
+        }
+        if !self.gui.is_visible(info::WINDOW) {
+            return None;
+        }
+        self.info.borrow().data.as_ref().map(|f| (f.code.clone(), f.name.clone()))
+    }
+
+    /// Fills the day chart for the clock's day, or the chosen country's months, and shows it while it is wanted.
     fn sync_power_chart(&mut self) {
         let wanted = self.energy_on() && self.view.energy_output && self.view.energy_chart;
         if self.gui.is_visible(power_chart::WINDOW) != wanted {
             self.gui.set_visible(power_chart::WINDOW, wanted);
         }
         if !wanted {
+            return;
+        }
+        // A selected country other than Germany gets its months from the bundled figures.
+        if let Some((code, name)) = self.chosen_country().filter(|(code, _)| code != world_energy::GERMANY) {
+            let c = owid::Owid::bundled().and_then(|o| o.country(&code));
+            let model = power_chart::country_model(c, &name, self.clock_month(), self.view.energy_palette);
+            if *self.energy.chart.borrow() != model {
+                *self.energy.chart.borrow_mut() = model;
+            }
             return;
         }
         let time = self.clock.time();
