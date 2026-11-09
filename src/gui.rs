@@ -63,6 +63,17 @@ impl Default for Gui {
     }
 }
 
+impl Drop for Gui {
+    /// A frame built but never drawn, as when the window closes first or in tests without a
+    /// GPU, still holds its texture changes. They are no longer wanted; egui insists on being
+    /// told so, and stops debug builds otherwise.
+    fn drop(&mut self) {
+        if let Some(p) = &mut self.paint {
+            p.textures.clear();
+        }
+    }
+}
+
 impl Gui {
     pub fn new() -> Self {
         let ctx = egui::Context::default();
