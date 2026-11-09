@@ -1476,12 +1476,17 @@ fn column(
 const DASH_SHADE: f32 = 0.42;
 
 /// The bar under a screen position: the nearest one whose drawn box holds it.
-pub fn hit(bars: &[Bar], scale: Scale, ground: &dyn Fn(f64, f64) -> f64, project: &dyn Fn(DVec3) -> Option<glam::DVec2>, at: glam::DVec2) -> Option<Subject> {
+pub fn hit(bars: &[Bar], scale: Scale, eye: DVec3, ground: &dyn Fn(f64, f64) -> f64, project: &dyn Fn(DVec3) -> Option<glam::DVec2>, at: glam::DVec2) -> Option<Subject> {
     let mut best: Option<(f64, Subject)> = None;
     for bar in bars {
         let up = enu(bar.lat, bar.lon).2;
         let base = geodetic_to_ecef(bar.lat, bar.lon, ground(bar.lat, bar.lon));
         let top = base + up * (bar.height().max(bar.demand) as f64 * scale.per_kw);
+        // A bar on the far side of the globe lands on screen among the near ones; only one
+        // that rises at least partly into view can be clicked.
+        if behind_globe(eye, base) && behind_globe(eye, top) {
+            continue;
+        }
         let (Some(b), Some(t)) = (project(base), project(top)) else { continue };
         // A bar with demand beside it is wider: the demand column stands west of the others.
         let reach = if bar.demand > 0.0 { 1.8 } else { 0.5 };
@@ -1499,6 +1504,14 @@ pub fn hit(bars: &[Bar], scale: Scale, ground: &dyn Fn(f64, f64) -> f64, project
         }
     }
     best.map(|b| b.1)
+}
+
+/// Whether the Earth stands between the eye and a point, which may lie on the ground itself.
+fn behind_globe(eye: DVec3, p: DVec3) -> bool {
+    let d = p - eye;
+    let dist = d.length();
+    // A point on the ground meets the ellipsoid where it stands; only a crossing well before counts.
+    crate::geo::ray_ellipsoid(eye, d / dist, 0.0).is_some_and(|t| t < dist * (1.0 - 1e-4) - 50.0)
 }
 
 #[cfg(test)]
@@ -1799,6 +1812,27 @@ pub(crate) mod tests {
             let near = plants_needed(&all, &|a, b| angle_between(a, b, lat, lon) < 50.0 / 6371.0).unwrap();
             assert!((0.4..=2.5).contains(&(near / fixed)), "{name}: {near} against {fixed}");
         }
+    }
+
+    #[test]
+    fn a_bar_behind_the_globe_cannot_be_clicked() {
+        use crate::camera::Camera;
+        use crate::labels::Screen;
+        let mut kw = [0.0; SOURCES];
+        kw[Source::Hydro as usize] = 100.0;
+        let bar = |lat: f64, lon: f64, i| Bar { lat, lon, kw, subject: Subject::Area(i), demand: 0.0, faint: false, running: None, running_by_source: None };
+        // Seen from far above Europe, straight down: the antipode lies behind the centre of the view.
+        let cam = Camera { lat: 0.85, lon: 0.5, target_h: 0.0, distance: 1.5e7, heading: 0.0, tilt: 0.0, sky: 0.0 };
+        let screen = Screen { basis: cam.basis(), size: glam::DVec2::new(1500.0, 1000.0), reserved: Vec::new() };
+        let scale = Scale { width: 1e4, per_kw: 1.0 };
+        let far = bar(-0.85, 0.5 - std::f64::consts::PI, 1);
+        let at = screen.project(geodetic_to_ecef(far.lat, far.lon, 0.0)).unwrap();
+        let eye = screen.basis.pos;
+        let project = |p| screen.project(p);
+        assert_eq!(hit(std::slice::from_ref(&far), scale, eye, &|_, _| 0.0, &project, at), None);
+        // A bar in view at the same spot is still taken.
+        let near = bar(0.85, 0.5, 0);
+        assert_eq!(hit(&[far, near], scale, eye, &|_, _| 0.0, &project, at), Some(Subject::Area(0)));
     }
 
     #[test]

@@ -2710,7 +2710,7 @@ impl Scene {
         let (aspect, height) = self.energy.view;
         let screen = Screen { basis: self.nav.cam.basis(), size: DVec2::new(aspect * height, height), reserved: Vec::new() };
         // The ground as the bars were built on it is not kept, so sea level is close enough for picking.
-        let mut hit = energy::hit(&self.energy.bars, scale, &|_, _| 0.0, &|p| screen.project(p), pos);
+        let mut hit = energy::hit(&self.energy.bars, scale, screen.basis.pos, &|_, _| 0.0, &|p| screen.project(p), pos);
         // Close up, a municipality's units without a position are its shade on the ground.
         if hit.is_none() && self.energy.level == Some(energy::Level::Plants) {
             let shown = self.energy_sources();
