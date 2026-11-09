@@ -175,7 +175,8 @@ Usage: orbis [options]
   --cache-status          print the cache size and server timeouts, then exit
   --offline               send no requests, and use only what is cached
   --search TEXT           fly to the first place found for TEXT, or to the coordinates in it
-                          (key Ctrl-F opens the search box in the window; Earth only for names)
+                          (key Ctrl-F opens the search box in the window; on other bodies it finds
+                          named features and missions)
   --search-panel          with --screenshot, also show the open search panel with its results
   --geocoder-url URL      the place search service (default OpenStreetMap's Nominatim)
   --places-file PATH      where saved places are kept (default: orbis/places.json in the config folder)

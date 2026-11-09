@@ -410,7 +410,7 @@ Ctrl-F opens a search box at the top left.
 - Anything else is a place name, sent to OpenStreetMap's Nominatim on Enter only, never while typing. Requests are at least 1.1 s apart. The box says "Searching...", "No place found." or that the server cannot be reached. Answers are cached on disk by query and language; with `--offline` only cached queries work.
 - Up to eight results are listed, in the language of `--lang`. Enter flies to the chosen one, ending at a distance that fits its bounding box, north up, looking straight down. On the flat map the view moves there directly.
 - While results are shown the credit `Search: Nominatim, © OpenStreetMap contributors` is in the panel and in the credits.
-- On bodies other than Earth names are not searched: the box says so and suggests coordinates.
+- On bodies other than Earth names are looked up in the program itself, without a request: missions first ("perseverance", "apollo 14"), then IAU feature names, whole names before names that start with the text and names that contain it, accents ignored. The credit is the Gazetteer's then.
 - `--search TEXT` flies to the first result (or the coordinates) at start, and `--geocoder-url URL` switches the service.
 
 ### Limitations

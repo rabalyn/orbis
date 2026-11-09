@@ -17,7 +17,9 @@ const POINT_DISTANCE: f64 = 4000.0;
 const COORDINATE_DISTANCE: f64 = 10_000.0;
 /// Room around a place's bounding box.
 const MARGIN: f64 = 1.4;
-const NO_NAMED_SEARCH: &str = "Searching by name works on Earth only. Type coordinates such as 46.5, 11.8.";
+const NO_NAMED_SEARCH: &str = "No feature of that name here. Type coordinates such as 46.5, 11.8.";
+/// Where the names of features on other bodies come from.
+pub const LOCAL_CREDIT: &str = "Names: IAU / USGS Gazetteer of Planetary Nomenclature";
 
 /// A place found by name. Angles are in radians; the box is (south, west, north, east).
 #[derive(Debug, Clone, PartialEq)]
@@ -85,6 +87,8 @@ pub struct Search {
     selected: usize,
     /// Named results were shown, so their credit is owed.
     used_service: bool,
+    /// The results listed come from the names built in, not from the service.
+    local: bool,
     can_name: bool,
     /// The box asks for a name for the view instead of searching.
     saving: bool,
@@ -95,7 +99,7 @@ pub struct Search {
 impl Search {
     /// `can_name` is false on bodies the service knows nothing about.
     pub fn new(can_name: bool) -> Self {
-        Self { open: false, text: String::new(), state: State::Editing, selected: 0, used_service: false, can_name, saving: false, adding: false }
+        Self { open: false, text: String::new(), state: State::Editing, selected: 0, used_service: false, local: false, can_name, saving: false, adding: false }
     }
 
     /// Whether names can be looked up, for the body now in view.
@@ -214,9 +218,16 @@ impl Search {
             return Action::Fly(Target { lat, lon, distance: crate::body::scaled(COORDINATE_DISTANCE) });
         }
         if !self.can_name {
-            self.state = State::Message(NO_NAMED_SEARCH);
+            let body = crate::body::current().id;
+            let mut places = crate::missions::search(body, &query);
+            places.extend(crate::planet_names::search(body, &query));
+            places.truncate(MAX_RESULTS);
+            self.selected = 0;
+            self.local = true;
+            self.state = if places.is_empty() { State::Message(NO_NAMED_SEARCH) } else { State::Results(places) };
             return Action::None;
         }
+        self.local = false;
         self.state = State::Searching(query.clone());
         Action::Request(query)
     }
@@ -271,7 +282,7 @@ impl Search {
                     s.push_str(&format!("\n{mark} {}", shorten(&p.name, NAME_COLUMNS)));
                 }
                 s.push('\n');
-                s.push_str(CREDIT);
+                s.push_str(if self.local { LOCAL_CREDIT } else { CREDIT });
                 hint = "Enter: fly there   Up/Down: choose   Esc: close";
             }
         }
@@ -661,7 +672,7 @@ mod tests {
         s.open();
         s.key(Key::Text(" x".into()));
         assert_eq!(s.key(Key::Enter), Action::None);
-        assert!(s.panel_text().contains("Earth only"));
+        assert!(s.panel_text().contains("No feature of that name"));
     }
 
     #[test]
