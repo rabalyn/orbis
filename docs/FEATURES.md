@@ -647,6 +647,20 @@ never confused:
   can float or sink a little while tiles load. They cast no shadows.
 - A picked bar is found as if it stood at sea level, which can be a few pixels off in high mountains.
 
+## Energy of the world (data only)
+
+- Electricity of 221 countries and the World, by year (population, generation, demand, net imports, carbon intensity,
+  renewable share, generation by source) and, for the 88 countries Ember covers, by month: Our World in Data from Ember
+  and the Energy Institute (CC BY 4.0), with Natural Earth's country outlines (public domain). Nothing shows it yet; the
+  countries level of the energy layer and the information box will.
+- Built into the program (`data/owid_energy.bin`, 610 KB; `data/countries.bin`, 210 KB); nothing is requested at
+  runtime. Rebuilding downloads about 15 MB in a few seconds: `python3 -I tools/gen_owid.py data/owid_energy.bin
+  data/countries.bin`.
+- Yearly electricity figures begin in 2000 for most countries, in 1985 for the 75 the Energy Institute covers (Ember's
+  own from 1990 in Europe), and end in 2025 for 92 countries and 2024 or earlier for the rest. Monthly ones end in
+  May or June 2026 for most (Germany's run from January 2015). Ember's months for Germany add up to about 6% less than
+  its year (470.6 against 500.5 TWh generated in 2025).
+
 ## Information on click
 
 - A single click on the map asks about what is under the pointer: a placed label if there is one, else the ground point. Nothing is asked at start, on hover or while moving. The checkbox "Information on click" in the view options (saved, default on) or `--no-info` switches it off: no box and no requests.
