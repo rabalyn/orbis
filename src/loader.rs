@@ -460,6 +460,8 @@ impl Shared {
     }
 
     fn load(&self, k: TileKey) -> Outcome {
+        // Read first: a tile begun before the body or the services changed is then told apart.
+        let active = service_lib::active();
         // Terrain first: a job sent back to the queue then does not decode its image again.
         let (dem, dem_rect) = if crate::body::current().surface_data {
             match self.terrain(k) {
@@ -469,7 +471,6 @@ impl Shared {
         } else {
             (Arc::new(Dem::flat()), (0.0, 0.0, 1.0))
         };
-        let active = service_lib::active();
         // Best imagery first. While a better source is unavailable for a moment the tile
         // waits, with a coarser one staying on screen, so nothing gets stuck on poor imagery.
         for (source, source_key) in sources::imagery_for(k) {

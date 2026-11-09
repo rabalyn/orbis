@@ -320,6 +320,11 @@ pub fn select_overlay(s: Option<&Service>) {
     change(|a| a.overlay = src);
 }
 
+/// Marks every tile made so far as out of date, as when the body in view has changed.
+pub fn invalidate() {
+    change(|_| {});
+}
+
 pub fn set_opacity(v: f32) {
     let v = if v.is_finite() { v.clamp(0.0, 1.0) } else { DEFAULT_OPACITY };
     change(|a| a.opacity = v);

@@ -106,6 +106,8 @@ pub struct Control {
     adder: Option<Worker<String, Result<service_lib::Prepared, String>>>,
     adding: bool,
     earth: bool,
+    /// The base and overlay chosen on Earth, put back on returning there.
+    parked: Option<(Option<String>, Option<String>)>,
 }
 
 /// Looks a name up among the library and the directory.
@@ -127,6 +129,34 @@ impl Control {
             adder: None,
             adding: false,
             earth,
+            parked: None,
+        }
+    }
+
+    /// Follows a change of body: services are put away while another body is in view, and
+    /// what was chosen comes back with Earth.
+    pub fn set_earth(&mut self, earth: bool) {
+        if earth == self.earth {
+            return;
+        }
+        self.earth = earth;
+        if earth {
+            let (base, overlay) = self.parked.take().unwrap_or_default();
+            if let Some(s) = base.and_then(|id| find(&self.library, &id).ok()) {
+                self.set_base(Some(&s));
+            }
+            if let Some(s) = overlay.and_then(|id| find(&self.library, &id).ok()) {
+                self.set_overlay(Some(&s));
+            }
+        } else {
+            self.parked = Some((self.base.clone(), self.overlay.clone()));
+            if self.base.is_some() {
+                self.set_base(None);
+            }
+            if self.overlay.is_some() {
+                self.set_overlay(None);
+            }
+            self.picker.close();
         }
     }
 

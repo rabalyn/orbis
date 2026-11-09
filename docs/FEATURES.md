@@ -340,7 +340,7 @@ Tilting past the horizon looks up into the sky, from a view point on or above th
 ## Other bodies
 
 `--body earth` (the default), `moon`, `mars`, `mercury`, `ceres` or `vesta` selects the body. Everything follows it: geodesy and altitude, the zoom limits, the whole-body view,
-the horizon, the tile grid, lighting and the sky. The choice in the view options takes effect at the next start.
+the horizon, the tile grid, lighting and the sky. The choice in the view options takes effect at once: the tiles of the old body are dropped and the view shows the whole new body from above the same latitude and longitude.
 
 | Body | Shape | Imagery (from NASA's Trek services) | Finest detail at the equator |
 |---|---|---|---|
@@ -369,7 +369,6 @@ the horizon, the tile grid, lighting and the sky. The choice in the view options
 - The orbits of Ceres and Vesta are two-body, and drift by up to 0.25° from the Sun within three years of the epoch and more beyond. For years far from 2026, refresh the elements in `src/planetary.rs`.
 - The flat map places rows in geodetic latitude, so Vesta in particular appears distorted there.
 - The planets are points with approximate magnitudes (no phase for the Earth). Phobos, Deimos and other moons are not drawn, and the Moon is not drawn from Mars. The Sun is a point source with no angular size.
-- The body cannot change in a running program; start again with `--body`.
 
 ## Search
 
@@ -394,7 +393,7 @@ Ctrl-F opens a search box at the top left.
 - Ctrl-S opens the search box in a naming mode ("Save place as:"). Enter keeps the current view under that name; an empty name becomes the position, for example `46.5000°N 11.8000°E` (prefixed with the body's name away from Earth). Escape cancels.
 - A place stores the body, position, distance, heading and tilt. On the map the heading and tilt are stored as zero and the distance is the one that matches the map's scale.
 - K opens a list at the top left. Up and Down choose, Enter flies there, Delete or Backspace removes, K or Escape closes. While the list is open these keys do not move the view; all others work as usual.
-- A place on another body than the one being viewed is listed with that body's name; choosing it shows which `--body` to start with.
+- A place on another body than the one being viewed is listed with that body's name; choosing it switches to that body and flies there.
 - The places are one JSON file, `orbis/places.json` under the user's config directory (`--places-file PATH` changes it), written through a temporary file and a rename.
 - A file that cannot be read (not JSON, an entry damaged, written by a newer version, too large) is renamed to `places.json.bak` (or `.bak.1`, ... if that exists), the list starts empty, and a message on screen says so. If it cannot be moved aside, nothing is written, so it is not overwritten.
 - `--save-place NAME` saves the view at start.
@@ -678,10 +677,9 @@ The second icon at the bottom right, between the clock and the question mark, an
 - Order of precedence: defaults, then saved settings, then the command line. A flag applies to that run only and is not written back. Only what the user changes in the window is written, one field at a time, through a temporary file and a rename.
 - A value that is missing, of the wrong kind or unknown is the default for that field, with a warning on standard error, and other keys are kept when the file is written. A file that is not JSON is moved to `settings.json.bad`.
 - A `--screenshot` ignores saved settings and saves none, so that pictures are reproducible, unless `--config-dir` is given.
-- Saved: the map layers, 3D buildings, sunlight, cast shadows, stars and planets, event markers, information on click, the energy bars and their sources, globe or flat map, projection, frame rate limit, the body for the next start, the library service used as the base imagery, and a language code for names (empty follows the system; set in the file only). Not saved: the camera, the clock and which windows are open; each start opens on the [start view](#start-view).
+- Saved: the map layers, 3D buildings, sunlight, cast shadows, stars and planets, event markers, information on click, the energy bars and their sources, globe or flat map, projection, frame rate limit, the body, the library service used as the base imagery, and a language code for names (empty follows the system; set in the file only). Not saved: the camera, the clock and which windows are open; each start opens on the [start view](#start-view).
 
 ### Limitations
-- The body's choice takes effect at the next start, and the window says so.
 - Only services in the user's library are listed as imagery; the directory is reached through the services list (G). Overlays and opacity are not in the window.
 - Language is not in the window, since names are decoded under it when the program starts.
 

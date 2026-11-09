@@ -1,11 +1,12 @@
 //! The bodies that can be viewed. Each is an immutable table entry: its shape, how its
-//! imagery is tiled, what data exists for it, and how it turns. The body is chosen once at
-//! startup (`--body`), and the geodesy, tile addressing and sky follow it.
+//! imagery is tiled, what data exists for it, and how it turns. The body is chosen at startup
+//! (`--body`) and can be changed while the program runs; the geodesy, tile addressing and sky
+//! follow it.
 
 use crate::geo::Grid;
 use crate::sources::{self, TileSource};
 use glam::{DMat3, DVec3};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct Body {
     pub id: &'static str,
@@ -144,11 +145,12 @@ pub static VESTA: Body = Body {
 
 static ALL: [&Body; 6] = [&EARTH, &MOON, &MARS, &MERCURY, &CERES, &VESTA];
 
-static CURRENT: OnceLock<&'static Body> = OnceLock::new();
+/// The index in [`ALL`] of the body being viewed.
+static CURRENT: AtomicUsize = AtomicUsize::new(0);
 
-/// The body being viewed. Earth unless `select` chose another before the first use.
+/// The body being viewed. Earth unless `select` chose another.
 pub fn current() -> &'static Body {
-    CURRENT.get().copied().unwrap_or(&EARTH)
+    ALL[CURRENT.load(Ordering::SeqCst)]
 }
 
 pub fn by_id(id: &str) -> Option<&'static Body> {
@@ -164,9 +166,11 @@ pub fn ids() -> Vec<&'static str> {
     ALL.iter().map(|b| b.id).collect()
 }
 
-/// Chooses the body for the whole run. Only the first call has an effect.
+/// Chooses the body to view. Whoever changes it while tiles are in use must drop the ones
+/// made for the old body; `service_lib::invalidate` marks those still being made.
 pub fn select(body: &'static Body) {
-    let _ = CURRENT.set(body);
+    let i = ALL.iter().position(|b| b.id == body.id).unwrap_or(0);
+    CURRENT.store(i, Ordering::SeqCst);
 }
 
 /// The finest zoom level of the body's imagery.

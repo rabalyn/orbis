@@ -875,6 +875,8 @@ struct Scene {
     notice: Option<String>,
     /// The renderer is to drop its overlays at the next update.
     clear_overlays: bool,
+    /// The body changed: the renderer is to drop what it made for the old one at the next update.
+    body_changed: bool,
     geocoder: geocode::Geocoder,
     /// The information box: what it shows, the thread that asks, and the number of the question it waits for.
     info: info::Shared,
@@ -1155,6 +1157,7 @@ impl Scene {
             map_buttons: 0,
             services_seen: service_lib::active().generation,
             clear_overlays: false,
+            body_changed: false,
             library: import::Library::default(),
             import_labels: Arc::default(),
             import_list: places::Picker::default(),
@@ -1266,7 +1269,6 @@ impl Scene {
         }
         let model = options::Model {
             settings: self.live(),
-            running_body: body::current().id,
             earth: body::current().surface_data,
             library: self.services.library_choices(),
         };
@@ -1294,10 +1296,59 @@ impl Scene {
                 }
             }
             Action::Projection(p) => self.map.view.set_projection(p),
-            Action::Body(id) => self.view.body = id.to_string(),
+            Action::Body(id) => {
+                if let Some(b) = body::by_id(id) {
+                    self.switch_body(b);
+                }
+            }
             Action::Base(id) => self.services.choose_base(id.as_deref()),
             Action::FrameRate(limit) => self.view.frame_rate = limit,
             Action::EnergyStyle => self.toggle_dialog(energy_style::WINDOW),
+        }
+    }
+
+    /// Shows another body, at once: what was made for the old one is dropped, and the view
+    /// starts over with the whole new body in sight.
+    fn switch_body(&mut self, b: &'static body::Body) {
+        self.view.body = b.id.to_string();
+        if b.id == body::current().id {
+            return;
+        }
+        body::select(b);
+        // Tiles still being made for the old body are told apart by the new generation.
+        service_lib::invalidate();
+        self.body_changed = true;
+        self.services.set_earth(b.surface_data);
+        self.search.set_can_name(b.surface_data);
+        for set in [&mut self.missing, &mut self.overlay_empty, &mut self.building_empty] {
+            set.clear();
+        }
+        for map in [&mut self.retries, &mut self.overlay_retries, &mut self.building_retries] {
+            map.clear();
+        }
+        self.label_sets.clear();
+        self.label_alpha.clear();
+        self.placed_labels.clear();
+        self.draw.clear();
+        self.shadow_cast = None;
+        self.bodies_time = f64::NEG_INFINITY;
+        self.set_eclipse_path(None);
+        self.gui.set_visible(info::WINDOW, false);
+        self.info_id += 1;
+        self.info_pending = false;
+        // The whole body, from above the same latitude and longitude.
+        let size = self.nav.size;
+        let c = self.nav.cam;
+        let cam = Camera { distance: nav::whole_body(), heading: 0.0, tilt: 0.0, sky: 0.0, ..c };
+        self.nav = Nav::new(cam, size);
+        let v = &self.map.view;
+        let mut view = AtlasView::whole(v.projection, v.central_meridian, v.size);
+        if self.mode == Mode::Globe {
+            view.match_globe(cam.lat, cam.lon, cam.distance);
+        }
+        self.map = AtlasNav::new(view);
+        if b.id != body::EARTH.id {
+            self.gui.set_visible(energy_panel::WINDOW, false);
         }
     }
 
@@ -1982,6 +2033,10 @@ impl Scene {
     fn collect_results(&mut self, r: &mut Renderer) -> bool {
         let mut changed = false;
         let generation = service_lib::active().generation;
+        if std::mem::take(&mut self.body_changed) {
+            r.set_body();
+            changed = true;
+        }
         if generation != self.services_seen {
             // Another map service: the tiles drawn from the old choice are made again.
             self.services_seen = generation;
@@ -2995,9 +3050,11 @@ impl Scene {
             places::Pick::Fly(i) => {
                 let Some(p) = self.places.places().get(i).cloned() else { return };
                 if p.body != body::current().id {
-                    let name = body::by_id(&p.body).map_or(p.body.as_str(), |b| b.name);
-                    self.notice = Some(format!("{} is on {name}. Start with --body {} to go there.", p.name, p.body));
-                    return;
+                    let Some(b) = body::by_id(&p.body) else {
+                        self.notice = Some(format!("{} is on {}, which this version cannot show.", p.name, p.body));
+                        return;
+                    };
+                    self.switch_body(b);
                 }
                 self.fly_camera(&p);
             }

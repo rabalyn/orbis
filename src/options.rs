@@ -82,8 +82,6 @@ pub fn set_toggle(s: &mut Settings, index: usize, value: bool) {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Model {
     pub settings: Settings,
-    /// The body of this run. The settings may name another, for the next start.
-    pub running_body: &'static str,
     /// Services can be shown on Earth only.
     pub earth: bool,
     /// The library's services, as (identifier, name).
@@ -92,7 +90,7 @@ pub struct Model {
 
 impl Default for Model {
     fn default() -> Self {
-        Self { settings: Settings::default(), running_body: "earth", earth: true, library: Vec::new() }
+        Self { settings: Settings::default(), earth: true, library: Vec::new() }
     }
 }
 
@@ -105,7 +103,7 @@ pub enum Action {
     Set(usize, bool),
     View(ViewKind),
     Projection(Projection),
-    /// The body for the next start.
+    /// Another body to show.
     Body(&'static str),
     /// A library service as the base, or the usual imagery.
     Base(Option<String>),
@@ -172,9 +170,6 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Option<Action>
                     if ui.radio(st.body == b.id, b.name).clicked() {
                         action = Some(Action::Body(b.id));
                     }
-                }
-                if st.body != model.running_body {
-                    gui::note(ui, "This takes effect the next time Orbis starts.");
                 }
 
                 gui::section(ui, "Earth imagery");

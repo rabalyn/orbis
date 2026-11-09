@@ -98,6 +98,11 @@ impl Search {
         Self { open: false, text: String::new(), state: State::Editing, selected: 0, used_service: false, can_name, saving: false, adding: false }
     }
 
+    /// Whether names can be looked up, for the body now in view.
+    pub fn set_can_name(&mut self, can_name: bool) {
+        self.can_name = can_name;
+    }
+
     pub fn is_open(&self) -> bool {
         self.open
     }

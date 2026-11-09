@@ -1174,6 +1174,32 @@ impl Renderer {
         self.tiles.get(&k).is_some_and(|t| t.overlay.is_some())
     }
 
+    /// Follows a change of body: the plain globe under the tiles takes the new shape and
+    /// colour, and everything made for the old body is dropped.
+    pub fn set_body(&mut self) {
+        let (v, i) = underlay_mesh();
+        self.underlay_vertices = self.device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("underlay vertices"),
+            contents: bytemuck::cast_slice(&v),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        self.underlay_indices = self.device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("underlay indices"),
+            contents: bytemuck::cast_slice(&i),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        self.underlay_count = i.len() as u32;
+        let view = tile_texture_view(&self.device, &self.queue, wgpu::TextureFormat::Rgba8UnormSrgb, &underlay_mips());
+        self.underlay_bind = self.sampled_bind(&view);
+        self.tiles.clear();
+        self.buildings.clear();
+        self.visible_buildings.clear();
+        self.energy = None;
+        self.cast = None;
+        self.shadow = None;
+        self.sky_discs = None;
+    }
+
     /// Forgets every tile, as when they are to be made again from other imagery.
     pub fn clear_tiles(&mut self) {
         self.tiles.clear();
