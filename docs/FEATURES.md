@@ -342,13 +342,17 @@ Tilting past the horizon looks up into the sky, from a view point on or above th
 `--body earth` (the default), `moon`, `mars`, `mercury`, `ceres` or `vesta` selects the body. Everything follows it: geodesy and altitude, the zoom limits, the whole-body view,
 the horizon, the tile grid, lighting and the sky. The choice in the view options takes effect at once: the tiles of the old body are dropped and the view shows the whole new body from above the same latitude and longitude.
 
-| Body | Shape | Imagery (from NASA's Trek services) | Finest detail at the equator |
+| Body | Shape | Imagery (from NASA's Trek services unless named) | Finest detail at the equator |
 |---|---|---|---|
-| Moon | Sphere, 1737.4 km | LRO Wide Angle Camera mosaic | About 83 m per pixel (zoom 8) |
-| Mars | Spheroid, 3396.19 and 3376.20 km | Viking MDIM 2.1 colour mosaic | About 330 m (zoom 7) |
+| Moon | Sphere, 1737.4 km | LRO Wide Angle Camera mosaic; from zoom 9 the Kaguya Terrain Camera mosaic; at the Apollo 11, 12, 14, 15, 16 and 17 sites LRO Narrow Angle Camera mosaics | About 83 m per pixel (zoom 8), 20 m with Kaguya (zoom 10), 0.5 to 1.2 m at the Apollo sites (zoom 14 to 16) |
+| Mars | Spheroid, 3396.19 and 3376.20 km | Viking MDIM 2.1 colour mosaic; from zoom 8 the grey CTX global mosaic of the Murray Lab (served by Esri); at the Curiosity, Opportunity, Spirit and Sojourner sites HiRISE mosaics | About 330 m (zoom 7), 5 m with CTX (zoom 12), 25 to 50 cm at the rover sites (zoom 16 or 17) |
 | Mercury | Sphere, 2439.4 km | MESSENGER MDIS basemap | About 330 m (zoom 7) |
-| Ceres | Spheroid, 487.3 and 446.0 km | Dawn HAMO colour-shaded mosaic | About 1.3 km (zoom 5) |
-| Vesta | Spheroid, 284.5 and 229.0 km (the published 289 by 280 by 229 km, with the equatorial axes averaged) | Dawn HAMO mosaic | About 700 m (zoom 6) |
+| Ceres | Spheroid, 487.3 and 446.0 km | Dawn HAMO colour-shaded mosaic; from zoom 6 the LAMO colour mosaic | About 1.3 km (zoom 5), 330 m with LAMO (zoom 7) |
+| Vesta | Spheroid, 284.5 and 229.0 km (the published 289 by 280 by 229 km, with the equatorial axes averaged) | Dawn HAMO mosaic; at zoom 7 the HAMO and LAMO blend | About 700 m (zoom 6), 350 m (zoom 7) |
+
+- The finer layers cover only part of the body or have gaps. Where a tile of a finer layer is
+  partly transparent, the next layer down shows through it, so the edges of a site mosaic blend
+  into the global layer. A layer is asked for only inside its own area and zoom levels.
 
 - All have longitude counted east, and `--lat` and the display in geodetic latitude. The Moon's longitude 0 faces the Earth. Imagery is laid out in planetocentric latitude, and its rows
   are converted when tiles are placed, so features sit where the maps put them. Checked by eye: Olympus Mons on Mars at 18.65 N, 226.2 E, Kuiper crater on Mercury at 11.3 S, 31.5 W, and a Ceres crater the size of Occator at 19.8 N, 239.3 E.

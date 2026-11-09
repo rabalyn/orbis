@@ -168,6 +168,175 @@ pub static VESTA_FC: TileSource = TileSource {
     grid: Grid::Equirect,
 };
 
+const PNG: &str = "image/png";
+
+/// A finer layer of NASA Trek over part or all of a body, read from its capabilities document
+/// (`.../<layer>/1.0.0/WMTSCapabilities.xml`): 256-pixel PNG tiles in the same plate carrée
+/// matrix set as the base layers. Its deepest level was found by asking for tiles.
+const fn trek(id: &'static str, url: &'static str, cache: &'static str, min_z: u8, max_z: u8, bounds: &'static [[f64; 4]]) -> TileSource {
+    TileSource {
+        id,
+        kind: Kind::Imagery,
+        url,
+        cache,
+        content_type: PNG,
+        min_z,
+        max_z,
+        bounds,
+        credit: "",
+        concurrency: 2,
+        pixels: 256,
+        grid: Grid::Equirect,
+    }
+}
+
+/// The Kaguya (SELENE) Terrain Camera morning orthomosaic, levels 0 to 10 on Moon Trek, about
+/// 20 m per pixel at level 10: four times finer than the WAC mosaic. Grey with transparency
+/// where it has no data, where the WAC mosaic shows through. From level 9, where it starts to
+/// show more than the WAC mosaic; its lighting varies more, so the WAC mosaic stays the base.
+pub static MOON_KAGUYA: TileSource = trek(
+    "moon-kaguya",
+    "https://trek.nasa.gov/tiles/Moon/EQ/Kaguya_TCortho_Mosaic_Global_4096ppd/1.0.0/default/default028mm/{z}/{y}/{x}.png",
+    "nasa-trek-moon-kaguya/{z}/{y}/{x}.png",
+    9,
+    10,
+    &[],
+);
+
+/// LRO Narrow Angle Camera mosaics of the Apollo landing sites, about 0.5 m per pixel, where the
+/// astronauts' footpaths and the rovers' tracks can be seen. Boxes from Moon Trek's catalogue.
+pub static MOON_NAC: [TileSource; 6] = [
+    trek(
+        "moon-nac-tranquility",
+        "https://trek.nasa.gov/tiles/Moon/EQ/LRO_NAC_Apollo11_Mosaic_p/1.0.0/default/default028mm/{z}/{y}/{x}.png",
+        "nasa-trek-moon-nac-apollo11/{z}/{y}/{x}.png",
+        11,
+        15,
+        &[[23.4485, 0.1465, 23.5397, 1.1149]],
+    ),
+    trek(
+        "moon-nac-surveyor",
+        "https://trek.nasa.gov/tiles/Moon/EQ/LRO_NAC_Apollo12_Mosaic_p/1.0.0/default/default028mm/{z}/{y}/{x}.png",
+        "nasa-trek-moon-nac-apollo12/{z}/{y}/{x}.png",
+        11,
+        16,
+        &[[-23.4443, -3.4714, -23.3571, -2.5018]],
+    ),
+    trek(
+        "moon-nac-fra-mauro",
+        "https://trek.nasa.gov/tiles/Moon/EQ/LRO_NAC_Apollo14_Mosaic_p/1.0.0/default/default028mm/{z}/{y}/{x}.png",
+        "nasa-trek-moon-nac-apollo14/{z}/{y}/{x}.png",
+        11,
+        15,
+        &[[-17.4901, -4.1921, -17.3907, -3.2253]],
+    ),
+    trek(
+        "moon-nac-hadley",
+        "https://trek.nasa.gov/tiles/Moon/EQ/LRO_NAC_Mosaic_26N004E_50cmp/1.0.0/default/default028mm/{z}/{y}/{x}.png",
+        "nasa-trek-moon-nac-26n004e/{z}/{y}/{x}.png",
+        11,
+        14,
+        &[[2.9308, 25.4463, 4.3991, 26.7661]],
+    ),
+    trek(
+        "moon-nac-descartes",
+        "https://trek.nasa.gov/tiles/Moon/EQ/LRO_NAC_Mosaic_09S015E_50cmp/1.0.0/default/default028mm/{z}/{y}/{x}.png",
+        "nasa-trek-moon-nac-09s015e/{z}/{y}/{x}.png",
+        11,
+        15,
+        &[[14.8050, -9.6332, 16.1413, -8.3134]],
+    ),
+    trek(
+        "moon-nac-taurus-littrow",
+        "https://trek.nasa.gov/tiles/Moon/EQ/NAC_DTM_APOLLO17_MOSAIC_120CM/1.0.0/default/default028mm/{z}/{y}/{x}.png",
+        "nasa-trek-moon-nac-apollo17/{z}/{y}/{x}.png",
+        11,
+        14,
+        &[[29.9059, 19.3905, 31.6580, 21.3035]],
+    ),
+];
+
+/// The Murray Lab's global CTX mosaic (beta01, uncontrolled, about 5 m per pixel), as Esri
+/// serves it for Mars Trek: 512-pixel grey PNG tiles in a plate carrée grid of 2 by 1 at level 0,
+/// levels 0 to 12, laid out as {z}/{row}/{column} (the service's own description). From level 8,
+/// where it is finer than the Viking colour mosaic.
+pub static MARS_CTX: TileSource = TileSource {
+    id: "mars-ctx",
+    kind: Kind::Imagery,
+    url: "https://astro.arcgis.com/arcgis/rest/services/OnMars/CTX/MapServer/tile/{z}/{y}/{x}",
+    cache: "mars-ctx-beta01/{z}/{y}/{x}.png",
+    content_type: PNG,
+    min_z: 8,
+    max_z: 12,
+    bounds: &[],
+    credit: "",
+    concurrency: 2,
+    pixels: 512,
+    grid: Grid::Equirect,
+};
+
+/// HiRISE mosaics of the rover landing sites on Mars Trek, 25 to 50 cm per pixel, from level
+/// 13, where they are finer than CTX. The rovers' tracks can be seen in places.
+pub static MARS_HIRISE: [TileSource; 4] = [
+    trek(
+        "mars-hirise-curiosity",
+        "https://trek.nasa.gov/tiles/Mars/EQ/curiosity_hirise_mosaic/1.0.0/default/default028mm/{z}/{y}/{x}.png",
+        "nasa-trek-mars-hirise-curiosity/{z}/{y}/{x}.png",
+        13,
+        16,
+        &[[137.1225, -4.9255, 137.7298, -4.2489]],
+    ),
+    trek(
+        "mars-hirise-opportunity",
+        "https://trek.nasa.gov/tiles/Mars/EQ/opportunity_hirise_mosaic/1.0.0/default/default028mm/{z}/{y}/{x}.png",
+        "nasa-trek-mars-hirise-opportunity/{z}/{y}/{x}.png",
+        13,
+        17,
+        &[[-5.5965, -2.7514, -4.9954, -1.8994]],
+    ),
+    trek(
+        "mars-hirise-spirit",
+        "https://trek.nasa.gov/tiles/Mars/EQ/spirit_hirise_mosaic/1.0.0/default/default028mm/{z}/{y}/{x}.png",
+        "nasa-trek-mars-hirise-spirit/{z}/{y}/{x}.png",
+        13,
+        17,
+        &[[175.4278, -14.6926, 175.5859, -14.5357]],
+    ),
+    trek(
+        "mars-hirise-sojourner",
+        "https://trek.nasa.gov/tiles/Mars/EQ/sojourner_hirise_mosaic/1.0.0/default/default028mm/{z}/{y}/{x}.png",
+        "nasa-trek-mars-hirise-sojourner/{z}/{y}/{x}.png",
+        13,
+        16,
+        &[[-33.2880, 19.0227, -33.2087, 19.1599]],
+    ),
+];
+
+/// Dawn's LAMO mosaic of Ceres on Ceres Trek, grey, levels 0 to 7 (about 35 m per pixel at
+/// level 7): from level 6, beyond the colour-shaded HAMO base.
+pub static CERES_LAMO: TileSource = TileSource {
+    content_type: JPEG,
+    ..trek(
+        "ceres-lamo",
+        "https://trek.nasa.gov/tiles/Ceres/EQ/CE_LAMO_G_00N_180E_EQU_CLR_scale.eq/1.0.0/default/default028mm/{z}/{y}/{x}.jpg",
+        "nasa-trek-ceres-lamo/{z}/{y}/{x}.jpg",
+        6,
+        7,
+        &[],
+    )
+};
+
+/// Vesta Trek's blend of Dawn's HAMO and LAMO mosaics, levels 0 to 7: level 7, one beyond the
+/// HAMO base.
+pub static VESTA_LAMO: TileSource = trek(
+    "vesta-lamo",
+    "https://trek.nasa.gov/tiles/Vesta/EQ/VestaHAMOLAMOBlend.eq/1.0.0/default/default028mm/{z}/{y}/{x}.png",
+    "nasa-trek-vesta-lamo/{z}/{y}/{x}.png",
+    7,
+    7,
+    &[],
+);
+
 pub static TERRAIN: TileSource = TileSource {
     id: "mapterhorn",
     kind: Kind::Terrain,
@@ -402,7 +571,7 @@ impl TileSource {
     }
 
     /// The finest tile that still gets new detail from this source.
-    fn detail_z(&self) -> u8 {
+    pub fn detail_z(&self) -> u8 {
         if self.pixels > 256 { self.max_z + 1 } else { self.max_z }
     }
 
@@ -441,7 +610,10 @@ fn mercator_bbox(k: TileKey) -> String {
 
 /// All sources a cache server can serve.
 pub fn all() -> impl Iterator<Item = &'static TileSource> {
-    [&EOX, &TERRAIN, &MAP, &MOON_WAC, &MARS_VIKING, &MERCURY_MDIS, &CERES_FC, &VESTA_FC].into_iter().chain(DETAIL.iter())
+    [&EOX, &TERRAIN, &MAP, &MOON_WAC, &MARS_VIKING, &MERCURY_MDIS, &CERES_FC, &VESTA_FC]
+        .into_iter()
+        .chain(DETAIL.iter())
+        .chain(crate::body::all().iter().flat_map(|b| b.detail.iter().copied()))
 }
 
 pub fn by_id(id: &str) -> Option<&'static TileSource> {
@@ -453,7 +625,10 @@ pub fn by_id(id: &str) -> Option<&'static TileSource> {
 pub fn imagery_for(k: TileKey) -> Vec<(&'static TileSource, TileKey)> {
     let body = crate::body::current();
     if !body.surface_data {
-        return vec![(body.imagery, body.imagery.source_key(k))];
+        // The finer layers first, each where it has pictures, then the base.
+        let mut out: Vec<_> = body.detail.iter().filter(|s| k.z >= s.min_z && s.covers(k)).map(|s| (*s, s.source_key(k))).collect();
+        out.push((body.imagery, body.imagery.source_key(k)));
+        return out;
     }
     // A chosen map service replaces the imagery wherever it has tiles; elsewhere the usual
     // imagery stays, rather than leaving holes.
@@ -478,7 +653,7 @@ fn serving(k: TileKey) -> Option<&'static TileSource> {
 pub fn max_tile_z(k: TileKey) -> u8 {
     let body = crate::body::current();
     if !body.surface_data {
-        return body.imagery.max_z;
+        return body.detail.iter().filter(|s| s.covers(k)).map(|s| s.detail_z()).fold(body.imagery.detail_z(), u8::max);
     }
     if k.z < BASE_TILE_MAX_Z {
         return BASE_TILE_MAX_Z;

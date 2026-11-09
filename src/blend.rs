@@ -45,9 +45,60 @@ pub fn composite(base: &RgbaImage, base_rect: Rect, over: &RgbaImage, over_rect:
     out
 }
 
+/// Whether any part of a picture lets what is under it show through.
+pub fn has_holes(img: &RgbaImage) -> bool {
+    img.as_raw().chunks_exact(4).any(|p| p[3] < 255)
+}
+
+/// `base` laid under `top` where `top` is transparent, for a finer layer with gaps over a
+/// coarser one. Unlike [`composite`] the result keeps what transparency both leave, so that a
+/// third layer can fill it in turn.
+pub fn under(top: &RgbaImage, top_rect: Rect, base: &RgbaImage, base_rect: Rect) -> RgbaImage {
+    let finest = (base.width() as f64 * base_rect.2).max(top.width() as f64 * top_rect.2);
+    let n: u32 = if finest > 256.0 { 512 } else { 256 };
+    let mut out = RgbaImage::new(n, n);
+    for py in 0..n {
+        for px in 0..n {
+            let (fx, fy) = ((px as f64 + 0.5) / n as f64, (py as f64 + 0.5) / n as f64);
+            let t = sample(top, top_rect, fx, fy);
+            let b = sample(base, base_rect, fx, fy);
+            let (ta, ba) = (t[3] / 255.0, b[3] / 255.0);
+            let a = ta + ba * (1.0 - ta);
+            let mix = |i: usize| {
+                if a <= 0.0 {
+                    0
+                } else {
+                    ((t[i] * ta + b[i] * ba * (1.0 - ta)) / a).round().clamp(0.0, 255.0) as u8
+                }
+            };
+            out.put_pixel(px, py, image::Rgba([mix(0), mix(1), mix(2), (a * 255.0).round() as u8]));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_layer_with_holes_shows_the_one_under_it_there() {
+        let mut top = flat(256, [200, 200, 200, 255]);
+        for y in 0..256 {
+            for x in 128..256 {
+                top.put_pixel(x, y, image::Rgba([0, 0, 0, 0]));
+            }
+        }
+        let base = flat(256, [10, 20, 30, 255]);
+        assert!(has_holes(&top) && !has_holes(&base));
+        let out = under(&top, WHOLE, &base, WHOLE);
+        assert_eq!(out.get_pixel(10, 10).0, [200, 200, 200, 255]);
+        assert_eq!(out.get_pixel(250, 10).0, [10, 20, 30, 255]);
+        assert!(!has_holes(&out));
+        // Two layers with holes leave a hole where neither has a picture.
+        let empty = flat(256, [0, 0, 0, 0]);
+        assert!(has_holes(&under(&top, WHOLE, &empty, WHOLE)));
+    }
 
     fn flat(n: u32, c: [u8; 4]) -> RgbaImage {
         RgbaImage::from_pixel(n, n, image::Rgba(c))

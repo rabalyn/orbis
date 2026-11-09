@@ -77,6 +77,18 @@ report, 130, 22, 2018), whose Moon constants were checked against NASA NAIF's `p
 radius, 1737.4 km, is from the same report. Earth's size in the lunar sky uses 6371 km. These are
 published constants, not data files.
 
+Finer Moon layers from the same service and terms, each found as a Trek WMTS layer and laid over
+the WAC mosaic where it has a picture (credit: `Moon: LROC WAC and NAC mosaics, NASA/GSFC/Arizona
+State University; Kaguya TC mosaic, JAXA/SELENE; via NASA Moon Trek https://trek.nasa.gov/moon/`):
+
+- `Kaguya_TCortho_Mosaic_Global_4096ppd`, SELENE (Kaguya) Terrain Camera ortho mosaic, PNG with
+  transparency, used at zoom 9 and 10. JAXA data served by NASA; JAXA's own terms for SELENE data
+  (free use with credit "JAXA/SELENE") were not read for this, so recheck before publishing.
+- LRO Narrow Angle Camera mosaics of the Apollo sites: `LRO_NAC_Apollo11_Mosaic_p`,
+  `LRO_NAC_Apollo12_Mosaic_p`, `LRO_NAC_Apollo14_Mosaic_p`, `LRO_NAC_Mosaic_26N004E_50cmp`
+  (Apollo 15), `LRO_NAC_Mosaic_09S015E_50cmp` (Apollo 16) and `NAC_DTM_APOLLO17_MOSAIC_120CM`,
+  used from zoom 11 inside each mosaic's area.
+
 NASA Moon Trek also serves LOLA elevation (`LRO_LOLA_DEM_Global_128ppd_v04`) as 8-bit grey PNG
 tiles with no documented height scale, so it is not used.
 
@@ -93,6 +105,10 @@ pages state no usage conditions for its public tiles. Recheck both before publis
 | Mercury imagery | NASA Mercury Trek layer `Mercury_MESSENGER_MDIS_Basemap_BDR_Mosaic_Global_166m`, levels 0 to 7 | `Mercury: MESSENGER MDIS basemap, NASA/JHUAPL/Carnegie Institution of Washington/USGS, via NASA Mercury Trek https://trek.nasa.gov/mercury/` |
 | Ceres imagery | NASA Ceres Trek layer `Ceres_Dawn_FC_HAMO_ClrShade_DLR_Global_60ppd_Oct2016`, levels 0 to 5 | `Ceres: Dawn FC HAMO colour mosaic, NASA/JPL-Caltech/UCLA/MPS/DLR/IDA, via NASA Ceres Trek https://trek.nasa.gov/ceres/` |
 | Vesta imagery | NASA Vesta Trek layer `Vesta_Dawn_FC_HAMO_Mosaic_Global_74ppd`, levels 0 to 6 | `Vesta: Dawn FC HAMO mosaic, NASA/JPL-Caltech/UCLA/MPS/DLR/IDA, via NASA Vesta Trek https://trek.nasa.gov/vesta/` |
+
+| Mars, finer global imagery | The CTX global mosaic (Murray Lab, Caltech; Dickson et al.) as Esri's tile service `https://astro.arcgis.com/arcgis/rest/services/OnMars/CTX/MapServer/tile/{z}/{y}/{x}`: 512-pixel tiles, plate carrée, levels 0 to 12, used from 8. Its service description names the source; no usage terms beyond the Murray Lab's request for credit were found, so recheck before publishing | `CTX mosaic, NASA/JPL/MSSS/The Murray Lab, via Esri` |
+| Mars, rover sites | Mars Trek layers `curiosity_hirise_mosaic`, `opportunity_hirise_mosaic`, `spirit_hirise_mosaic` and `sojourner_hirise_mosaic`, PNG with transparency, used from zoom 13 inside each mosaic's area | `HiRISE, NASA/JPL/University of Arizona` |
+| Ceres and Vesta, finer | Ceres Trek `CE_LAMO_G_00N_180E_EQU_CLR_scale.eq` (zoom 6 and 7) and Vesta Trek `VestaHAMOLAMOBlend.eq` (zoom 7) | added to each body's credit as "LAMO" |
 
 The layer names were found by trying the Trek tile directory (which returns 403 for listing) and confirmed by
 their capabilities documents, which also give the coordinate system (the IAU2000 or ESRI code of each body). Terms

@@ -473,7 +473,12 @@ impl Shared {
         };
         // Best imagery first. While a better source is unavailable for a moment the tile
         // waits, with a coarser one staying on screen, so nothing gets stuck on poor imagery.
-        for (source, source_key) in sources::imagery_for(k) {
+        // On the other bodies a finer layer may have gaps: what it has waits for the next
+        // layer to be laid under it.
+        let candidates = sources::imagery_for(k);
+        let last = candidates.len().saturating_sub(1);
+        let mut holed: Option<(image::RgbaImage, (f64, f64, f64))> = None;
+        for (i, (source, source_key)) in candidates.into_iter().enumerate() {
             if source.blank_means_missing() && self.fetcher.empty_above(source, source_key) {
                 continue;
             }
@@ -515,23 +520,49 @@ impl Shared {
             if source.blank_means_missing() && is_blank(img.as_raw()) {
                 continue; // Others may still have this part, so the image stays known.
             }
-            let (img, uv_rect, credit) = match self.with_service_overlay(k, &active, img, uv_rect, source.credit) {
-                Ok(x) => x,
-                Err(outcome) => return outcome,
+            let (img, uv_rect) = match holed.take() {
+                Some((top, top_rect)) => (blend::under(&top, top_rect, &img, uv_rect), (0.0, 0.0, 1.0)),
+                None => (img, uv_rect),
             };
-            let (w, h) = img.dimensions();
-            let (center, vertices, heights) = build_mesh(k, &dem, dem_rect, uv_rect, self.exaggeration);
-            return Outcome::Ready(Box::new(TileData {
-                key: k,
-                center,
-                vertices,
-                heights,
-                mips: build_mips(w, h, img.into_raw()),
-                credit,
-                service_generation: active.generation,
-            }));
+            if i < last && !crate::body::current().surface_data && blend::has_holes(&img) {
+                holed = Some((img, uv_rect));
+                continue;
+            }
+            return self.ready(k, &active, &dem, dem_rect, img, uv_rect, source.credit);
         }
-        Outcome::Missing(k)
+        match holed {
+            Some((img, uv_rect)) => self.ready(k, &active, &dem, dem_rect, img, uv_rect, ""),
+            None => Outcome::Missing(k),
+        }
+    }
+
+    /// A tile made from its picture: with the chosen map service over it, on its mesh.
+    #[allow(clippy::too_many_arguments)]
+    fn ready(
+        &self,
+        k: TileKey,
+        active: &service_lib::Active,
+        dem: &Dem,
+        dem_rect: (f64, f64, f64),
+        img: image::RgbaImage,
+        uv_rect: (f64, f64, f64),
+        credit: &'static str,
+    ) -> Outcome {
+        let (img, uv_rect, credit) = match self.with_service_overlay(k, active, img, uv_rect, credit) {
+            Ok(x) => x,
+            Err(outcome) => return outcome,
+        };
+        let (w, h) = img.dimensions();
+        let (center, vertices, heights) = build_mesh(k, dem, dem_rect, uv_rect, self.exaggeration);
+        Outcome::Ready(Box::new(TileData {
+            key: k,
+            center,
+            vertices,
+            heights,
+            mips: build_mips(w, h, img.into_raw()),
+            credit,
+            service_generation: active.generation,
+        }))
     }
 }
 

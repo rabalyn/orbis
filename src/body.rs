@@ -21,8 +21,11 @@ pub struct Body {
     /// Whether terrain, roads, labels, buildings and national aerial imagery exist. Without
     /// them the body is a smooth sphere carrying its imagery alone.
     pub surface_data: bool,
-    /// The one imagery source, for a body without `surface_data`.
+    /// The base imagery, for a body without `surface_data`: global, and opaque.
     pub imagery: &'static TileSource,
+    /// Finer imagery over the base, best first, each from its own zoom level and over its own
+    /// area. Where one of their pictures is transparent the next one shows through.
+    pub detail: &'static [&'static TileSource],
     /// Credit lines shown while the body is in view.
     pub credit: &'static str,
     /// From J2000 equatorial directions to the body-fixed frame at a Unix time.
@@ -45,6 +48,7 @@ pub static EARTH: Body = Body {
     atmosphere: true,
     surface_data: true,
     imagery: &sources::EOX,
+    detail: &[],
     credit: crate::CREDITS,
     rotation: crate::sky::earth_fixed,
     sun: |unix| crate::sky_time::Sun::at(unix).direction(),
@@ -64,7 +68,16 @@ pub static MOON: Body = Body {
     atmosphere: false,
     surface_data: false,
     imagery: &sources::MOON_WAC,
-    credit: "Moon: LROC WAC mosaic, NASA/GSFC/Arizona State University, via NASA Moon Trek https://trek.nasa.gov/moon/",
+    detail: &[
+        &sources::MOON_NAC[0],
+        &sources::MOON_NAC[1],
+        &sources::MOON_NAC[2],
+        &sources::MOON_NAC[3],
+        &sources::MOON_NAC[4],
+        &sources::MOON_NAC[5],
+        &sources::MOON_KAGUYA,
+    ],
+    credit: "Moon: LROC WAC and NAC mosaics, NASA/GSFC/Arizona State University; Kaguya TC mosaic, JAXA/SELENE; via NASA Moon Trek https://trek.nasa.gov/moon/",
     rotation: crate::moon::fixed_frame,
     sun: crate::moon::sun_fixed,
     sky_bodies: crate::planets::bodies_from_moon,
@@ -82,7 +95,14 @@ pub static MARS: Body = Body {
     atmosphere: false,
     surface_data: false,
     imagery: &sources::MARS_VIKING,
-    credit: "Mars: Viking MDIM 2.1 colour mosaic, NASA/JPL/USGS, via NASA Mars Trek https://trek.nasa.gov/mars/",
+    detail: &[
+        &sources::MARS_HIRISE[0],
+        &sources::MARS_HIRISE[1],
+        &sources::MARS_HIRISE[2],
+        &sources::MARS_HIRISE[3],
+        &sources::MARS_CTX,
+    ],
+    credit: "Mars: Viking MDIM 2.1 colour mosaic, NASA/JPL/USGS; CTX mosaic, NASA/JPL/MSSS/The Murray Lab, via Esri; HiRISE, NASA/JPL/University of Arizona; via NASA Mars Trek https://trek.nasa.gov/mars/",
     rotation: crate::planetary::mars_frame,
     sun: crate::planetary::sun_mars,
     sky_bodies: crate::planetary::sky_mars,
@@ -100,6 +120,7 @@ pub static MERCURY: Body = Body {
     atmosphere: false,
     surface_data: false,
     imagery: &sources::MERCURY_MDIS,
+    detail: &[],
     credit: "Mercury: MESSENGER MDIS basemap, NASA/JHUAPL/Carnegie Institution of Washington/USGS, via NASA Mercury Trek https://trek.nasa.gov/mercury/",
     rotation: crate::planetary::mercury_frame,
     sun: crate::planetary::sun_mercury,
@@ -118,7 +139,8 @@ pub static CERES: Body = Body {
     atmosphere: false,
     surface_data: false,
     imagery: &sources::CERES_FC,
-    credit: "Ceres: Dawn FC HAMO colour mosaic, NASA/JPL-Caltech/UCLA/MPS/DLR/IDA, via NASA Ceres Trek https://trek.nasa.gov/ceres/",
+    detail: &[&sources::CERES_LAMO],
+    credit: "Ceres: Dawn FC HAMO colour and LAMO mosaics, NASA/JPL-Caltech/UCLA/MPS/DLR/IDA, via NASA Ceres Trek https://trek.nasa.gov/ceres/",
     rotation: crate::planetary::ceres_frame,
     sun: crate::planetary::sun_ceres,
     sky_bodies: crate::planetary::sky_ceres,
@@ -136,7 +158,8 @@ pub static VESTA: Body = Body {
     atmosphere: false,
     surface_data: false,
     imagery: &sources::VESTA_FC,
-    credit: "Vesta: Dawn FC HAMO mosaic, NASA/JPL-Caltech/UCLA/MPS/DLR/IDA, via NASA Vesta Trek https://trek.nasa.gov/vesta/",
+    detail: &[&sources::VESTA_LAMO],
+    credit: "Vesta: Dawn FC HAMO and LAMO mosaics, NASA/JPL-Caltech/UCLA/MPS/DLR/IDA, via NASA Vesta Trek https://trek.nasa.gov/vesta/",
     rotation: crate::planetary::vesta_frame,
     sun: crate::planetary::sun_vesta,
     sky_bodies: crate::planetary::sky_vesta,
@@ -175,10 +198,11 @@ pub fn select(body: &'static Body) {
 
 /// The finest zoom level of the body's imagery.
 pub fn max_zoom() -> u8 {
-    if current().surface_data {
+    let b = current();
+    if b.surface_data {
         sources::ABSOLUTE_MAX_Z
     } else {
-        current().imagery.max_z
+        b.detail.iter().map(|s| s.detail_z()).fold(b.imagery.detail_z(), u8::max)
     }
 }
 
