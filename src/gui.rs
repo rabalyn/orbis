@@ -412,6 +412,31 @@ pub fn section(ui: &mut egui::Ui, text: &str) {
     ui.label(egui::RichText::new(text).family(FontFamily::Name(BOLD.into())).size(13.5));
 }
 
+/// A box around controls that belong together, headed by a small title with a stripe of the
+/// accent. The box takes the whole width; `add` gets the width inside it.
+pub fn group<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui, f32) -> R) -> R {
+    let v = ui.visuals();
+    let fill = v.faint_bg_color;
+    let stroke = v.widgets.noninteractive.bg_stroke;
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(7.0)
+        .inner_margin(Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let width = ui.available_width();
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(Vec2::new(3.0, 13.0), egui::Sense::hover());
+                ui.painter().rect_filled(r, 1.5, ACCENT);
+                ui.label(egui::RichText::new(title).family(FontFamily::Name(BOLD.into())).size(12.5).color(ui.visuals().weak_text_color()));
+            });
+            ui.add_space(2.0);
+            add(ui, width)
+        })
+        .inner
+}
+
 /// Grey text, for explanations.
 pub fn note(ui: &mut egui::Ui, text: &str) {
     ui.label(egui::RichText::new(text).weak().size(12.0));

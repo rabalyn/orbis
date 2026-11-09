@@ -259,6 +259,8 @@ take that difference into account.
 
 - Key C, or the clock icon next to the options and help icons at the bottom right, shows or hides the window. It sits above the
   credits, beside the view options window.
+- The controls sit in boxes with small headings: Date and time (the three sliders and Now), Playback (the direction buttons and the
+  speed) and, on the Earth, Eclipses. The full reading of the clock stands above them.
 - It has three sliders, since one bar cannot be centuries wide and minute exact: the year (1800 to 2050), the day of that year
   (1 January to 31 December, shown as a date) and the time of day (00:00 to 23:59 UTC, in whole minutes). Each moves only its own part of
   the date. Changing the year keeps month, day and time, and 29 February becomes 28 February in a year without one. A heading shows the full
@@ -271,7 +273,7 @@ take that difference into account.
   to 30 days per second (the same steps as - and =). Backwards, Pause and Forwards play the clock in either direction at that speed, or stop
   it; the one in effect is lit. Space pauses and goes on in the same direction, and the keys change the speed without turning it round.
   The heading says "backwards" while the clock runs back.
-- The window also has Now (as T: the real time, forwards at real speed), and on the Earth Previous eclipse and Next eclipse, which set the clock to the
+- The window also has Now (as T: the real time, forwards at real speed), and on the Earth Previous and Next in the Eclipses box, which set the clock to the
   greatest moment of the closest eclipse before or after the clock and pause it. The window does not fly the view; use E for that.
 - A line under the buttons names the eclipse while one is going on, such as "Total solar eclipse, greatest 18:17", and says so when there is none.
   On other bodies there are no eclipse buttons or line.
