@@ -174,14 +174,14 @@ settings! {
     /// Roads for vehicles, and ferries.
     streets: bool = true, "streets";
     /// Paths and tracks.
-    trails: bool = true, "trails";
+    trails: bool = false, "trails";
     /// Railways and public transport lines.
-    trains: bool = true, "trains";
+    trains: bool = false, "trains";
     boundaries: bool = true, "boundaries";
     /// Names of countries, states, cities, towns, villages and quarters.
     cities: bool = true, "cities";
     /// Names of peaks, water and streets.
-    other_names: bool = true, "other_names";
+    other_names: bool = false, "other_names";
     buildings: bool = true, "buildings_3d";
     /// Terrain and buildings cast shadows when the Sun lights the scene.
     cast_shadows: bool = true, "cast_shadows";
@@ -189,7 +189,7 @@ settings! {
     stars: bool = true, "stars_and_planets";
     event_markers: bool = true, "event_markers";
     /// Bars of renewable generating capacity in Germany, and the areas they stand for.
-    energy: bool = false, "energy";
+    energy: bool = true, "energy";
     /// The bars show the estimated output at the clock's time, from SMARD, as far as there is data.
     energy_output: bool = true, "energy_output";
     /// A chart of the clock's day of generation and consumption, while the bars show output.
@@ -210,11 +210,11 @@ settings! {
     /// The colours of the sources, on the bars and in the day chart.
     energy_palette: Palette = Palette::Standard, "energy_palette";
     /// How the capacity not running at the clock's time shows above the output.
-    energy_idle: Idle = Idle::Source, "energy_idle";
+    energy_idle: Idle = Idle::White, "energy_idle";
     /// Its opacity, 0 to 1.
-    energy_idle_opacity: f64 = 0.3, "energy_idle_opacity";
+    energy_idle_opacity: f64 = 0.2, "energy_idle_opacity";
     /// How much detail the bars show: "auto" follows the altitude.
-    energy_detail: Detail = Detail::Auto, "energy_detail";
+    energy_detail: Detail = Detail::Fixed(crate::energy::Level::States), "energy_detail";
     /// Factors on the usual height and width of the bars.
     energy_bar_height: f64 = 1.0, "energy_bar_height";
     energy_bar_width: f64 = 1.0, "energy_bar_width";
@@ -471,11 +471,11 @@ mod tests {
         std::fs::write(dir.join("settings.json"), r#"{"from_the_future": {"a": 1}, "streets": false}"#).unwrap();
         let mut store = Store::open(&dir);
         assert!(!store.values.streets && store.warnings.is_empty());
-        store.values.trains = false;
+        store.values.trains = true;
         store.save_if_changed().unwrap();
         let text = std::fs::read_to_string(dir.join("settings.json")).unwrap();
         assert!(text.contains("from_the_future"), "{text}");
-        assert!(text.contains("\"trains\": false") && text.contains("\"streets\": false"));
+        assert!(text.contains("\"trains\": true") && text.contains("\"streets\": false"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

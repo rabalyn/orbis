@@ -93,10 +93,11 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_show_everything() {
+    fn the_defaults_show_streets_but_not_trails_or_railways() {
         let s = Settings::default();
         let k = LineKinds::of(&s);
-        assert!(RoadClass::ALL.iter().all(|c| k.road(*c)) && k.boundaries);
-        assert!(NameKinds::of(&s).allows(LabelStyle::Road));
+        assert!(RoadClass::ALL.iter().filter(|c| !matches!(c, RoadClass::Path | RoadClass::Rail)).all(|c| k.road(*c)) && k.boundaries);
+        assert!(!k.road(RoadClass::Path) && !k.road(RoadClass::Rail));
+        assert!(NameKinds::of(&s).allows(LabelStyle::City) && !NameKinds::of(&s).allows(LabelStyle::Road));
     }
 }

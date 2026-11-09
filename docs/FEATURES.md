@@ -5,7 +5,7 @@ data. This document describes what the program does now. `orbis --help` lists ev
 [CACHING.md](CACHING.md) covers data traffic and the imagery sources, and [PROVENANCE.md](PROVENANCE.md)
 records where data and methods come from.
 
-Contents: [Controls](#controls) · [Globe](#globe) · [Map lines and names](#map-lines-and-names) ·
+Contents: [Controls](#controls) · [Start view](#start-view) · [Globe](#globe) · [Map lines and names](#map-lines-and-names) ·
 [3D buildings](#3d-buildings) · [Flat map](#flat-map) · [Clock](#clock) · [Sun and light](#sun-and-light) ·
 [Cast shadows](#cast-shadows) · [Time window](#time-window) · [Sky](#sky) · [Other bodies](#other-bodies) ·
 [Search](#search) · [Saved places](#saved-places) · [File import](#file-import) · [Map services](#map-services) ·
@@ -82,6 +82,22 @@ agree and the view may come down to 2 m. Loading never lowers the camera, it onl
 - When the view turns or moves onto a coarse tile of an area not yet loaded, it is lifted at once rather than eased,
   because it must not be under the drawn surface in any frame: up to 26 m in one frame in a 120-step walk, and
   400 m in a test that forces tiles of zoom 7 on screen.
+
+## Start view
+
+The window and the web page open on Germany's energy bars, seen from 1,100 km above Hesse (50.888°N 9.193°E, tilted 48°,
+heading -3.4°), with the clock paused at 2026-11-01 12:00 UTC and set to play an hour a second. The day chart and the energy
+card are open at the top left, the box for Berlin below them, and the time window at the bottom right. The Berlin box opens
+once its bar and the figures for noon are there.
+
+- A flag that places the camera (`--lat`, `--lon`, `--distance`, `--heading`, `--tilt`, `--body`, `--atlas`, `--central-meridian`,
+  `--search`, `--eclipse`) leaves out the camera and the Berlin box; one for the clock (`--time`, `--time-speed`, `--eclipse`)
+  leaves out the clock and the time window. In the browser the page's address works the same way.
+- With another body saved, the camera starts on the whole body, as before.
+- `--screenshot` leaves out the whole start view, so that a picture shows only what its flags ask for. To picture it, pass it:
+  `--lat 50.8879 --lon 9.1929 --distance 1099594 --tilt 48 --heading -3.4 --time 2026-11-01T12:00:00Z --show-time`.
+- The view is set in `mod start` in `src/main.rs`; the options it opens with are the defaults in `src/settings.rs`, which
+  `config/settings.json` repeats.
 
 ## Globe
 
@@ -198,7 +214,7 @@ and they appear once the server answers again.
 
 ## Clock
 
-- A simulated clock starts at the real time and is shown in UTC in the top-right display, with "paused" or the speed when
+- A simulated clock starts at the real time (in the window without flags, at the [start view](#start-view)'s time) and is shown in UTC in the top-right display, with "paused" or the speed when
   it is not running at normal speed.
 - It can be paused, sped up or slowed down, stepped by hours or days, set back to now, or moved with the [time window](#time-window).
 - `--time ISO8601` sets the start (`2026-06-21T12:00:00Z`, with or without an offset or a time; without one it is UTC), and
@@ -662,7 +678,7 @@ The second icon at the bottom right, between the clock and the question mark, an
 - Order of precedence: defaults, then saved settings, then the command line. A flag applies to that run only and is not written back. Only what the user changes in the window is written, one field at a time, through a temporary file and a rename.
 - A value that is missing, of the wrong kind or unknown is the default for that field, with a warning on standard error, and other keys are kept when the file is written. A file that is not JSON is moved to `settings.json.bad`.
 - A `--screenshot` ignores saved settings and saves none, so that pictures are reproducible, unless `--config-dir` is given.
-- Saved: the map layers, 3D buildings, sunlight, cast shadows, stars and planets, event markers, information on click, the energy bars and their sources, globe or flat map, projection, frame rate limit, the body for the next start, the library service used as the base imagery, and a language code for names (empty follows the system; set in the file only). Not saved: the camera, the clock and which windows are open.
+- Saved: the map layers, 3D buildings, sunlight, cast shadows, stars and planets, event markers, information on click, the energy bars and their sources, globe or flat map, projection, frame rate limit, the body for the next start, the library service used as the base imagery, and a language code for names (empty follows the system; set in the file only). Not saved: the camera, the clock and which windows are open; each start opens on the [start view](#start-view).
 
 ### Limitations
 - The body's choice takes effect at the next start, and the window says so.

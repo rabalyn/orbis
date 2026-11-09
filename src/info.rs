@@ -227,11 +227,19 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> (bool, Option<Acti
     let screen = ctx.content_rect();
     let title = wiki::shorten(&m.title, 60);
     let coords = m.at.map(|(lat, lon)| wiki::coords_text(lat, lon));
+    // Above the credits at the bottom left, but below the day chart when that is open there.
+    let height = (screen.height() * 0.55).min(480.0);
+    let below_chart = gui
+        .is_visible(crate::power_chart::WINDOW)
+        .then(|| ctx.memory(|m| m.area_rect(egui::Id::unique(crate::power_chart::WINDOW))))
+        .flatten()
+        .map_or(f32::NEG_INFINITY, |r| r.bottom() + 10.0);
+    let top = (screen.bottom() - 120.0 - height).max(below_chart);
     let shown = gui::window(&title, WINDOW)
         .open(&mut open)
-        .default_pos(egui::pos2(screen.left() + 12.0, screen.bottom() - 120.0 - (screen.height() * 0.55).min(480.0)))
+        .default_pos(egui::pos2(screen.left() + 12.0, top))
         .default_width((screen.width() - 40.0).clamp(240.0, 420.0))
-        .default_height((screen.height() * 0.55).min(480.0))
+        .default_height(height.min(screen.bottom() - 110.0 - top).max(160.0))
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 let facts = |ui: &mut egui::Ui, rows: &[(String, String)]| {

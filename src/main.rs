@@ -264,6 +264,13 @@ struct Args {
     /// The clock's start, as seconds since 1970 UTC; now when not given.
     time: Option<f64>,
     time_speed: f64,
+    /// The clock starts paused.
+    paused: bool,
+    /// A flag chose where the camera is, or the clock's time or speed: the start view leaves it.
+    view_chosen: bool,
+    time_chosen: bool,
+    /// The energy area whose box opens once its bar and figures are there.
+    start_area: Option<&'static str>,
     spacemouse: bool,
     spacemouse_sensitivity: f64,
     benchmark: Option<f64>,
@@ -366,6 +373,10 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
         lang: Some(saved.language.clone()).filter(|l| !l.is_empty()).unwrap_or_else(locale_language),
         time: None,
         time_speed: 1.0,
+        paused: false,
+        view_chosen: false,
+        time_chosen: false,
+        start_area: None,
         spacemouse: true,
         spacemouse_sensitivity: 1.0,
         benchmark: None,
@@ -407,6 +418,9 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
         geocoder_url: geocode::DEFAULT_SERVICE.to_string(),
     };
     while let Some(flag) = it.next() {
+        let f = flag.as_str();
+        a.view_chosen |= matches!(f, "--lat" | "--lon" | "--distance" | "--heading" | "--tilt" | "--body" | "--atlas" | "--central-meridian" | "--search" | "--eclipse");
+        a.time_chosen |= matches!(f, "--time" | "--time-speed" | "--eclipse");
         match flag.as_str() {
             "--help" | "-h" => return Ok(None),
             "--no-roads" => {
@@ -703,8 +717,50 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
             _ => bail!("unknown option {flag}\n\n{USAGE}"),
         }
     }
+    // A saved image shows only what its flags ask for.
+    if a.screenshot.is_none() {
+        start::apply(&mut a);
+    }
     a.cam.clamp();
     Ok(Some(a))
+}
+
+/// What the window and the web page show when they open, unless a flag (or the page's address)
+/// chooses the view or the clock: Germany's energy bars seen from above Hesse at noon on
+/// 1 November 2026, with the clock paused, the time dialog and Berlin's box open. Saved images
+/// leave it out.
+mod start {
+    use super::{body, sky_time, Args};
+
+    pub const LAT: f64 = 50.887_907;
+    pub const LON: f64 = 9.192_911;
+    /// From the point looked at, in metres.
+    pub const DISTANCE: f64 = 1_099_594.0;
+    pub const HEADING: f64 = -3.417;
+    pub const TILT: f64 = 47.995;
+    pub const TIME: &str = "2026-11-01T12:00:00Z";
+    /// Clock seconds per real second once it plays: an hour a second.
+    pub const RATE: f64 = 3600.0;
+    pub const AREA: &str = "Berlin";
+
+    pub fn apply(a: &mut Args) {
+        if !a.view_chosen && a.body.id == body::EARTH.id {
+            a.cam.lat = LAT.to_radians();
+            a.cam.lon = LON.to_radians();
+            a.cam.distance = DISTANCE;
+            a.distance_given = true;
+            a.cam.heading = HEADING.to_radians();
+            a.cam.tilt = TILT.to_radians();
+            a.cam.sky = 0.0;
+            a.start_area = Some(AREA);
+        }
+        if !a.time_chosen {
+            a.time = sky_time::parse_iso8601(TIME);
+            a.time_speed = RATE;
+            a.paused = true;
+            a.show_time = true;
+        }
+    }
 }
 
 /// Everything between input and drawing that does not depend on a window.
@@ -832,6 +888,8 @@ struct Scene {
     /// Keeps a slow tick going for tiles waiting out a retry delay.
     last_retry_tick: Instant,
     energy: EnergyLayer,
+    /// The energy area whose box is still to open at start.
+    energy_start: Option<&'static str>,
 }
 
 /// What the user did in one frame of the interface, carried out once it is built.
@@ -1135,11 +1193,12 @@ impl Scene {
             building_empty: HashSet::new(),
             building_retries: HashMap::new(),
             frame_status: None,
+            energy_start: args.start_area,
             clock: {
                 let mut clock = Clock::new(args.time.unwrap_or_else(sky_time::wall_clock_now), 0.0);
                 clock.set_rate(args.time_speed);
                 // A saved image shows one moment.
-                if args.screenshot.is_some() {
+                if args.screenshot.is_some() || args.paused {
                     clock.pause();
                 }
                 clock
@@ -1765,6 +1824,9 @@ impl Scene {
 
     /// Asks for the feed given with `--event-feed`, if any.
     fn start_feeds(&mut self, args: &Args) {
+        if args.show_time && args.screenshot.is_none() {
+            self.gui.set_visible(time_dialog::WINDOW, true);
+        }
         if let Some(f) = args.event_feed {
             if body::current().id == body::EARTH.id {
                 self.request_feeds(&[f]);
@@ -2051,6 +2113,7 @@ impl Scene {
         }
         self.update_power(data, energy::month_of(self.clock.time()));
         self.sync_power_chart();
+        self.open_start_area(data);
         let cam = &self.nav.cam;
         let scale = style.apply(energy::Scale::for_view(data, level, cam.distance, aspect_height.1));
         // The centre in steps of a tenth of the bars' reach, so that panning rebuilds only now and then.
@@ -2218,6 +2281,30 @@ impl Scene {
             }
             return false;
         };
+        self.choose_energy(data, subject);
+        true
+    }
+
+    /// Opens the start view's energy box once the bar is built and the figures for the clock's
+    /// time have come, or SMARD could not give them.
+    fn open_start_area(&mut self, data: &energy::Energy) {
+        let Some(name) = self.energy_start else { return };
+        let p = &self.energy.power;
+        if self.view.energy_output && p.shown.is_none() && p.problem.is_none() {
+            return;
+        }
+        let subject = self.energy.bars.iter().map(|b| b.subject).find(|s| match s {
+            energy::Subject::Area(i) => data.areas.get(*i as usize).is_some_and(|a| a.name == name),
+            _ => false,
+        });
+        if let Some(subject) = subject {
+            self.energy_start = None;
+            self.choose_energy(data, subject);
+        }
+    }
+
+    /// Outlines what a bar stands for and tells about it in the information box.
+    fn choose_energy(&mut self, data: &energy::Energy, subject: energy::Subject) {
         self.energy.selected = Some(subject);
         self.energy.outlines_from = None;
         let month = energy::month_of(self.clock.time());
@@ -2239,7 +2326,6 @@ impl Scene {
             note: None,
         };
         self.show_info();
-        true
     }
 
     /// What the energy card tells: what a bar stands for, the level of detail, the scale and the figures.
@@ -4236,6 +4322,22 @@ mod tests {
 
     fn parse(s: &[&str]) -> Result<Option<Args>> {
         parse_args(s.iter().map(|x| x.to_string()), &Settings::default())
+    }
+
+    #[test]
+    fn the_window_opens_on_the_start_view_unless_a_flag_chooses() {
+        let a = parse(&[]).unwrap().unwrap();
+        assert!((a.cam.lat.to_degrees() - start::LAT).abs() < 1e-9 && (a.cam.tilt.to_degrees() - start::TILT).abs() < 1e-9);
+        assert!(a.distance_given && a.start_area == Some("Berlin"));
+        assert_eq!((a.time, a.time_speed, a.paused, a.show_time), (sky_time::parse_iso8601("2026-11-01T12:00:00Z"), 3600.0, true, true));
+        // A flag for the camera keeps the clock's start, and one for the clock keeps the camera's.
+        let a = parse(&["--lat", "10"]).unwrap().unwrap();
+        assert!(a.start_area.is_none() && !a.distance_given && a.paused);
+        let a = parse(&["--time-speed", "60"]).unwrap().unwrap();
+        assert!(a.start_area.is_some() && a.time.is_none() && !a.paused && !a.show_time);
+        // A saved image shows only what its flags ask for.
+        let a = parse(&["--screenshot", "x.png"]).unwrap().unwrap();
+        assert!(a.start_area.is_none() && a.time.is_none() && !a.paused && a.cam.lat.to_degrees().round() == 30.0);
     }
 
     #[test]

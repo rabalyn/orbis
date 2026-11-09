@@ -82,6 +82,14 @@ pub enum Event {
 }
 
 /// The chart window, while it is open.
+/// The gap between the window and the edges of the screen.
+pub const MARGIN: f32 = 12.0;
+
+/// How wide the window opens on a screen this wide.
+pub fn default_width(screen: f32) -> f32 {
+    (screen * 0.25).clamp(260.0, 360.0)
+}
+
 pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Option<Event> {
     let mut open = gui.is_visible(WINDOW);
     if !open {
@@ -91,10 +99,9 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Option<Event> 
     let screen = ctx.content_rect();
     let shown = gui::window(&model.title, WINDOW)
         .open(&mut open)
-        // Low on the left, above the credits, clear of the view options at the top.
-        .pivot(egui::Align2::LEFT_BOTTOM)
-        .default_pos(egui::pos2(screen.left() + 12.0, screen.bottom() - 150.0))
-        .default_width((screen.width() - 40.0).clamp(260.0, 440.0))
+        // At the top left, with the energy card beside it.
+        .default_pos(egui::pos2(screen.left() + MARGIN, screen.top() + MARGIN))
+        .default_width(default_width(screen.width()))
         .show(ctx, |ui| {
             let width = ui.available_width();
             if let Some(c) = &model.chart {

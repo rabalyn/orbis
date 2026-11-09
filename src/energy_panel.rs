@@ -45,7 +45,13 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> Option<Action> {
     let screen = ctx.content_rect();
     let shown = gui::window("Renewable energy, Germany", WINDOW)
         .open(&mut open)
-        .default_pos(egui::pos2(screen.right() - 330.0, screen.top() + 50.0))
+        // Beside the day chart at the top left, where there is room for both; else at the top right.
+        .default_pos({
+            let m = crate::power_chart::MARGIN;
+            // The chart's content, its frame and a gap.
+            let beside = screen.left() + m + crate::power_chart::default_width(screen.width()) + 3.0 * m;
+            if beside + 290.0 + 120.0 < screen.right() { egui::pos2(beside, screen.top() + m) } else { egui::pos2(screen.right() - 330.0, screen.top() + 50.0) }
+        })
         .default_width(290.0)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {

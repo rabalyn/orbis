@@ -19,6 +19,8 @@ Requires a Rust toolchain and a Vulkan-capable GPU.
 cargo run --release
 ```
 
+It opens on Germany's energy bars at noon on 1 November 2026, the clock paused; see [Start view](docs/FEATURES.md#start-view).
+
 Start somewhere specific:
 
 ```bash
