@@ -49,6 +49,8 @@ Europe; other countries follow in the last phase.
 | Per-unit output of large units (≥ 100 MW, e.g. offshore parks) | ENTSO-E Transparency Platform, "Actual generation per generation unit" | hourly, delayed | free token, ENTSO-E terms | not yet |
 | Wind/solar per control area, curtailment, redispatch measures | netztransparenz.de (the four TSOs) | 15 min / per measure | to check | page reachable |
 | Power lines, voltages, substations | OpenStreetMap (`power=line|cable|minor_line`, `voltage=*`, `power=substation`) | daily extracts (Geofabrik) | ODbL | not yet |
+| States and provinces of the world but Germany: outline, ISO 3166-2 code, name, country | Natural Earth admin-1 states and provinces 1:10m (`github.com/nvkelso/natural-earth-vector`, `geojson/ne_10m_admin_1_states_provinces.geojson`), via `tools/gen_world_states.py` into `data/states_world.bin` | occasional | public domain | built 2026-11-09 |
+| Population of those states | Wikidata, P1082 of each state's item (`query.wikidata.org/sparql`), gaps estimated by area | occasional | CC0 | built 2026-11-09; 731 of 4,561 estimated |
 | Grid expansion projects and their status | Bundesnetzagentur, netzausbau.de (quarterly monitoring) | quarterly | to check; may need hand-made data | not yet |
 
 OpenInfraMap's vector tiles have everything for the grid in one layer (`power_line` with voltage, `power_substation`,

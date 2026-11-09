@@ -78,6 +78,7 @@ mod paths;
 mod web;
 mod wikilookup;
 mod world_energy;
+mod world_states;
 
 use anyhow::{anyhow, bail, Context, Result};
 use atlas::{AtlasView, Projection};
@@ -2338,7 +2339,13 @@ impl Scene {
         if self.energy.outlines_from != Some(wanted) {
             self.energy.outlines = Some(Arc::new(match world.filter(|_| countries) {
                 Some(w) => w.outlines(self.energy.selected, self.clock_month(), shown, style.palette),
-                None => data.outlines(level, shown, self.energy.selected, month, style.palette),
+                None => {
+                    let german = data.outlines(level, shown, self.energy.selected, month, style.palette);
+                    match world_states::States::bundled().filter(|_| level == energy::Level::States) {
+                        Some(s) => s.with_germany(german, self.energy.selected, self.clock_month(), shown, style.palette),
+                        None => german,
+                    }
+                }
             }));
             self.energy.outlines_from = Some(wanted);
             self.energy.version += 1;
@@ -2387,7 +2394,14 @@ impl Scene {
                 });
                 w.bars(self.clock_month(), shown, self.view.energy_demand, germany)
             }
-            None => data.bars(level, month, shown, near),
+            None => {
+                let mut bars = data.bars(level, month, shown, near);
+                // Beyond Germany, the world's states and provinces.
+                if let Some(s) = world_states::States::bundled().filter(|_| level == energy::Level::States) {
+                    bars.extend(s.bars(self.clock_month(), shown, self.view.energy_demand));
+                }
+                bars
+            }
         };
         // Beside the bars of states, districts and municipalities, their estimated demand.
         if let (Some((m, _)), true) = (&self.energy.power.shown, self.view.energy_demand) {
@@ -2676,6 +2690,17 @@ impl Scene {
             self.show_info();
             return;
         }
+        if let (energy::Subject::State(i), Some(s)) = (subject, world_states::States::bundled()) {
+            *self.info.borrow_mut() = info::Model {
+                title: s.title(i),
+                at: s.position(i).map(|(lat, lon)| (lat.to_degrees(), lon.to_degrees())),
+                content: info::Content::Facts(s.describe(i, self.clock_month(), self.energy_sources(), self.view.energy_palette)),
+                note: None,
+                data: None,
+            };
+            self.show_info();
+            return;
+        }
         let at = match subject {
             energy::Subject::Unplaced(i) => Some(data.areas[i as usize].label),
             _ => self.energy.bars.iter().find(|b| b.subject == subject).map(|b| (b.lat, b.lon)),
@@ -2721,6 +2746,9 @@ impl Scene {
         } else if self.view.energy_demand && self.energy.power.shown.is_some() {
             notes.push("White column: estimated use, Germany's consumption shared out by population".to_string());
         }
+        if level == energy::Level::States {
+            notes.push("Beyond Germany: each country's use (Ember) shared out by population, in its mix of sources; no capacity yet".to_string());
+        }
         if let Some(basis) = self.power_basis().filter(|_| level != energy::Level::Countries || self.energy.power.shown.is_some()) {
             notes.push(basis);
         }
@@ -2728,7 +2756,11 @@ impl Scene {
         Some(energy_panel::Model {
             detail: self.view.energy_detail,
             level,
-            counts: energy::Level::ALL.map(|l| if l == energy::Level::Countries { world.map_or(0, |w| w.count()) } else { data.count(l) }),
+            counts: energy::Level::ALL.map(|l| match l {
+                energy::Level::Countries => world.map_or(0, |w| w.count()),
+                energy::Level::States => data.count(l) + world_states::States::bundled().map_or(0, |s| s.count()),
+                _ => data.count(l),
+            }),
             month: energy::month_name(energy::month_of(self.clock.time())),
             scale: if level == energy::Level::Countries { format!("10 GW = {}", format_distance(1.0e7 * scale.per_kw)) } else { format!("1 GW = {}", format_distance(1.0e6 * scale.per_kw)) },
             output: self.view.energy_output.then(|| self.power_status()),
@@ -3294,6 +3326,8 @@ impl Scene {
         if self.energy_map_on() {
             credits.push('\n');
             credits.push_str(owid::CREDIT);
+            credits.push('\n');
+            credits.push_str(world_states::CREDIT);
         }
         if self.energy_on() {
             credits.push('\n');
@@ -3307,6 +3341,10 @@ impl Scene {
             if self.energy.power.factors.is_some() || levels.contains(&self.energy.level) {
                 credits.push('\n');
                 credits.push_str(owid::CREDIT);
+            }
+            if levels.contains(&self.energy.level) {
+                credits.push('\n');
+                credits.push_str(world_states::CREDIT);
             }
         }
         if self.search.credit_due() {

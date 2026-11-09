@@ -574,6 +574,22 @@ day chart and their legend swatches hatched, and on the ground hatched fills and
   month (the year's where Ember has no month), from brownish red at none through yellow at half to green at all, with a small
   legend at the bottom right. The bars stay on the globe.
 
+### States and provinces of the world
+- At the States level, beside Germany's 16 states (BKG's, as below and unchanged), every other country's states and
+  provinces have a **square bar** each at their label point, 4,561 of them in 236 countries, from Natural Earth's admin-1
+  states and provinces at 1:10m. Their outlines are drawn on the ground in a thinner magenta.
+- Until the world's plants are placed, such a bar is the country's **use** (Ember's demand, or its generation where Ember
+  has no demand) in the clock's month, **shared out by population** and stacked in the country's mix of sources, lighter
+  where the year's average stands in. It has **no capacity** and no column of unused capacity, and SMARD's output shares do
+  not apply to it; the white column beside it, where use is shown, is the same figure. The bars share the German states'
+  scale, so a Chinese province can stand a few times taller than Bavaria.
+- Population per state is Wikidata's figure for the state's item (CC0). Where Wikidata has none (about one state in six:
+  many in the Philippines, Kosovo, Madagascar, Burkina Faso), the state's share of what the others leave of the country is
+  estimated by area, and the box says so.
+- A **click** on such a bar outlines the state in the colour of its country's main source and opens the box: the state's
+  estimated use by source, its country, kind and ISO 3166-2 code, its population and share of the country's, and the
+  country's use.
+
 ### Germany's bars: what a bar stands for
 Every bar stands for one clearly bounded thing, and that thing is marked on the ground, so that bars of different detail are
 never confused:
@@ -701,6 +717,10 @@ never confused:
 - Built into the program (`data/owid_energy.bin`, 610 KB; `data/countries.bin`, 210 KB); nothing is requested at
   runtime. Rebuilding downloads about 15 MB in a few seconds: `python3 -I tools/gen_owid.py data/owid_energy.bin
   data/countries.bin`.
+- **States of the world**: Natural Earth's admin-1 states and provinces at 1:10m (public domain), Germany's left out, with
+  each state's population from Wikidata (CC0), in `data/states_world.bin` (625 KB, bundled). Rebuilding downloads about
+  45 MB and asks Wikidata's query service for 4,256 items, in a few minutes: `python3 -I tools/gen_world_states.py
+  data/states_world.bin`.
 - Yearly electricity figures begin in 2000 for most countries, in 1985 for the 75 the Energy Institute covers (Ember's
   own from 1990 in Europe), and end in 2025 for 92 countries and 2024 or earlier for the rest. Monthly ones end in
   May or June 2026 for most (Germany's run from January 2015). Ember's months for Germany add up to about 6% less than
@@ -717,11 +737,14 @@ never confused:
   growth of rooftop solar. No regional consumption is published, so use per area is Germany's
   shared out by population: industry, about 45% of the total, sits where the factories are, so industrial districts use more
   than shown and residential ones less.
-- Capacity, plants, the estimated output at the quarter hour and the estimated use per area are Germany's only; other
-  countries have a bar per country and month, without capacity. No bars on the flat map, which shades countries instead.
+- Capacity, plants and the estimated output at the quarter hour are Germany's only; other countries have a bar per
+  country and month, and one per state that is only the country's use shared out by population, without capacity: an
+  industrial province and a rural one of the same population look alike. No bars on the flat map, which shades countries instead.
 - Ember's months are net generation and its years gross, including what power stations use themselves (for Germany about
   6% more in the year), so a lighter bar of a year's average stands a little higher than the months would.
-- Country outlines are Natural Earth's at 1:50m, simplified by about 2 km; small islands are dropped. A country without figures
+- Country outlines are Natural Earth's at 1:50m, simplified by about 2 km; the world's states' at 1:10m, simplified by
+  about 2.5 km and rounded to 1/250°, so that neighbours' edges do not meet exactly and the smallest states (Malta's local
+  councils, city districts) are rough shapes. Small islands are dropped. A country without figures
   (a few small territories) has no bar or shade.
 - A unit whose published position lies outside its municipality is counted with the units without a position.
 - Municipalities are those of 1 January 2026; a unit is placed by the key the register gives it, and by its position where the

@@ -287,6 +287,25 @@ are dropped, values are rounded to 1 GWh (0.01 g/kWh, 0.01 %), and outlines are 
 demand marks where OWID's electricity figures switch from the Energy Institute to Ember, which is how the reader names
 each figure's source.
 
+### States and provinces of the world (`data/states_world.bin`)
+Built offline by `tools/gen_world_states.py` (retrieved 2026-11-09) and bundled; the program requests nothing for it.
+It gives the States level of the energy layer a bar per state beyond Germany, whose states stay BKG's
+(`world_states.rs`). `world_states::CREDIT`, `Country and state outlines: Natural Earth (public domain); population of
+states: Wikidata (CC0)`, shows at the Countries and States levels and with the map's shade.
+
+| Data | Source | Terms | Credit shown |
+|---|---|---|---|
+| Outlines, label points, English names, kinds and ISO 3166-2 codes of 4,561 states and provinces (Germany's 16 left out) | Natural Earth admin-1 states and provinces 1:10m, `github.com/nvkelso/natural-earth-vector`, `geojson/ne_10m_admin_1_states_provinces.geojson` (master, 2026-11-09); the country of each from `geojson/ne_50m_admin_0_countries.geojson` as for `countries.bin` | Public domain (naturalearthdata.com, from general knowledge) | `world_states::CREDIT` |
+| Population per state | Wikidata, property P1082 of the item Natural Earth gives each state (`wikidataid`), through `query.wikidata.org/sparql`: the preferred figure, else the latest by point in time | CC0 (Wikidata's structured data) | `world_states::CREDIT` |
+| Population of states Wikidata has no usable figure for (731) | estimated by area from Natural Earth's `POP_EST` of the country, less the states with a figure | Public domain | as above |
+
+Choice of population source: Natural Earth's populated places (public domain, 0.6 MB) count cities only, so sums per
+state miss the countryside (Bihar or rural Africa against their capitals); GHS-POP and Kontur (CC BY 4.0) are grids of
+hundreds of MB to GB that need GIS libraries to sum. Wikidata's census figures per state are a few hundred kB and CC0.
+Where several Natural Earth states share one item, its figure is split by area; a figure above the country's whole
+population is dropped as a wrong item. Outlines are simplified by 0.025° and rounded to 1/250°, with islands under 0.005
+square degrees dropped (never a state's largest ring); the data is otherwise unchanged.
+
 ### Emission factors (`power_feed::EMISSIONS`)
 Lifecycle emissions in g CO₂-eq per kWh, the medians of IPCC AR5 Working Group III, Annex III "Technology-specific cost
 and performance parameters", table A.III.2 (Schlömer et al., 2014), as Ember also quotes them for its renewable factors

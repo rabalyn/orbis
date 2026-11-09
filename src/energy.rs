@@ -292,6 +292,16 @@ pub enum Subject {
     Site(u32),
     /// A country of `world_energy::World`, by its index there.
     Country(u16),
+    /// A state of `world_states::States` beyond Germany, by its index there.
+    State(u16),
+}
+
+impl Subject {
+    /// Whether its bar stands for installed capacity, of which the running share can be shown.
+    /// Countries and the world's states show average power instead.
+    pub fn has_capacity(self) -> bool {
+        !matches!(self, Subject::Country(_) | Subject::State(_))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -470,7 +480,7 @@ impl Energy {
         let area = match subject {
             Subject::Area(i) => i,
             Subject::Unplaced(i) => i,
-            Subject::Site(_) | Subject::Country(_) => return None,
+            Subject::Site(_) | Subject::Country(_) | Subject::State(_) => return None,
         };
         let p = self.people(area)?;
         Some((consumption_mw as f64 * 1000.0 * p as f64 / self.people_total) as f32)
@@ -785,7 +795,7 @@ impl Energy {
                 let s = &self.sites[i as usize];
                 format!("{} site in {}", s.source.name(), chain(Some(s.area)))
             }
-            Subject::Country(_) => String::new(),
+            Subject::Country(_) | Subject::State(_) => String::new(),
         }
     }
 
@@ -802,7 +812,7 @@ impl Energy {
                     0.0
                 }
             }
-            Subject::Country(_) => 0.0,
+            Subject::Country(_) | Subject::State(_) => 0.0,
         }
     }
 
@@ -895,7 +905,7 @@ impl Energy {
         }
         let area = match subject {
             Subject::Area(i) | Subject::Unplaced(i) => Some(i),
-            Subject::Site(_) | Subject::Country(_) => None,
+            Subject::Site(_) | Subject::Country(_) | Subject::State(_) => None,
         };
         if let Some(p) = area.and_then(|i| self.people(i)) {
             card.facts.push(("Population".to_string(), group_thousands(p)));
@@ -929,7 +939,7 @@ impl Energy {
             }
             Subject::Unplaced(_) => "Units without a published position, mostly private rooftop solar. They shade the municipality instead of standing as a bar.".to_string(),
             Subject::Site(_) => "Units of one source at one published position.".to_string(),
-            Subject::Country(_) => String::new(),
+            Subject::Country(_) | Subject::State(_) => String::new(),
         });
         if output.is_some() {
             card.notes.push("Output is estimated: Germany's output of each source (SMARD) shared out by capacity.".to_string());
@@ -1245,7 +1255,7 @@ pub fn mesh(bars: &[Bar], scale: Scale, center: DVec3, ground: &dyn Fn(f64, f64)
             let mut idle: Vec<Segment> = Vec::new();
             for s in range.filter(|&s| bar.kw[s] > 0.0) {
                 let source = Source::ALL[s];
-                let share = shares.map_or(1.0, |sh| (sh[s] as f64).clamp(0.0, 1.0));
+                let share = shares.filter(|_| bar.subject.has_capacity()).map_or(1.0, |sh| (sh[s] as f64).clamp(0.0, 1.0));
                 let colour = if bar.faint { lighter(style.colour(source)) } else { style.colour(source) };
                 segments.push(Segment { colour, alpha: 255, height: bar.kw[s] as f64 * share * scale.per_kw });
                 if let Some((colour, alpha)) = style.idle_colour(source) {
