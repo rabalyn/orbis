@@ -31,6 +31,7 @@ mod navtrace;
 mod options;
 mod overlay;
 mod pacing;
+mod missions;
 mod planet_names;
 mod planetary;
 mod planets;
@@ -839,6 +840,12 @@ struct Scene {
     gui: gui::Gui,
     /// The size (pixels) and pixels per point the interface was last built for.
     gui_size: (u32, u32, f32),
+    /// The mission tracks as drawn this frame.
+    mission_marks: Vec<missions::Mark>,
+    /// The ground under each vertex of the tracks on the body in view, by track, refreshed a
+    /// part at a time as finer terrain arrives; and where the refresh goes on next frame.
+    mission_heights: HashMap<usize, Vec<f32>>,
+    mission_cursor: (usize, usize),
     /// The pointer was over the interface at its last move.
     gui_hover: bool,
     /// The technical figures are shown (F12).
@@ -1147,6 +1154,9 @@ impl Scene {
             services: make_services(args),
             gui: gui::Gui::new(),
             gui_size: (size.x.max(1.0) as u32, size.y.max(1.0) as u32, 1.0),
+            mission_marks: Vec::new(),
+            mission_heights: HashMap::new(),
+            mission_cursor: (0, 0),
             gui_hover: false,
             debug_readout: false,
             help_scroll: None,
@@ -2611,6 +2621,7 @@ impl Scene {
                 r.receive_mask(mask);
             }
         }
+        self.place_missions(r, (width, height));
         self.labels_shown = 0;
         if !self.names_on() {
             r.set_labels(&[]);
@@ -2710,6 +2721,79 @@ impl Scene {
         self.labels_shown = instances.len();
         self.label_alpha = alpha;
         r.set_labels(&instances);
+    }
+
+    /// Works out where the mission tracks and their travellers are on screen at the clock's time.
+    fn place_missions(&mut self, r: &Renderer, (width, height): (u32, u32)) {
+        /// How many track vertices have their ground looked up again each frame.
+        const HEIGHT_BUDGET: usize = 3000;
+        self.mission_marks.clear();
+        let body = body::current();
+        if !self.view.missions || body.surface_data {
+            self.mission_heights.clear();
+            return;
+        }
+        let tracks: Vec<(usize, &missions::Track)> = missions::on(body.id).collect();
+        if tracks.is_empty() {
+            return;
+        }
+        self.mission_heights.retain(|i, _| tracks.iter().any(|(j, _)| j == i));
+        for (i, t) in &tracks {
+            self.mission_heights.entry(*i).or_insert_with(|| vec![0.0; t.vertex_count()]);
+        }
+        let globe = self.mode != Mode::Atlas;
+        if globe {
+            let mut budget = HEIGHT_BUDGET;
+            while budget > 0 {
+                let (k, start) = self.mission_cursor;
+                let k = k % tracks.len();
+                let (i, t) = tracks[k];
+                let heights = self.mission_heights.get_mut(&i).expect("made above");
+                let end = (start + budget).min(t.vertex_count());
+                for (n, v) in t.pieces.iter().flatten().enumerate().take(end).skip(start) {
+                    heights[n] = r.ground(v.lat, v.lon).map_or(heights[n], |h| h as f32);
+                }
+                budget -= (end - start).max(1).min(budget);
+                self.mission_cursor = if end >= t.vertex_count() { (k + 1, 0) } else { (k, end) };
+            }
+        }
+        let t = self.clock.time();
+        let size = DVec2::new(width as f64, height as f64);
+        let basis = self.nav.cam.basis();
+        let cam = basis.pos;
+        let screen = Screen { basis, size, reserved: Vec::new() };
+        let ground = |lat: f64, lon: f64| r.ground(lat, lon);
+        let map = &self.map.view;
+        let project = |lat: f64, lon: f64, h: f64| -> Option<DVec2> {
+            if !globe {
+                let (x, y) = map.screen_of(map.project(lat, lon));
+                return Some(DVec2::new(x, y));
+            }
+            let p = geo::geodetic_to_ecef(lat, lon, h + 1.0);
+            // Beyond the horizon.
+            if (cam - p).dot(p.normalize()) < 0.0 {
+                return None;
+            }
+            screen.project(p)
+        };
+        let near = body.a * 0.05;
+        let detail = if globe { ecef_to_geodetic(cam).2 < near } else { map.distance_for_scale() < near };
+        for (i, track) in tracks {
+            let heights = &self.mission_heights[&i];
+            let height = |n: usize| heights.get(n).copied().unwrap_or(0.0) as f64;
+            let mut m = missions::mark(track, t, &project, &height, size.x, detail);
+            // A traveller behind a hill is not shown through it.
+            if globe {
+                if let (Some((_, _)), Some(spot)) = (m.icon, track.at(t)) {
+                    let h = ground(spot.lat, spot.lon).unwrap_or(0.0);
+                    if labels::hidden_by_terrain(cam, geo::geodetic_to_ecef(spot.lat, spot.lon, h + 2.0), &ground) {
+                        m.icon = None;
+                        m.detail = None;
+                    }
+                }
+            }
+            self.mission_marks.push(m);
+        }
     }
 
     /// For saved images: waits for all label text, then chooses the labels afresh and fully
@@ -2868,6 +2952,7 @@ impl Scene {
 
     /// Lays out this frame's interface from the scene's state.
     fn build_gui(&mut self, ctx: &egui::Context, done: &mut GuiDone) {
+        missions::paint(ctx, &self.mission_marks, self.gui_size.2);
         let heading = (self.mode == Mode::Globe).then_some(self.nav.cam.heading);
         let open = [help::WINDOW, options::WINDOW, time_dialog::WINDOW].map(|w| self.gui.is_visible(w));
         done.icon = compass::show(ctx, &mut self.gui, heading, open);

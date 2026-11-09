@@ -127,6 +127,35 @@ Database API (`ssd-api.jpl.nasa.gov/sbdb.api`). The tests quote results from the
 (`ssd.jpl.nasa.gov/api/horizons.api`) as reference values; they are facts, not data files. Mars's and Mercury's
 orbits use the JPL approximate planet elements already listed above. These are published constants, not data files.
 
+### Names of features on other bodies (`data/names.tsv`)
+
+| Data | Source | Terms | Credit shown in the app |
+|---|---|---|---|
+| Names, positions, sizes and kinds of features on the Moon, Mars, Mercury, Ceres and Vesta | USGS Gazetteer of Planetary Nomenclature, the center-point shapefiles of its [GIS downloads](https://planetarynames.wr.usgs.gov/GIS_Downloads) (only the `.dbf` tables are read), names with the status "Adopted by IAU", downloaded 2026-11-09 | A work of the US Geological Survey, so in the US public domain; the names themselves are the IAU's. Credit is given anyway | `Names: IAU / USGS Gazetteer of Planetary Nomenclature`, in the search panel and in the box listing features |
+
+`tools/gen_names.py` turns the tables into `data/names.tsv`: body, name, planetocentric latitude, east longitude from
+-180 to 180, diameter in km, and R for wide regions or F for other features. Albedo features without a size are given
+800 km, other features without one 1 km.
+
+### Mission tracks (`data/missions.bin`)
+
+| Track | Source | Terms |
+|---|---|---|
+| Perseverance and Ingenuity | NASA/JPL's MMGIS map of the Mars 2020 mission, `https://mars.nasa.gov/mmgis-maps/M20/Layers/json/M20_traverse.json` and `.../m20_heli_flight_path.json` (GeoJSON with spacecraft clock times), downloaded 2026-11-09 | NASA content, NASA media usage guidelines as above |
+| Curiosity | The same for MSL: `https://mars.nasa.gov/mmgis-maps/MSL/Layers/json/MSL_traverse.json` and `MSL_waypoints.json` (drives by sol) | As above |
+| Spirit and Opportunity | PDS Geosciences Node, MER Analyst's Notebook traverse tables, `https://an.rsl.wustl.edu/mera/AN/meri/MER/traverse/` (`MERA_traverse.csv`, `MERB_traverse_5130.csv`) | PDS archive data, NASA, public |
+| Apollo 12 and 14 moonwalks | LROC Reduced Data Record extras, `https://pds.lroc.im-ldi.com/data/LRO-L-LROC-5-RDR-V1.0/LROLRC_2001/EXTRAS/SHAPEFILE/APOLLO_12/` and `APOLLO_14/` (paths and points with ground elapsed time) | PDS archive data, NASA/GSFC/Arizona State University |
+
+No in-app credit line is shown for the tracks; they are named in the box when a mission is clicked, whose article is
+credited there. Add one before publishing if wanted. `tools/gen_missions.py` documents the conversion: times from the
+spacecraft clock (epoch 2000-01-01T11:58:55.816 UTC) for Mars 2020, from sols with Mars24's Mars Sol Date and an
+assumed timetable for Curiosity, Spirit and Opportunity, and from the launch times of Apollo 12 (1969-11-14 16:22:00
+UTC) and Apollo 14 (1971-01-31 21:03:02 UTC) plus ground elapsed time. Positions are planetocentric.
+
+The 30 landing sites without a track (`SITES` in `src/missions.rs`) are published coordinates and landing times as
+known to the author, not read from one source for this; recheck before relying on them. They are facts, not a data
+file. Each mission's English Wikipedia title is kept with it for the click.
+
 ### Place search
 
 | Data | Source | Terms | Credit shown in the app |

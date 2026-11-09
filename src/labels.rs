@@ -349,7 +349,7 @@ fn min_facing(style: LabelStyle) -> f64 {
 }
 
 /// Whether a mountain stands between the camera and a point.
-fn hidden_by_terrain(from: DVec3, to: DVec3, ground: &dyn Fn(f64, f64) -> Option<f64>) -> bool {
+pub fn hidden_by_terrain(from: DVec3, to: DVec3, ground: &dyn Fn(f64, f64) -> Option<f64>) -> bool {
     const STEPS: usize = 10;
     for i in 1..STEPS {
         // Denser near the label, where terrain is most likely to block it.

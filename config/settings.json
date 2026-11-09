@@ -30,6 +30,7 @@
   "frame_rate_limit": 120,
   "info_on_click": true,
   "language": "",
+  "missions": true,
   "other_names": false,
   "projection": "Equal Earth",
   "stars_and_planets": true,

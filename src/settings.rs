@@ -188,6 +188,8 @@ settings! {
     sunlight: bool = true, "sunlight";
     stars: bool = true, "stars_and_planets";
     event_markers: bool = true, "event_markers";
+    /// The tracks of rovers, Ingenuity and the Apollo moonwalkers, with where each was at the clock's time.
+    missions: bool = true, "missions";
     /// Bars of renewable generating capacity in Germany, and the areas they stand for.
     energy: bool = true, "energy";
     /// The bars show the estimated output at the clock's time, from SMARD, as far as there is data.
@@ -225,7 +227,7 @@ settings! {
     frame_rate: FrameLimit = FrameLimit::Fps120, "frame_rate_limit";
     /// A language code for names; empty follows the system.
     language: String = String::new(), "language";
-    /// What the globe shows, by identifier. Takes effect at the next start.
+    /// What the globe shows, by identifier.
     body: String = "earth".to_string(), "body";
     /// The library service to show instead of the usual imagery, by identifier; empty for none.
     base_service: String = String::new(), "base_service";

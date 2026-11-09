@@ -41,6 +41,7 @@ const TOGGLES: &[(&str, &[Toggle])] = &[
             ("Cast shadows", |s| s.cast_shadows, |s, v| s.cast_shadows = v),
             ("Stars and planets", |s| s.stars, |s, v| s.stars = v),
             ("Event markers", |s| s.event_markers, |s, v| s.event_markers = v),
+            ("Rover and Apollo tracks", |s| s.missions, |s, v| s.missions = v),
             ("Information on click", |s| s.info_on_click, |s, v| s.info_on_click = v),
         ],
     ),

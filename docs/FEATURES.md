@@ -360,7 +360,34 @@ the horizon, the tile grid, lighting and the sky. The choice in the view options
 - Rotation uses the IAU Working Group's pole and prime meridian for each body, with periodic terms for the Moon, Mars and Mercury. So phase, libration and the day and night side follow the time.
 - The Sun's direction on Mars and Mercury comes from JPL's planet elements, and on Ceres and Vesta from two-body orbits of JPL Small-Body Database elements for 2026-11-21. Against JPL Horizons, the sub-solar point of Mercury and Mars is within 0.01° at three dates in 2026 to 2031, Ceres within 0.6° of longitude and Vesta within 1.4°.
 - The sky shows the Sun, stars and the other planets, turned with the body's frame. On the Moon the Earth is a lit disc with its phase and name; elsewhere it is a point with a magnitude.
-- There are no roads, names, buildings, national aerial imagery or terrain: R, L and B do nothing there, and nothing casts a shadow. The flat map and the time window work. Search takes coordinates only, and map services, imports, eclipses, events and article lookups are for the Earth.
+- There are no roads, buildings, national aerial imagery or terrain: R and B do nothing there, and nothing casts a shadow. The flat map and the time window work. Map services, imports, eclipses and events are for the Earth.
+- The IAU names of features are shown (see Names on other bodies), the tracks of rovers and astronauts with the landing sites (see Missions), the search box finds both by name, and a click asks Wikipedia about them (see Information on click).
+
+### Names on other bodies
+- 12,018 names approved by the IAU, from the USGS Gazetteer of Planetary Nomenclature: Moon 9,087, Mars 2,055, Mercury 621, Ceres 149, Vesta 106. They are drawn with the other names and switched with "Other names" (key L).
+- Wide regions (maria, oceans, lakes, bays, plains, lands, terrae, albedo features and the like) are in a larger italic; craters, mountains, valleys, rilles and every other kind of feature in plain type.
+- A feature is named once it is a fair part of the view: from up to 60 times its diameter, and regions from 100 times. Larger features win where names compete for room.
+- The Gazetteer gives planetocentric latitudes; they are converted to the geodetic latitudes the globe is drawn in, as the imagery's rows are.
+
+### Missions
+- The tracks of five Mars missions and four Apollo moonwalkers, each with a small picture of the rover, the helicopter or the astronaut where it was at the clock's time:
+  - Perseverance and Ingenuity (from landing in February 2021 to the latest published drive and flight),
+  - Curiosity (from August 2012), Spirit (2004 to 2010) and Opportunity (2004 to 2018),
+  - Apollo 12 (Conrad, Bean) and Apollo 14 (Shepard, Mitchell): both moonwalks of each.
+- The part travelled by the clock's time is drawn bright over a dark edge, the rest faint. With the clock running (time window), the travellers move along: at 30 days a second Perseverance's years go by in about a minute.
+- Rovers stay where their last drive ended. Astronauts are shown only while they were outside; between and after their walks only the track is left.
+- Close to the ground (nearer than 5% of the body's radius) each name has a second line: the sol and the distance driven or flown on Mars, the moonwalk and the distance walked on the Moon.
+- Where each spacecraft landed is marked from its landing date on, also where no track is known: 24 landings on the Moon (Luna, Surveyor, all six Apollo landings, Lunokhod 1 and 2, Chang'e 3 to 6 with Yutu and Yutu-2, Chandrayaan-3, SLIM, Odysseus, Blue Ghost 1) and 6 more on Mars (Viking 1 and 2, Pathfinder with Sojourner, Phoenix, InSight, Zhurong). Landers have a lander picture, rovers without a track a rover picture. Close up the name says when it landed.
+- Icons and lines are drawn under the windows. Names that would cover an icon or another name are left out.
+- A click on an icon or a track opens the mission's Wikipedia article (see Information on click).
+- "Rover and Apollo tracks" in the view options (Scene, saved, default on) switches all of it off.
+
+### Limitations of names and missions
+- Curiosity's, Spirit's and Opportunity's drives are published by sol only. Each sol's drives are placed from 11:00 local mean solar time at an assumed 0.02 m/s, so the position within a sol is a guess; the sol is right. Perseverance's drives, Ingenuity's flights and the Apollo walks have recorded times.
+- Opportunity's traverse is published in metres from its landing site; the landing site is JPL's published one. Checked by eye against the HiRISE mosaic at Victoria crater (the track runs along the rim, and on sol 1548 the rover is at Duck Bay where it entered).
+- No downloadable path was found for the Apollo 15 to 17 rovers, Lunokhod 1 and 2, Yutu, Yutu-2 or Zhurong; they are shown at their landing sites only. The landing sites' coordinates and dates are the published values as known to the author, not read from one source; a few may be off by about 0.1°.
+- Elevation is the terrain loaded at the moment; until finer tiles arrive a track may float above or dip below the ground by the relief of the coarse tiles.
+- Positions in the status line and `--lat` remain geodetic, while maps of Mars and the Gazetteer give planetocentric latitudes, up to 0.2° apart on Mars (more on Ceres and Vesta).
 - Each body's tiles are cached apart and requested gently from `trek.nasa.gov`. The credit is shown while the body is in view.
 
 ### Limitations
