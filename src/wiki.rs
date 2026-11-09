@@ -38,8 +38,12 @@ pub fn language(lang: &str) -> String {
 const PAGE_FIELDS: &str = "prop=coordinates%7Cpageprops%7Cdescription%7Cinfo&coprimary=primary&colimit=max&ppprop=wikibase_item%7Cdisambiguation&inprop=url";
 
 fn api(lang: &str) -> String {
+    api_action(lang, "query")
+}
+
+fn api_action(lang: &str, action: &str) -> String {
     // maxlag asks the service to refuse us while its servers are behind, which is its etiquette for programs.
-    let url = format!("https://{}.wikipedia.org/w/api.php?action=query&format=json&formatversion=2&maxlag=5", language(lang));
+    let url = format!("https://{}.wikipedia.org/w/api.php?action={action}&format=json&formatversion=2&maxlag=5", language(lang));
     // A page in a browser may read the answer only if it asks as an anonymous other site.
     #[cfg(target_arch = "wasm32")]
     let url = url + "&origin=*";
@@ -49,6 +53,31 @@ fn api(lang: &str) -> String {
 /// Pages whose title or text fits the name, with their coordinates.
 pub fn search_url(lang: &str, name: &str) -> String {
     format!("{}&generator=search&gsrsearch={}&gsrnamespace=0&gsrlimit=10&{PAGE_FIELDS}", api(lang), percent_encode(name.trim()))
+}
+
+/// One article by its title, following redirects.
+pub fn title_url(lang: &str, title: &str) -> String {
+    format!("{}&titles={}&redirects=1&{PAGE_FIELDS}", api(lang), percent_encode(title.trim()))
+}
+
+/// Which candidate, if any, is the article about the feature `name` on `body` at `at` (degrees):
+/// the first, best ranked, whose title is the name and whose own position on that body lies
+/// within `reach` degrees. An article without a position on the body is not taken.
+pub fn choose_feature(name: &str, body: &str, at: (f64, f64), reach: f64, cands: &[Candidate]) -> Option<usize> {
+    cands.iter().position(|c| {
+        !c.disambiguation
+            && name_matches(name, &c.title)
+            && c.elsewhere.as_ref().is_some_and(|(globe, lat, lon)| {
+                globe == body && angle_deg(at, (*lat, *lon)) <= reach
+            })
+    })
+}
+
+/// The angle between two places, in degrees.
+pub fn angle_deg(a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (la1, lo1, la2, lo2) = (a.0.to_radians(), a.1.to_radians(), b.0.to_radians(), b.1.to_radians());
+    let h = ((la2 - la1) / 2.0).sin().powi(2) + la1.cos() * la2.cos() * ((lo2 - lo1) / 2.0).sin().powi(2);
+    (2.0 * h.sqrt().min(1.0).asin()).to_degrees()
 }
 
 /// Pages near a point, nearest first. `radius` is limited to [`MAX_GEO_RADIUS`].
@@ -64,9 +93,14 @@ pub fn geo_url(lang: &str, lat: f64, lon: f64, radius: f64, limit: u32) -> Strin
 /// The text before the first heading, as plain text.
 pub fn extract_url(lang: &str, page_id: u64) -> String {
     format!(
-        "{}&pageids={page_id}&prop=extracts%7Cinfo&exintro=1&explaintext=1&exsectionformat=plain&inprop=url",
+        "{}&pageids={page_id}&prop=extracts%7Cinfo%7Clanglinks&exintro=1&explaintext=1&exsectionformat=plain&inprop=url&lllimit=max&llprop=autonym",
         api(lang)
     )
+}
+
+/// The article's first section as the page shows it, for its infobox.
+pub fn infobox_url(lang: &str, page_id: u64) -> String {
+    format!("{}&pageid={page_id}&prop=text&section=0&disablelimitreport=1&disableeditsection=1&disabletoc=1", api_action(lang, "parse"))
 }
 
 /// Facts about a Wikidata item, in one query. `None` unless `item` is of the form Q123.
@@ -103,6 +137,9 @@ pub struct Candidate {
     pub description: String,
     /// The article's own position, on Earth only.
     pub at: Option<(f64, f64)>,
+    /// Its position on another body, as the body's name in lower case, latitude and east
+    /// longitude in degrees.
+    pub elsewhere: Option<(String, f64, f64)>,
     pub item: Option<String>,
     pub disambiguation: bool,
     pub url: String,
@@ -153,8 +190,16 @@ pub fn parse_candidates(body: &str) -> Result<Vec<Candidate>, WikiError> {
                 (earth && lat.abs() <= 90.0 && lon.abs() <= 360.0).then_some((lat, lon))
             })
         });
+        let elsewhere = p.get("coordinates").and_then(Value::as_array).and_then(|list| {
+            list.iter().find_map(|c| {
+                let globe = c.get("globe").and_then(Value::as_str).filter(|g| *g != "earth")?;
+                let (lat, lon) = (c.get("lat")?.as_f64()?, c.get("lon")?.as_f64()?);
+                (lat.abs() <= 90.0 && lon.abs() <= 360.0).then(|| (globe.to_ascii_lowercase(), lat, lon))
+            })
+        });
         let props = p.get("pageprops");
         out.push(Candidate {
+            elsewhere,
             page_id,
             title: title.to_string(),
             description: p.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
@@ -186,6 +231,19 @@ pub struct Extract {
     pub title: String,
     pub text: String,
     pub url: String,
+    /// The same article in other languages.
+    pub languages: Vec<Language>,
+}
+
+/// An article's edition in another language.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Language {
+    /// The edition, such as "de".
+    pub code: String,
+    /// The language's name in itself, such as "Deutsch".
+    pub name: String,
+    /// The article's title there.
+    pub title: String,
 }
 
 pub fn parse_extract(body: &str) -> Result<Extract, WikiError> {
@@ -197,7 +255,326 @@ pub fn parse_extract(body: &str) -> Result<Extract, WikiError> {
     let title = p.get("title").and_then(Value::as_str).ok_or(WikiError::Garbled)?;
     let url = p.get("fullurl").and_then(Value::as_str).and_then(article_url).ok_or(WikiError::Garbled)?;
     let text = p.get("extract").and_then(Value::as_str).unwrap_or("");
-    Ok(Extract { title: title.to_string(), text: text.chars().take(20_000).collect(), url })
+    let mut languages: Vec<Language> = p
+        .get("langlinks")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|l| {
+                    let code = l.get("lang")?.as_str()?;
+                    let title = l.get("title")?.as_str()?;
+                    let name = l.get("autonym").and_then(Value::as_str).unwrap_or(code);
+                    // Only editions the interface can name, and so most likely also show.
+                    (language(code) == code && !title.is_empty() && name.chars().all(can_draw))
+                        .then(|| Language { code: code.to_string(), name: name.to_string(), title: title.to_string() })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    languages.sort_by_key(|l| fold_name(&l.name));
+    Ok(Extract { title: title.to_string(), text: text.chars().take(20_000).collect(), url, languages })
+}
+
+/// A line of an article's infobox, the summary table at the side of the page.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BoxRow {
+    /// A heading over the rows that follow.
+    Heading(String),
+    /// A name and its value; the value may have several lines.
+    Fact(String, String),
+    /// A line across the whole box.
+    Text(String),
+}
+
+/// The most rows an infobox gives, so that a huge one stays readable.
+const MAX_BOX_ROWS: usize = 120;
+
+/// Reads the infobox out of the first section of an article, as `infobox_url` gives it.
+/// Pictures are left out; an article without an infobox gives no rows.
+pub fn parse_infobox(body: &str) -> Result<Vec<BoxRow>, WikiError> {
+    let v = parse_json(body)?;
+    let html = v.get("parse").and_then(|p| p.get("text")).and_then(Value::as_str).ok_or(WikiError::Garbled)?;
+    Ok(infobox_rows(html))
+}
+
+/// One piece of HTML: a tag (name in lower case, closing or not, its attributes) or text.
+enum Token<'a> {
+    Open(String, &'a str),
+    Close(String),
+    Text(&'a str),
+}
+
+fn tokens(html: &str) -> Vec<Token<'_>> {
+    let mut out = Vec::new();
+    let mut rest = html;
+    while !rest.is_empty() {
+        let Some(lt) = rest.find('<') else {
+            out.push(Token::Text(rest));
+            break;
+        };
+        if lt > 0 {
+            out.push(Token::Text(&rest[..lt]));
+        }
+        rest = &rest[lt..];
+        if let Some(after) = rest.strip_prefix("<!--") {
+            rest = after.find("-->").map_or("", |e| &after[e + 3..]);
+            continue;
+        }
+        let Some(gt) = rest.find('>') else { break };
+        let inner = &rest[1..gt];
+        rest = &rest[gt + 1..];
+        let (closing, inner) = match inner.strip_prefix('/') {
+            Some(i) => (true, i),
+            None => (false, inner),
+        };
+        let end = inner.find(|c: char| c.is_whitespace() || c == '/').unwrap_or(inner.len());
+        let name = inner[..end].to_ascii_lowercase();
+        if name.is_empty() {
+            continue;
+        }
+        if closing {
+            out.push(Token::Close(name));
+        } else {
+            let attrs = &inner[end..];
+            let void = matches!(name.as_str(), "br" | "img" | "hr" | "wbr" | "meta" | "link" | "input" | "col" | "source" | "area") || attrs.trim_end().ends_with('/');
+            out.push(Token::Open(name.clone(), attrs));
+            if void {
+                out.push(Token::Close(name));
+            }
+        }
+    }
+    out
+}
+
+/// An attribute's value from a tag's attribute text.
+fn attr<'a>(attrs: &'a str, name: &str) -> &'a str {
+    let mut rest = attrs;
+    while let Some(i) = rest.find(name) {
+        let before_ok = i == 0 || rest.as_bytes()[i - 1].is_ascii_whitespace();
+        let after = &rest[i + name.len()..];
+        if before_ok {
+            if let Some(v) = after.trim_start().strip_prefix('=') {
+                let v = v.trim_start();
+                if let Some(q) = v.chars().next().filter(|c| *c == '"' || *c == '\'') {
+                    return v[1..].split(q).next().unwrap_or("");
+                }
+                return v.split_whitespace().next().unwrap_or("");
+            }
+        }
+        rest = after;
+    }
+    ""
+}
+
+fn has_class(attrs: &str, class: &str) -> bool {
+    attr(attrs, "class").split_whitespace().any(|c| c == class)
+}
+
+/// Whether an element's content is not part of the text a reader sees: styles, footnote marks,
+/// hidden duplicates of coordinates and the like, and pictures.
+fn hidden(name: &str, attrs: &str) -> bool {
+    let style = attr(attrs, "style").replace(' ', "");
+    matches!(name, "style" | "script" | "img" | "figure")
+        || style.contains("display:none")
+        || ["reference", "mw-ref", "noprint", "geo-nondefault", "geo-multi-punct", "error", "mw-empty-elt", "infobox-image", "sortkey"]
+            .iter()
+            .any(|c| has_class(attrs, c))
+}
+
+fn unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        // Entities are short; the search stops at bytes, not characters, so it never splits one.
+        let end = rest.bytes().take(12).position(|b| b == b';');
+        let decoded = end.and_then(|e| {
+            let ent = &rest[1..e];
+            let c = if let Some(hex) = ent.strip_prefix("#x").or_else(|| ent.strip_prefix("#X")) {
+                u32::from_str_radix(hex, 16).ok().and_then(char::from_u32)
+            } else if let Some(dec) = ent.strip_prefix('#') {
+                dec.parse().ok().and_then(char::from_u32)
+            } else {
+                Some(match ent {
+                    "amp" => '&',
+                    "lt" => '<',
+                    "gt" => '>',
+                    "quot" => '"',
+                    "apos" => '\'',
+                    "nbsp" => '\u{a0}',
+                    "ndash" => '\u{2013}',
+                    "mdash" => '\u{2014}',
+                    "minus" => '\u{2212}',
+                    "times" => '\u{d7}',
+                    "deg" => '\u{b0}',
+                    "prime" => '\u{2032}',
+                    "Prime" => '\u{2033}',
+                    _ => return None,
+                })
+            };
+            c.map(|c| (c, e + 1))
+        });
+        match decoded {
+            Some((c, n)) => {
+                out.push(c);
+                rest = &rest[n..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Text as a reader sees it: spaces collapsed within lines, empty lines dropped.
+fn tidy_cell(s: &str) -> String {
+    s.split('\n')
+        .map(|l| l.split(|c: char| c.is_whitespace() || c == '\u{feff}').filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" "))
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn infobox_rows(html: &str) -> Vec<BoxRow> {
+    let toks = tokens(html);
+    let Some(start) = toks.iter().position(|t| matches!(t, Token::Open(n, a) if n == "table" && has_class(a, "infobox"))) else {
+        return Vec::new();
+    };
+    let mut rows = Vec::new();
+    let mut depth = 0usize;
+    // The cells of the row being read: kind of cell, its classes, its text.
+    let mut cells: Vec<Cell> = Vec::new();
+    let mut cell: Option<Cell> = None;
+    // While inside a hidden element: its name and how deeply it nests in itself.
+    let mut skip: Option<(String, usize)> = None;
+    for t in &toks[start..] {
+        if let Some((name, n)) = &mut skip {
+            match t {
+                Token::Open(m, _) if m == name => *n += 1,
+                Token::Close(m) if m == name => {
+                    *n -= 1;
+                    if *n == 0 {
+                        skip = None;
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        match t {
+            Token::Open(name, attrs) => {
+                if name == "table" {
+                    depth += 1;
+                    if depth > 1 {
+                        continue;
+                    }
+                }
+                if let Some(c) = &mut cell {
+                    c.pictured |= matches!(name.as_str(), "img" | "figure") || has_class(attrs, "mw-kartographer-map");
+                }
+                if hidden(name, attrs) {
+                    skip = Some((name.clone(), 1));
+                    continue;
+                }
+                match name.as_str() {
+                    "tr" if depth == 1 => cells.clear(),
+                    "th" | "td" if depth == 1 => cell = Some(Cell { head: name == "th", class: attr(attrs, "class").to_string(), text: String::new(), pictured: false }),
+                    "br" | "li" | "p" | "div" | "tr" | "dd" | "dt" => {
+                        if let Some(c) = &mut cell {
+                            c.text.push('\n');
+                            if name == "li" {
+                                c.text.push_str("\u{2022} ");
+                            }
+                        }
+                    }
+                    "td" | "th" => {
+                        if let Some(c) = &mut cell {
+                            c.text.push(' ');
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Token::Close(name) => match name.as_str() {
+                "table" => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                "th" | "td" if depth == 1 => {
+                    if let Some(mut c) = cell.take() {
+                        c.text = tidy_cell(&unescape(&c.text));
+                        cells.push(c);
+                    }
+                }
+                "tr" if depth == 1 => {
+                    if let Some(row) = box_row(&cells) {
+                        rows.push(row);
+                    }
+                    cells.clear();
+                }
+                "p" | "div" | "li" => {
+                    if let Some(c) = &mut cell {
+                        c.text.push('\n');
+                    }
+                }
+                _ => {}
+            },
+            Token::Text(text) => {
+                if let Some(c) = &mut cell {
+                    c.text.push_str(text);
+                }
+            }
+        }
+        if rows.len() >= MAX_BOX_ROWS {
+            break;
+        }
+    }
+    // A heading with nothing under it says nothing.
+    let mut out: Vec<BoxRow> = Vec::with_capacity(rows.len());
+    for r in rows {
+        if out.last() == Some(&r) {
+            continue;
+        }
+        if matches!(r, BoxRow::Heading(_)) && matches!(out.last(), Some(BoxRow::Heading(_))) {
+            out.pop();
+        }
+        out.push(r);
+    }
+    if matches!(out.last(), Some(BoxRow::Heading(_))) {
+        out.pop();
+    }
+    out
+}
+
+/// A cell of an infobox row: a heading cell or not, its classes, its text, and whether it held
+/// a picture or a map.
+struct Cell {
+    head: bool,
+    class: String,
+    text: String,
+    pictured: bool,
+}
+
+fn box_row(cells: &[Cell]) -> Option<BoxRow> {
+    let cells: Vec<&Cell> = cells.iter().filter(|c| !c.text.is_empty()).collect();
+    let is = |c: &Cell, class: &str| c.class.split_whitespace().any(|x| x == class);
+    match cells.as_slice() {
+        [] => None,
+        // The title over the box repeats the article's; a caption is no use without its picture.
+        [c] if is(c, "infobox-above") || c.pictured => None,
+        [c] if c.head || is(c, "infobox-header") => Some(BoxRow::Heading(c.text.replace('\n', " "))),
+        [c] => Some(BoxRow::Text(c.text.clone())),
+        [name, rest @ ..] => {
+            let value = rest.iter().map(|c| c.text.as_str()).collect::<Vec<_>>().join("\n");
+            Some(BoxRow::Fact(name.text.replace('\n', " "), value))
+        }
+    }
 }
 
 /// What Wikidata knows about an item. Raw values; [`fact_lines`] words them.
@@ -478,10 +855,48 @@ fn fold_char(c: char) -> Option<String> {
     }
 }
 
+/// The characters the interface's fonts draw (Noto Sans and its symbols subset), as inclusive
+/// ranges in order, made from the fonts' character maps.
+const DRAWN: &[(u32, u32)] = &[
+    (0x20, 0x7E), (0xA0, 0x377), (0x37A, 0x37F), (0x384, 0x38A), (0x38C, 0x38C), (0x38E, 0x3A1),
+    (0x3A3, 0x3E1), (0x3F0, 0x52F), (0x10FB, 0x10FB), (0x1AB0, 0x1AC0), (0x1AC5, 0x1AC5),
+    (0x1AC7, 0x1ACE), (0x1C80, 0x1C88), (0x1D00, 0x1DF9), (0x1DFB, 0x1F15), (0x1F18, 0x1F1D),
+    (0x1F20, 0x1F45), (0x1F48, 0x1F4D), (0x1F50, 0x1F57), (0x1F59, 0x1F59), (0x1F5B, 0x1F5B),
+    (0x1F5D, 0x1F5D), (0x1F5F, 0x1F7D), (0x1F80, 0x1FB4), (0x1FB6, 0x1FC4), (0x1FC6, 0x1FD3),
+    (0x1FD6, 0x1FDB), (0x1FDD, 0x1FEF), (0x1FF2, 0x1FF4), (0x1FF6, 0x1FFE), (0x2000, 0x2064),
+    (0x2066, 0x2071), (0x2074, 0x208E), (0x2090, 0x209C), (0x20A0, 0x20C0), (0x20F0, 0x20F0),
+    (0x2100, 0x215F), (0x2183, 0x2184), (0x2189, 0x2189), (0x21AF, 0x21AF), (0x21E6, 0x21F0),
+    (0x21F3, 0x21F3), (0x2212, 0x2212), (0x25A0, 0x2609), (0x260E, 0x2612), (0x2614, 0x2623),
+    (0x2630, 0x2637), (0x263C, 0x263C), (0x2654, 0x2668), (0x267F, 0x268F), (0x269E, 0x26A1),
+    (0x26AA, 0x26AC), (0x26BD, 0x26CD), (0x26CF, 0x26E1), (0x2B00, 0x2B0D), (0x2B12, 0x2B2F),
+    (0x2B4D, 0x2B73), (0x2B76, 0x2B95), (0x2B97, 0x2BFD), (0x2BFF, 0x2BFF), (0x2C60, 0x2C7F),
+    (0x2DE0, 0x2E5D), (0xA640, 0xA69F), (0xA700, 0xA7CA), (0xA7D0, 0xA7D1), (0xA7D3, 0xA7D3),
+    (0xA7D5, 0xA7D9), (0xA7F2, 0xA7FF), (0xA92E, 0xA92E), (0xAB30, 0xAB6B), (0xFB00, 0xFB06),
+    (0xFE00, 0xFE00), (0xFE20, 0xFE2F), (0xFEFF, 0xFEFF), (0xFFFC, 0xFFFD), (0x10780, 0x10785),
+    (0x10787, 0x107B0), (0x107B2, 0x107BA), (0x1DF00, 0x1DF1E),
+];
+
+/// Whether the interface's fonts have a character.
+pub fn can_draw(c: char) -> bool {
+    let c = c as u32;
+    DRAWN.binary_search_by(|&(a, b)| if b < c { std::cmp::Ordering::Less } else if a > c { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Equal }).is_ok()
+}
+
+/// Makes text for the windows: like [`display_text`], but every character the interface's
+/// fonts have is kept, so Greek, Cyrillic and the accents of any Latin script stay as written.
+pub fn box_text(text: &str) -> String {
+    clean(text, |c| can_draw(c) && !matches!(c, '\u{ad}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}'))
+}
+
 /// Makes text fit the built-in font (ASCII and Latin-1): accented letters outside Latin-1 become
 /// plain ones, typographic punctuation its simple form, and pronunciation guides are dropped. What
 /// cannot be shown becomes one `?` per run.
 pub fn display_text(text: &str) -> String {
+    clean(text, |_| false)
+}
+
+/// The work of [`display_text`]; characters `keep` accepts are left as they are.
+fn clean(text: &str, keep: impl Fn(char) -> bool) -> String {
     let text = text.replace('\r', "");
     let text = drop_pronunciations(&text);
     let mut out = String::with_capacity(text.len());
@@ -490,6 +905,7 @@ pub fn display_text(text: &str) -> String {
             '\n' => "\n".into(),
             '\t' => " ".into(),
             c if (c as u32) < 0x20 || c == '\u{7f}' => String::new(),
+            c if keep(c) => c.to_string(),
             c if (c as u32) < 0x7f || (0xA0..=0xFF).contains(&(c as u32)) => {
                 // Latin-1 letters are in the font; only the soft hyphen has to go.
                 if c == '\u{ad}' { String::new() } else { c.to_string() }
@@ -795,6 +1211,7 @@ mod tests {
             title: title.into(),
             description: String::new(),
             at: Some((lat, lon)),
+            elsewhere: None,
             item: None,
             disambiguation: false,
             url: "https://en.wikipedia.org/wiki/X".into(),
@@ -816,6 +1233,82 @@ mod tests {
         let list = parse_candidates(std::str::from_utf8(moon).unwrap()).unwrap();
         assert_eq!(list[0].at, None);
         assert_eq!(choose("Tycho", LabelStyle::Peak, (-43.3, -11.2), &list), Choice::None);
+        // On the Moon itself it is the one.
+        assert_eq!(choose_feature("Tycho", "moon", (-43.31, -11.36), 2.0, &list), Some(0));
+        assert_eq!(choose_feature("Tycho", "mars", (-43.31, -11.36), 2.0, &list), None);
+        assert_eq!(choose_feature("Tycho", "moon", (10.0, 40.0), 2.0, &list), None);
+    }
+
+    #[test]
+    fn infoboxes_are_read_as_headings_and_facts() {
+        let tycho = parse_infobox(&fixture("parse_tycho_en.json")).unwrap();
+        assert_eq!(tycho[0], BoxRow::Fact("Location".into(), "The Moon".into()));
+        assert!(tycho.contains(&BoxRow::Fact("Diameter".into(), "c. 85 km".into())), "{tycho:?}");
+        // Only one form of the coordinates, and no footnote marks.
+        assert!(tycho.iter().any(|r| matches!(r, BoxRow::Fact(k, v) if k == "Coordinates" && v == "43.31°S 11.36°W")), "{tycho:?}");
+        let rover = parse_infobox(&fixture("parse_perseverance_en.json")).unwrap();
+        assert!(rover.contains(&BoxRow::Heading("Specifications".into())));
+        assert!(rover.contains(&BoxRow::Fact("Owner".into(), "NASA".into())));
+        // Lists keep their lines; the picture and its caption are left out.
+        assert!(rover.iter().any(|r| matches!(r, BoxRow::Fact(k, v) if k == "Communication" && v.lines().count() == 2 && v.starts_with("\u{2022} UHF"))));
+        assert!(!rover.iter().any(|r| format!("{r:?}").contains("Self-portrait") || format!("{r:?}").contains("<")));
+    }
+
+    #[test]
+    fn small_infoboxes_lose_pictures_hidden_parts_and_repeats() {
+        let html = r#"<p>x</p><table class="infobox vcard"><tbody>
+            <tr><th colspan="2" class="infobox-above">Somewhere</th></tr>
+            <tr><td colspan="2" class="infobox-full-data"><img src="a.png"/><div>Skyline</div></td></tr>
+            <tr><th colspan="2" class="infobox-header">Empty</th></tr>
+            <tr><th colspan="2" class="infobox-header">Area</th></tr>
+            <tr><th class="infobox-label">Total</th><td class="infobox-data">12&#160;km<sup class="reference">[1]</sup> <span style="display: none">hidden</span>&amp; more</td></tr>
+            <tr><th class="infobox-label">Total</th><td class="infobox-data">12&#160;km<sup class="reference">[1]</sup> <span style="display: none">hidden</span>&amp; more</td></tr>
+            <tr><td colspan="2"><table><tr><td>inner</td><td>cells</td></tr></table></td></tr>
+            </tbody></table><table class="infobox"><tr><td>second box</td></tr></table>"#;
+        let body = serde_json::json!({"parse": {"text": html}}).to_string();
+        let rows = parse_infobox(&body).unwrap();
+        assert_eq!(
+            rows,
+            [BoxRow::Heading("Area".into()), BoxRow::Fact("Total".into(), "12 km & more".into()), BoxRow::Text("inner cells".into())]
+        );
+        assert!(parse_infobox(r#"{"parse":{"text":"<p>No box</p>"}}"#).unwrap().is_empty());
+        // A bare ampersand next to letters of several bytes is left as it is.
+        assert_eq!(unescape("a & •• b &#160;c &bogus; &#x41;"), "a & •• b \u{a0}c &bogus; A");
+        assert!(infobox_url("de", 7).contains("action=parse") && infobox_url("de", 7).starts_with("https://de.wikipedia.org/"));
+    }
+
+    #[test]
+    fn other_editions_are_listed_when_the_windows_can_name_them() {
+        let body = r#"{"query":{"pages":[{"pageid":7,"title":"Tycho (lunar crater)","fullurl":"https://en.wikipedia.org/wiki/Tycho_(lunar_crater)","extract":"Tycho is a crater.","langlinks":[
+            {"lang":"de","title":"Tycho (Mondkrater)","autonym":"Deutsch"},
+            {"lang":"ru","title":"Тихо (лунный кратер)","autonym":"русский"},
+            {"lang":"ja","title":"ティコ (クレーター)","autonym":"日本語"},
+            {"lang":"zh-yue","title":"X","autonym":"粵語"},
+            {"lang":"cs","title":"Tycho (kráter)","autonym":"čeština"}]}]}}"#;
+        let e = parse_extract(body).unwrap();
+        let names: Vec<_> = e.languages.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["čeština", "Deutsch", "русский"]);
+        assert_eq!(e.languages[1].title, "Tycho (Mondkrater)");
+        assert!(extract_url("en", 7).contains("langlinks"));
+    }
+
+    #[test]
+    fn the_windows_keep_what_their_fonts_have() {
+        assert!(can_draw('a') && can_draw('ž') && can_draw('Ж') && can_draw('λ') && can_draw('⁄'));
+        assert!(!can_draw('日') && !can_draw('ع'));
+        assert_eq!(box_text("Kraków – Тихо, 18\u{2044}2 h"), "Kraków – Тихо, 18\u{2044}2 h");
+        assert_eq!(display_text("Kraków – Тихо"), "Kraków - ?");
+        assert_eq!(box_text("Tōkyō (東京)"), "Tōkyō", "brackets holding only unknown script go");
+    }
+
+    #[test]
+    fn features_on_mars_match_across_the_longitude_conventions() {
+        let mars = br#"{"query":{"pages":[{"pageid":22818,"title":"Olympus Mons","index":1,"fullurl":"https://en.wikipedia.org/wiki/Olympus_Mons","coordinates":[{"lat":18.65,"lon":226.2,"primary":true,"globe":"mars"}]}]}}"#;
+        let list = parse_candidates(std::str::from_utf8(mars).unwrap()).unwrap();
+        assert_eq!(list[0].elsewhere, Some(("mars".to_string(), 18.65, 226.2)));
+        // Our names give longitudes from -180 to 180.
+        assert_eq!(choose_feature("Olympus Mons", "mars", (18.65, -133.8), 2.0, &list), Some(0));
+        assert!(title_url("en", "Perseverance (rover)").contains("&titles=Perseverance%20%28rover%29&redirects=1"));
     }
 
     #[test]
@@ -825,6 +1318,7 @@ mod tests {
             title: title.into(),
             description: String::new(),
             at,
+            elsewhere: None,
             item: Some(item.into()),
             disambiguation: false,
             url: "https://en.wikipedia.org/wiki/X".into(),

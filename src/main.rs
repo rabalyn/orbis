@@ -1604,8 +1604,17 @@ impl Scene {
     }
 
     /// Opens the information box for the label or the ground under a point, and asks for its
-    /// content. Nothing is asked for other bodies, whose places Wikipedia does not locate.
+    /// content. On other bodies a mission's track, a named feature, or the features around a
+    /// spot of ground are what can be told about.
     fn start_info(&mut self, pos: DVec2) {
+        let earth = body::current().id == body::EARTH.id;
+        if !earth {
+            if let Some(i) = missions::hit(&self.mission_marks, pos, self.gui_size.2 as f64) {
+                let track = &missions::all()[i];
+                self.ask_info(track.name.clone(), None, Some(wikilookup::Job::Title { title: track.article().to_string() }));
+                return;
+            }
+        }
         let (target, altitude) = if self.mode == Mode::Atlas {
             (pick::pick(pos, &self.placed_labels, self.map.view.lat_lon_at(pos.x, pos.y)), self.map.view.distance_for_scale())
         } else {
@@ -1614,6 +1623,9 @@ impl Scene {
         let Some(target) = target else { return };
         // Positions are in radians here, and in degrees for Wikipedia and for the box.
         let (lat, lon) = (target.position().0.to_degrees(), target.position().1.to_degrees());
+        if !earth {
+            return self.start_info_elsewhere(&target, (lat, lon));
+        }
         let (title, job) = match &target {
             pick::Target::Label { name, style, .. } => {
                 let name = wiki::label_name(name, *style);
@@ -1621,18 +1633,46 @@ impl Scene {
             }
             pick::Target::Ground { .. } => ("Nearby articles".to_string(), wikilookup::Job::Ground { lat, lon, altitude }),
         };
-        let earth = body::current().id == body::EARTH.id;
+        self.ask_info(title, Some((lat, lon)), Some(job));
+    }
+
+    /// The box for a click on another body: a feature's name asks for its article, open
+    /// ground lists the named features there.
+    fn start_info_elsewhere(&mut self, target: &pick::Target, (lat, lon): (f64, f64)) {
+        let b = body::current();
+        match target {
+            pick::Target::Label { name, style: vector::LabelStyle::Region | vector::LabelStyle::Feature, priority, .. } => {
+                let diameter = -(*priority as f64) * 100.0;
+                let reach = (diameter / 2.0 / b.a).to_degrees() + 0.5;
+                // Wikipedia gives positions on other bodies in planetocentric latitude.
+                let centric = geo::to_planetocentric(lat.to_radians(), b.id).to_degrees();
+                let job = wikilookup::Job::Feature { name: name.clone(), body: b.id.to_string(), body_name: b.name.to_string(), lat: centric, lon, reach };
+                self.ask_info(wiki::display_text(name), Some((lat, lon)), Some(job));
+            }
+            pick::Target::Label { name, .. } => {
+                self.ask_info(wiki::display_text(name), Some((lat, lon)), None);
+                self.info.borrow_mut().content = info::Content::Message("There is nothing more to tell about this name.".to_string());
+            }
+            pick::Target::Ground { lat: la, lon: lo } => {
+                let near = planet_names::nearest(b.id, *la, *lo, 8);
+                self.ask_info(format!("{}: named features", b.name), Some((lat, lon)), None);
+                self.info.borrow_mut().content = if near.is_empty() {
+                    info::Content::Message(format!("No features on {} have names here.", b.name))
+                } else {
+                    info::Content::Features(near)
+                };
+            }
+        }
+    }
+
+    /// Opens the box with a title, and asks for its content if there is a job.
+    fn ask_info(&mut self, title: String, at: Option<(f64, f64)>, job: Option<wikilookup::Job>) {
         self.info_id += 1;
-        *self.info.borrow_mut() = info::Model {
-            title: if earth { title } else { body::current().name.to_string() },
-            at: Some((lat, lon)),
-            content: if earth { info::Content::Looking } else { info::Content::Message("Information from Wikipedia is available for Earth only.".to_string()) },
-            note: None,
-        };
-        if earth {
+        *self.info.borrow_mut() = info::Model { title, at, content: info::Content::Looking, note: None };
+        self.info_pending = job.is_some();
+        if let Some(job) = job {
             self.lookup.submit(self.info_id, job);
         }
-        self.info_pending = earth;
         self.show_info();
     }
 
@@ -1651,7 +1691,21 @@ impl Scene {
                     self.info.borrow_mut().note = info::open_in_browser(&url).err();
                 }
             }
+            info::Action::Language(i) => {
+                let Some(l) = self.info.borrow().edition(i).cloned() else { return };
+                let at = self.info.borrow().at;
+                self.ask_info(l.title.clone(), at, Some(wikilookup::Job::Edition { lang: l.code, title: l.title }));
+            }
             info::Action::Pick(i) => {
+                let feature = self.info.borrow().feature(i).cloned();
+                if let Some(f) = feature {
+                    let b = body::current();
+                    let reach = (f.diameter / 2.0 / b.a).to_degrees() + 0.5;
+                    let centric = geo::to_planetocentric(f.lat.to_radians(), b.id).to_degrees();
+                    let job = wikilookup::Job::Feature { name: f.name.clone(), body: b.id.to_string(), body_name: b.name.to_string(), lat: centric, lon: f.lon, reach };
+                    self.ask_info(wiki::display_text(&f.name), Some((f.lat, f.lon)), Some(job));
+                    return;
+                }
                 let Some(near) = self.info.borrow().near(i).cloned() else { return };
                 self.info_id += 1;
                 *self.info.borrow_mut() = info::Model { title: near.title.clone(), at: None, content: info::Content::Looking, note: None };

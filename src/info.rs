@@ -18,6 +18,8 @@ pub enum Content {
     Facts(Card),
     Article(Article),
     Nearby { items: Vec<NearItem>, radius: f64 },
+    /// Named features on another body around the spot, to choose one to read about.
+    Features(Vec<crate::planet_names::Near>),
 }
 
 /// What the box shows about something measured: the gist first, then the figures, then how to
@@ -139,6 +141,21 @@ impl Model {
         }
     }
 
+    pub fn feature(&self, i: usize) -> Option<&crate::planet_names::Near> {
+        match &self.content {
+            Content::Features(items) => items.get(i),
+            _ => None,
+        }
+    }
+
+    /// The article's edition in the language with this number of its list.
+    pub fn edition(&self, i: usize) -> Option<&wiki::Language> {
+        match &self.content {
+            Content::Article(a) => a.languages.get(i),
+            _ => None,
+        }
+    }
+
     pub fn article_url(&self) -> Option<&str> {
         match &self.content {
             Content::Article(a) => Some(&a.url),
@@ -146,20 +163,96 @@ impl Model {
         }
     }
 
-    /// The credit that goes with what is shown, if anything from Wikipedia is.
-    pub fn credit(&self) -> Option<String> {
+}
+
+/// A piece of the line that names the sources: text, or text that links to a page.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Piece {
+    Text(String),
+    Link(String, String),
+}
+
+const CC_BY_SA: &str = "https://creativecommons.org/licenses/by-sa/4.0/";
+const CC0: &str = "https://creativecommons.org/publicdomain/zero/1.0/";
+const GAZETTEER: &str = "https://planetarynames.wr.usgs.gov/";
+
+impl Model {
+    /// The sources of what is shown, with links to the article, the facts' item and the terms.
+    pub fn sources(&self) -> Vec<Piece> {
+        let t = |s: &str| Piece::Text(s.to_string());
+        let l = |s: &str, u: &str| Piece::Link(s.to_string(), u.to_string());
         match &self.content {
             Content::Article(a) => {
-                let mut s = format!("Text: Wikipedia, \"{}\" ({}.wikipedia.org), CC BY-SA 4.0.", a.title, a.lang);
+                let mut v = vec![t("Text: Wikipedia, "), l(&format!("\"{}\" ({}.wikipedia.org)", a.title, a.lang), &a.url), t(", "), l("CC BY-SA 4.0", CC_BY_SA), t(".")];
                 if !a.facts.is_empty() {
-                    s.push_str(" Facts: Wikidata, CC0.");
+                    match &a.item {
+                        Some(q) => v.extend([t(" Facts: "), l(&format!("Wikidata {q}"), &format!("https://www.wikidata.org/wiki/{q}"))]),
+                        None => v.push(t(" Facts: Wikidata")),
+                    }
+                    v.extend([t(", "), l("CC0", CC0), t(".")]);
                 }
-                Some(s)
+                v
             }
-            Content::Nearby { items, .. } if !items.is_empty() => Some(format!("Names: Wikipedia ({}.wikipedia.org), CC BY-SA 4.0.", items[0].lang)),
-            _ => None,
+            Content::Nearby { items, .. } if !items.is_empty() => {
+                let lang = &items[0].lang;
+                vec![t("Names: "), l(&format!("Wikipedia ({lang}.wikipedia.org)"), &format!("https://{lang}.wikipedia.org/")), t(", "), l("CC BY-SA 4.0", CC_BY_SA), t(".")]
+            }
+            Content::Features(items) if !items.is_empty() => vec![t("Names: IAU / "), l("USGS Gazetteer of Planetary Nomenclature", GAZETTEER), t(".")],
+            _ => Vec::new(),
         }
     }
+}
+
+/// An article's infobox: headings in the accent colour over rows of name and value. The names
+/// take a column as wide as the longest, but at most two fifths of the box, and wrap in it.
+fn infobox(ui: &mut egui::Ui, rows: &[wiki::BoxRow]) {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let widest = rows
+        .iter()
+        .filter_map(|r| if let wiki::BoxRow::Fact(k, _) = r { Some(k) } else { None })
+        .map(|k| ui.painter().layout_no_wrap(k.clone(), font.clone(), egui::Color32::WHITE).size().x)
+        .fold(0.0f32, f32::max);
+    let gap = 12.0;
+    let name_w = widest.min(ui.available_width() * 0.4).ceil();
+    for r in rows {
+        match r {
+            wiki::BoxRow::Fact(k, v) => {
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    ui.allocate_ui_with_layout(egui::vec2(name_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.set_width(name_w);
+                        ui.add(egui::Label::new(egui::RichText::new(k).weak()).wrap());
+                    });
+                    ui.add(egui::Label::new(v).wrap());
+                });
+                ui.add_space(2.0);
+            }
+            wiki::BoxRow::Heading(h) => {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(h).color(gui::accent()).strong());
+            }
+            wiki::BoxRow::Text(t) => {
+                ui.add(egui::Label::new(t).wrap());
+            }
+        }
+    }
+}
+
+/// The sources as a line of text and links.
+fn sources(ui: &mut egui::Ui, pieces: &[Piece]) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        for p in pieces {
+            match p {
+                Piece::Text(s) => {
+                    ui.label(egui::RichText::new(s).weak().size(12.0));
+                }
+                Piece::Link(s, url) => {
+                    ui.hyperlink_to(egui::RichText::new(s).size(12.0), url).on_hover_text(url);
+                }
+            }
+        }
+    });
 }
 
 pub type Shared = Rc<RefCell<Model>>;
@@ -170,6 +263,20 @@ pub enum Action {
     OpenBrowser,
     /// Show the article with this number of the nearby list.
     Pick(usize),
+    /// Show the article in the language with this number of its list.
+    Language(usize),
+}
+
+/// What a language edition is called in itself, for the one being read; its list of other
+/// editions names the rest.
+fn edition_name(code: &str) -> String {
+    const NAMES: &[(&str, &str)] = &[
+        ("en", "English"), ("de", "Deutsch"), ("fr", "Français"), ("es", "Español"), ("it", "Italiano"),
+        ("nl", "Nederlands"), ("pl", "Polski"), ("pt", "Português"), ("ru", "Русский"), ("sv", "Svenska"),
+        ("uk", "Українська"), ("cs", "Čeština"), ("da", "Dansk"), ("fi", "Suomi"), ("no", "Norsk bokmål"),
+        ("hu", "Magyar"), ("ro", "Română"), ("tr", "Türkçe"), ("el", "Ελληνικά"), ("ca", "Català"),
+    ];
+    NAMES.iter().find(|(c, _)| *c == code).map_or_else(|| code.to_string(), |(_, n)| n.to_string())
 }
 
 /// Opens an article in the browser. Only a plain Wikipedia address is passed on.
@@ -235,13 +342,16 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> (bool, Option<Acti
         .flatten()
         .map_or(f32::NEG_INFINITY, |r| r.bottom() + 10.0);
     let top = (screen.bottom() - 120.0 - height).max(below_chart);
+    let box_height = height.min(screen.bottom() - 110.0 - top).max(160.0);
+    // The text scrolls; the sources and the button below it stay in view.
+    let text_height = (box_height - 80.0).max(80.0);
     let shown = gui::window(&title, WINDOW)
         .open(&mut open)
         .default_pos(egui::pos2(screen.left() + 12.0, top))
         .default_width((screen.width() - 40.0).clamp(240.0, 420.0))
-        .default_height(height.min(screen.bottom() - 110.0 - top).max(160.0))
+        .default_height(box_height)
         .show(ctx, |ui| {
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            egui::ScrollArea::vertical().auto_shrink([false, true]).max_height(text_height).show(ui, |ui| {
                 let facts = |ui: &mut egui::Ui, rows: &[(String, String)]| {
                     egui::Grid::new("facts").num_columns(2).spacing([12.0, 3.0]).show(ui, |ui| {
                         for (k, v) in rows {
@@ -278,20 +388,60 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> (bool, Option<Acti
                         }
                     }
                     Content::Article(a) => {
-                        if !a.description.is_empty() {
-                            gui::note(ui, &a.description);
-                        }
-                        if !a.facts.is_empty() {
-                            ui.add_space(4.0);
-                            facts(ui, &a.facts);
-                            ui.add_space(4.0);
-                        }
-                        if a.text.is_empty() {
-                            gui::note(ui, "This article has no introduction.");
+                        let tab_id = egui::Id::unique("info-tab");
+                        let mut tab = ui.ctx().data(|d| d.get_temp::<bool>(tab_id)).unwrap_or(false) && !a.infobox.is_empty();
+                        ui.horizontal(|ui| {
+                            if !a.infobox.is_empty() {
+                                ui.selectable_value(&mut tab, false, "Article");
+                                ui.selectable_value(&mut tab, true, "Infobox");
+                                ui.add_space(8.0);
+                            }
+                            if !a.languages.is_empty() {
+                                egui::ComboBox::from_id_salt("info-language").selected_text(edition_name(&a.lang)).height(320.0).show_ui(ui, |ui| {
+                                    for (i, l) in a.languages.iter().enumerate() {
+                                        if ui.selectable_label(false, &l.name).on_hover_text(&l.title).clicked() {
+                                            action = Some(Action::Language(i));
+                                        }
+                                    }
+                                })
+                                .response
+                                .on_hover_text(format!("Also in {} other languages", a.languages.len()));
+                            }
+                        });
+                        ui.ctx().data_mut(|d| d.insert_temp(tab_id, tab));
+                        ui.add_space(2.0);
+                        if tab {
+                            infobox(ui, &a.infobox);
                         } else {
-                            for para in a.text.split('\n').filter(|p| !p.trim().is_empty()) {
-                                ui.add(egui::Label::new(para).wrap());
+                            if !a.description.is_empty() {
+                                gui::note(ui, &a.description);
+                            }
+                            if !a.facts.is_empty() {
                                 ui.add_space(4.0);
+                                facts(ui, &a.facts);
+                                ui.add_space(4.0);
+                            }
+                            if a.text.is_empty() {
+                                gui::note(ui, "This article has no introduction.");
+                            } else {
+                                for para in a.text.split('\n').filter(|p| !p.trim().is_empty()) {
+                                    ui.add(egui::Label::new(para).wrap());
+                                    ui.add_space(4.0);
+                                }
+                            }
+                        }
+                    }
+                    Content::Features(items) => {
+                        gui::note(ui, "Named features at this spot, then the nearest. Click one to read about it.");
+                        for (i, it) in items.iter().enumerate() {
+                            let size = wiki::distance_text(it.diameter);
+                            let text = if it.inside {
+                                format!("{}  \u{00b7}  {size} across", it.name)
+                            } else {
+                                format!("{}  \u{00b7}  {size} across, {} away", it.name, wiki::distance_text(it.distance))
+                            };
+                            if ui.add(egui::Button::new(text).wrap()).clicked() {
+                                action = Some(Action::Pick(i));
                             }
                         }
                     }
@@ -314,11 +464,12 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> (bool, Option<Acti
                     gui::note(ui, c);
                 }
             });
-            if m.credit().is_some() || m.note.is_some() || m.article_url().is_some() {
+            let pieces = m.sources();
+            if !pieces.is_empty() || m.note.is_some() || m.article_url().is_some() {
                 ui.separator();
             }
-            if let Some(c) = m.credit() {
-                gui::note(ui, &c);
+            if !pieces.is_empty() {
+                sources(ui, &pieces);
             }
             if let Some(n) = &m.note {
                 ui.label(egui::RichText::new(n).color(gui::warn_colour(ui)));
@@ -355,6 +506,9 @@ mod tests {
             facts: vec![("Population".into(), "2,028,289 (2025)".into()), ("Country".into(), "Austria".into())],
             text: text.into(),
             url: "https://en.wikipedia.org/wiki/Vienna".into(),
+            item: Some("Q1741".into()),
+            languages: Vec::new(),
+            infobox: Vec::new(),
         }
     }
 
@@ -363,13 +517,19 @@ mod tests {
     }
 
     #[test]
-    fn the_credit_names_the_article_while_it_is_shown() {
+    fn the_article_address_is_known_while_it_is_shown() {
         let m = model(Content::Article(article("Text")));
-        let c = m.credit().unwrap();
-        assert!(c.contains("\"Vienna\"") && c.contains("en.wikipedia.org") && c.contains("CC BY-SA 4.0") && c.contains("Wikidata, CC0"), "{c}");
-        assert_eq!(model(Content::Looking).credit(), None);
         assert_eq!(m.article_url(), Some("https://en.wikipedia.org/wiki/Vienna"));
         assert_eq!(model(Content::Looking).article_url(), None);
+    }
+
+    #[test]
+    fn the_sources_link_to_the_article_the_item_and_the_terms() {
+        let m = model(Content::Article(article("Text")));
+        let links: Vec<_> = m.sources().into_iter().filter_map(|p| if let Piece::Link(_, u) = p { Some(u) } else { None }).collect();
+        assert_eq!(links, vec!["https://en.wikipedia.org/wiki/Vienna", CC_BY_SA, "https://www.wikidata.org/wiki/Q1741", CC0]);
+        assert!(links.iter().all(|u| is_web_address(u)));
+        assert!(model(Content::Looking).sources().is_empty());
     }
 
     #[test]

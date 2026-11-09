@@ -172,10 +172,10 @@ The JSON answers are read with `serde_json` (MIT or Apache-2.0).
 
 | Data | Source | Terms | Credit shown in the app |
 |---|---|---|---|
-| Article text, titles, descriptions, coordinates | Wikipedia's MediaWiki Action API, `https://{lang}.wikipedia.org/w/api.php` (generator `search` and `geosearch`, props `coordinates`, `pageprops`, `description`, `info`, `extracts`; JSON) | Text is CC BY-SA 4.0 (and GFDL), per the [Wikimedia Terms of Use](https://foundation.wikimedia.org/wiki/Policy:Terms_of_Use): reuse needs a link or URL to the article, or a list of authors, and the licence named; changes must be indicated. The text is shown as the API gives it, only with pronunciation guides dropped and characters the built-in font lacks simplified or replaced | `Text: Wikipedia, "TITLE" (xx.wikipedia.org), CC BY-SA 4.0.` in the box while it shows the article; the "Open article in browser" button leads to the page and its history |
-| Facts (type, country, population, elevation, area, website, time zone) | Wikidata's query service, `https://query.wikidata.org/sparql`, one SPARQL query per article by item number | Structured data in the main namespaces is CC0 ([Wikidata:Licensing](https://www.wikidata.org/wiki/Wikidata:Licensing)); the page does not say whether credit is expected, so it is given anyway. The [query service manual](https://www.mediawiki.org/wiki/Wikidata_Query_Service/User_Manual) limits each client to 60 s of query time per minute and 5 parallel queries, answers HTTP 429 with Retry-After when exceeded and may ban clients that go on | `Facts: Wikidata, CC0.` in the box while facts are shown |
+| Article text, titles, descriptions, coordinates, other languages, infobox | Wikipedia's MediaWiki Action API, `https://{lang}.wikipedia.org/w/api.php` (generator `search` and `geosearch`, `titles` for missions and other languages, props `coordinates`, `pageprops`, `description`, `info`, `extracts`, `langlinks`; and `action=parse` with `prop=text&section=0` for the first section's HTML, from which only the infobox table is read; JSON) | Text is CC BY-SA 4.0 (and GFDL), per the [Wikimedia Terms of Use](https://foundation.wikimedia.org/wiki/Policy:Terms_of_Use): reuse needs a link or URL to the article, or a list of authors, and the licence named; changes must be indicated. The text is shown as the API gives it, only with pronunciation guides dropped and characters the built-in font lacks simplified or replaced | `Text: Wikipedia, "TITLE" (xx.wikipedia.org), CC BY-SA 4.0.` in the box while it shows the article or its infobox, with the title linking to the page (and so its history) and the licence to its text; the "Open article in browser" button leads there too |
+| Facts (type, country, population, elevation, area, website, time zone) | Wikidata's query service, `https://query.wikidata.org/sparql`, one SPARQL query per article by item number | Structured data in the main namespaces is CC0 ([Wikidata:Licensing](https://www.wikidata.org/wiki/Wikidata:Licensing)); the page does not say whether credit is expected, so it is given anyway. The [query service manual](https://www.mediawiki.org/wiki/Wikidata_Query_Service/User_Manual) limits each client to 60 s of query time per minute and 5 parallel queries, answers HTTP 429 with Retry-After when exceeded and may ban clients that go on | `Facts: Wikidata Qnnn, CC0.` in the box while facts are shown, the item linking to its Wikidata page |
 
-Etiquette read from [API:Etiquette](https://www.mediawiki.org/wiki/API:Etiquette): requests are serial, at least 0.3 s apart and at most five per click, only
+Etiquette read from [API:Etiquette](https://www.mediawiki.org/wiki/API:Etiquette): requests are serial, at least 0.3 s apart and at most six per click on Earth (up to four searches and two more for a feature on another body), only
 after a click (nothing at start or on hover), batched through generators, with `maxlag=5`, in JSON, and answers are cached on disk for a week (CACHING.md). A
 `maxlag`, `ratelimited` or HTTP 429 answer pauses the host through the usual back-off. Only text is used, no images, whose licences vary per file.
 
@@ -187,7 +187,9 @@ after about ten queries within a few minutes of testing. Wikipedia's licence pag
 Action API beyond "serial, be considerate" was found.
 
 Saved real answers used as test data are in `tests/fixtures/wiki/`: short extracts of Wikipedia text (CC BY-SA 4.0, from the articles Vienna, Tokyo Metropolis and
-Cairo) and facts from Wikidata (CC0), recorded on 2026-11-07, kept with the source's licence.
+Cairo) and facts from Wikidata (CC0), recorded on 2026-11-07, kept with the source's licence. `parse_tycho_en.json` and
+`parse_perseverance_en.json` are the first sections of the articles "Tycho (lunar crater)" and "Perseverance (rover)" as the
+parse API gave them on 2026-11-09 (CC BY-SA 4.0), kept for the infobox tests.
 
 ### Map service directory (`data/services.json`)
 

@@ -3,8 +3,10 @@
 //!
 //! Requests go out only for a click, one after the other, at least `MIN_GAP` apart, through the
 //! fetcher (pauses, back-off, user agent, `--offline`), and every answer is kept on disk for a
-//! week. A click makes at most five requests: a search (a second one in English when the interface
-//! language has no match), a search around the label for small places, the facts, and the text.
+//! week. A click on Earth makes at most six requests: a search (a second one in English when the
+//! interface language has no match), a search around the label for small places, the facts, the
+//! text with the list of other languages, and the infobox. A feature on another body may take up
+//! to four searches (with and without the body's name, in two languages) before its text.
 
 use crate::event_feeds::{pack, unix_now, unpack};
 use crate::fetcher::{FetchError, Fetcher};
@@ -27,6 +29,13 @@ pub enum Job {
     Ground { lat: f64, lon: f64, altitude: f64 },
     /// One article of the nearby list.
     Page { lang: String, page_id: u64, item: Option<String> },
+    /// A named feature on another body (`body` its id, `body_name` as it is written), at a
+    /// position in degrees; the article's own position must be within `reach` degrees.
+    Feature { name: String, body: String, body_name: String, lat: f64, lon: f64, reach: f64 },
+    /// An article known by its English title, such as a mission's.
+    Title { title: String },
+    /// The same article in another language edition, by its title there.
+    Edition { lang: String, title: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -58,6 +67,12 @@ pub struct Article {
     pub facts: Vec<(String, String)>,
     pub text: String,
     pub url: String,
+    /// The Wikidata item the facts are from, such as Q90.
+    pub item: Option<String>,
+    /// The same article in the other languages the windows can show.
+    pub languages: Vec<wiki::Language>,
+    /// The summary table at the side of the article, if it has one.
+    pub infobox: Vec<wiki::BoxRow>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -185,7 +200,35 @@ fn run(net: &mut Net, lang: &str, job: &Job) -> Result<Outcome, Failure> {
             let article = article(net, lang, *page_id, "", item.as_deref(), None)?;
             Ok(Outcome::Article(article))
         }
+        Job::Feature { name, body, body_name, lat, lon, reach } => feature(net, lang, name, body, body_name, (*lat, *lon), *reach),
+        Job::Title { title } => by_title(net, "en", title),
+        Job::Edition { lang, title } => by_title(net, &wiki::language(lang), title),
     }
+}
+
+fn by_title(net: &mut Net, lang: &str, title: &str) -> Result<Outcome, Failure> {
+    let list = net.get(&wiki::title_url(lang, title), wiki::parse_candidates)?;
+    let Some(c) = list.into_iter().find(|c| !c.disambiguation) else { return Ok(Outcome::NoArticle) };
+    Ok(Outcome::Article(article(net, lang, c.page_id, &c.description, c.item.as_deref(), None)?))
+}
+
+/// The article about a feature on another body: searched for with the body's name, then without
+/// it, in the reader's language and then in English.
+fn feature(net: &mut Net, lang: &str, name: &str, body: &str, body_name: &str, at: (f64, f64), reach: f64) -> Result<Outcome, Failure> {
+    let mut langs = vec![lang.to_string()];
+    if lang != "en" {
+        langs.push("en".to_string());
+    }
+    for l in &langs {
+        for query in [format!("{name} {body_name}"), name.to_string()] {
+            let list = net.get(&wiki::search_url(l, &query), wiki::parse_candidates)?;
+            if let Some(i) = wiki::choose_feature(name, body, at, reach, &list) {
+                let c = &list[i];
+                return Ok(Outcome::Article(article(net, l, c.page_id, &c.description, c.item.as_deref(), None)?));
+            }
+        }
+    }
+    Ok(Outcome::NoArticle)
 }
 
 struct Found {
@@ -244,13 +287,26 @@ fn article(net: &mut Net, lang: &str, page_id: u64, description: &str, item: Opt
     // The facts are a bonus: without them the article is still shown.
     let facts = facts.or_else(|| item.and_then(|q| net.facts(q, lang).ok()));
     let rows = facts.as_ref().map(|f| wiki::fact_lines(f, lang)).unwrap_or_default();
+    // The infobox is a bonus too.
+    let infobox = net.get(&wiki::infobox_url(lang, page_id), wiki::parse_infobox).unwrap_or_default();
+    let infobox = infobox
+        .into_iter()
+        .map(|r| match r {
+            wiki::BoxRow::Heading(t) => wiki::BoxRow::Heading(wiki::box_text(&t)),
+            wiki::BoxRow::Fact(k, v) => wiki::BoxRow::Fact(wiki::box_text(&k), wiki::box_text(&v)),
+            wiki::BoxRow::Text(t) => wiki::BoxRow::Text(wiki::box_text(&t)),
+        })
+        .collect();
     Ok(Article {
         lang: lang.to_string(),
-        title: wiki::display_text(&e.title),
-        description: wiki::display_text(description),
-        facts: rows.into_iter().map(|(k, v)| (k.to_string(), wiki::display_text(&v))).collect(),
-        text: wiki::display_text(&e.text),
+        title: wiki::box_text(&e.title),
+        description: wiki::box_text(description),
+        facts: rows.into_iter().map(|(k, v)| (k.to_string(), wiki::box_text(&v))).collect(),
+        text: wiki::box_text(&e.text),
         url: e.url,
+        item: item.filter(|q| wiki::is_item(q)).map(str::to_string),
+        languages: e.languages,
+        infobox,
     })
 }
 

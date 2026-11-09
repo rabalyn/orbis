@@ -644,14 +644,20 @@ never confused:
 - Small places (peak, quarter, village, town, city) that the word search does not list are also looked for among the articles around the label (at most 10 km) and matched the same way.
 - Open ground shows the coordinates and up to five articles nearby, nearest first, with their distances. The radius follows the altitude (0.4 times it, from 1 to 10 km). A row opens that article in the box.
 - The article box shows the title, the one-line description, facts from Wikidata where there are some (type, country or countries, population with the year, elevation, area, official website, time zone), then the article's introduction as plain text, scrollable, and the credit. Text only: no images.
-- A button opens the article in the default browser (`xdg-open`, with the address from the API checked to be a Wikipedia address and started without a shell). A failure is shown in the box.
-- A click makes at most five requests, one after another and at least 0.3 s apart. All answers are kept on disk for a week. With `--offline` only kept answers are used, and otherwise the box says so. A stale answer is used when the service cannot be reached.
-- On other bodies the box shows the coordinates and says that information is available for Earth only; nothing is asked.
+- Two tabs: "Article" with the above, and "Infobox" with the table at the side of the Wikipedia page, as headings and rows of name and value (lists keep their lines; pictures, captions, footnote marks and hidden duplicates are left out). The tab is there only when the article has an infobox.
+- A list beside the tabs offers the article in the other languages it is written in, by each language's own name. Only languages whose name the interface's font (Noto Sans: Latin, Greek and Cyrillic scripts) can draw are listed. Choosing one loads that edition, with its own facts, infobox and list.
+- Below the text the sources are links: the article (to its page), the Wikidata item the facts came from, and the licences. A button also opens the article in the default browser (`xdg-open`, with the address from the API checked to be a Wikipedia address and started without a shell). A failure is shown in the box. The text scrolls; the sources and the button stay in view.
+- A click on Earth makes at most six requests, one after another and at least 0.3 s apart. All answers are kept on disk for a week. With `--offline` only kept answers are used, and otherwise the box says so. A stale answer is used when the service cannot be reached.
+- On other bodies:
+  - a mission's icon or track opens the mission's article, by a title kept with each mission;
+  - a feature's name is searched for with the body's name and without it, in the interface's language and in English. The article is taken only if its title is the name and Wikipedia places it on that body within the feature's radius plus half a degree (Wikipedia gives planetocentric coordinates with east longitudes from 0 to 360°, which are compared as such);
+  - open ground lists the named features the point lies in (smallest first) and then the nearest others, eight in all, with size and distance; a row opens that feature's article. Wikipedia does not locate articles on other bodies by position, so there is no nearby search there.
 - The flat map works the same way, with the names it draws.
 - With the box open, a click on a name or an energy bar opens that one at once; a click on open ground only closes the box.
 
 ### Limitations
-- The box uses the built-in font (ASCII and Latin-1, with accents of Latin Extended-A folded to plain letters and common punctuation simplified). Other scripts (Cyrillic, Greek, CJK, Arabic, Hebrew, Vietnamese and so on) show as `?`, so articles in those languages are largely unreadable. Pronunciation guides are dropped.
+- The box draws what Noto Sans has: Latin with its accents, Greek and Cyrillic, and the common punctuation and symbols. Other scripts (CJK, Arabic, Hebrew, Devanagari and so on) show as `?`, and those language editions are not offered. Pronunciation guides are dropped.
+- The infobox is read from the page's HTML by a small reader of its own, not a full HTML parser. Unusual layouts may lose a row, and superscripts become plain text ("km2").
 - Wikipedia's word search ranks by words, so a place with a common name may be found only by the search around the label, which reaches 10 km. A village label whose article lies farther, or has no coordinates, gets no article, and neither do labels that differ from the article's title (an exonym, a local spelling).
 - Wikipedia's coordinates for countries and seas are rough, hence the large radii.
 - The facts are taken as Wikidata states them. Population is the newest statement that is not deprecated, which may be old or an estimate.
