@@ -259,3 +259,22 @@ bundled; answers are cached on disk and fetched only while the energy bars show 
 
 Energy-Charts (Fraunhofer ISE) offers similar data, but its publishing notes allow its material for personal use only and
 require written approval for distribution, so it is not used.
+
+### Electricity of the world's countries (`data/owid_energy.bin`, `data/countries.bin`)
+Built offline by `tools/gen_owid.py` (retrieved 2026-11-09) and bundled; the program requests nothing for it. Not shown
+yet: the countries level of the energy layer and the information box will use it.
+
+| Data | Source | Terms | Credit shown |
+|---|---|---|---|
+| Per country and year: population, electricity generation, demand, net imports, carbon intensity, renewable share, generation by source (coal, gas, oil, nuclear, hydro, wind, solar, bioenergy, other renewables) | Our World in Data's energy dataset, `catalog.ourworldindata.org/energy/owid_energy/owid_energy.csv`; the sources of each column are named in its codebook, `github.com/owid/energy-data/blob/master/owid-energy-codebook.csv` (read 2026-11-09) | OWID's own work is CC BY 4.0; third-party data keeps its terms. The electricity columns kept are Ember's (Yearly Electricity Data and Yearly Electricity Data Europe, 2026, CC BY 4.0 as OWID's indicator metadata states) and, for years before Ember's, the Energy Institute's Statistical Review of World Energy (2025), which OWID's metadata gives as "© Energy Institute 2026" with its terms at `energyinst.org/terms` (not read). Population is OWID's "Population based on various sources (2024)", mainly the UN's World Population Prospects. The EIA figures OWID names are in its primary-energy columns, which are not kept | `Electricity of countries: Our World in Data (CC BY 4.0), from Ember (CC BY 4.0) and the Energy Institute Statistical Review of World Energy` (`owid::CREDIT`) |
+| Per country and month: generation in total and by the same sources, demand, net imports, carbon intensity | OWID's chart API, `ourworldindata.org/grapher/electricity-mix.csv?frequency=monthly&metric=<generation, demand, net_imports or carbon_intensity>&source=<total or a source>&useColumnShortNames=true`, from Ember's Monthly Electricity Data | Ember, CC BY 4.0 (from `electricity-mix.metadata.json` and the indicator metadata it links) | as above |
+| Country outlines, label points, English names and Wikidata items | Natural Earth admin-0 countries 1:50m, version 5.2, `github.com/nvkelso/natural-earth-vector`, `geojson/ne_50m_admin_0_countries.geojson` | Public domain (naturalearthdata.com, from general knowledge) | none required |
+
+Countries are keyed by ISO 3166 alpha-3. OWID's regions and aggregates are left out apart from the World (`OWID_WRL`);
+Kosovo, which has no ISO code, is `OWID_KOS` in both files. Natural Earth gives France and Norway the code -99 in
+`ISO_A3`, so `ISO_A3_EH` is used; territories that carry their country's code there (Australia's Indian Ocean
+territories) join it, and areas without any code (Somaliland, Northern Cyprus, Siachen) are left out. Years before 1900
+are dropped, values are rounded to 1 GWh (0.01 g/kWh, 0.01 %), and outlines are simplified by 0.02° and rounded to
+1e-4°, with islands under 0.002 square degrees dropped (never a country's largest ring); the data is otherwise unchanged. The first year with Ember's
+demand marks where OWID's electricity figures switch from the Energy Institute to Ember, which is how the reader names
+each figure's source.
