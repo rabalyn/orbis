@@ -87,6 +87,14 @@ cargo install wasm-bindgen-cli --version 0.2.130   # must match wasm-bindgen in 
 ./web/build.sh                                      # writes dist/index.html
 ```
 
+To publish it on GitHub Pages ([rabalyn/orbis](https://github.com/rabalyn/orbis), served at https://rabalyn.github.io/orbis/), commit, then run:
+
+```bash
+./web/publish.sh            # --dry-run to push nothing; --help for all options
+```
+
+It builds the last commit in a clean checkout, pushes the page, waits for the deploy and checks that the live file is the one built. It stops if tracked files have uncommitted changes. Exit status 0 means published or already up to date, and the last line says which.
+
 It uses WebGPU where the browser has it, and WebGL 2 otherwise. Options go in the address, as for the command line: `index.html?lat=46.5&lon=11.8&distance=25000&tilt=70&time=2026-06-21T10:00:00Z`.
 
 What differs from the desktop program:
