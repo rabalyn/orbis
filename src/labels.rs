@@ -46,6 +46,8 @@ pub fn appearance(style: LabelStyle) -> Appearance {
         LabelStyle::Lake => a(12.0, false, true, [0.62, 0.84, 1.0], [0.01, 0.04, 0.12]),
         LabelStyle::Peak => a(12.0, false, false, [1.0, 0.86, 0.7], DARK),
         LabelStyle::Road => a(11.0, false, false, [1.0, 0.97, 0.82], DARK),
+        LabelStyle::Region => a(15.0, false, true, [1.0, 0.93, 0.8], DARK),
+        LabelStyle::Feature => a(12.0, false, false, [0.95, 0.95, 0.9], DARK),
     }
 }
 
@@ -380,6 +382,7 @@ pub fn max_distance(label: &Label) -> f64 {
         LabelStyle::Village => 5.0e4,
         LabelStyle::Local => 1.5e4,
         LabelStyle::Country | LabelStyle::Sea | LabelStyle::Lake | LabelStyle::Peak | LabelStyle::Road => f64::INFINITY,
+        LabelStyle::Region | LabelStyle::Feature => crate::planet_names::reach(label) * crate::body::EARTH.a / crate::body::current().a,
     }
 }
 

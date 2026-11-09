@@ -335,7 +335,7 @@ pub fn radius_m(style: LabelStyle) -> Option<f64> {
         LabelStyle::State => 1.0e6,
         LabelStyle::Sea => 2.5e6,
         LabelStyle::Country => 3.0e6,
-        LabelStyle::Road => return None,
+        LabelStyle::Road | LabelStyle::Region | LabelStyle::Feature => return None,
     })
 }
 

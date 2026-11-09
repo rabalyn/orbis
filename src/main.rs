@@ -31,6 +31,7 @@ mod navtrace;
 mod options;
 mod overlay;
 mod pacing;
+mod planet_names;
 mod planetary;
 mod planets;
 mod recorder;
@@ -2628,6 +2629,9 @@ impl Scene {
         let mut sets: Vec<_> = ordered.iter().filter_map(|k| self.label_sets.get(k).cloned()).collect();
         if !self.import_labels.is_empty() {
             sets.push(self.import_labels.clone());
+        }
+        if !body::current().surface_data {
+            sets.push(planet_names::labels(body::current().id));
         }
 
         let names = NameKinds::of(&self.view);

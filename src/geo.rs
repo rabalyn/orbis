@@ -27,6 +27,28 @@ fn planetographic(lat: f64, e2: f64) -> f64 {
     }
 }
 
+/// The geodetic latitude this program uses for a planetocentric one given by a body's maps,
+/// names and tracks (radians). `body` is the body's id; Earth's are left alone.
+pub fn from_planetocentric(lat: f64, body: &str) -> f64 {
+    let e2 = body::all().iter().find(|b| b.id == body).map_or(0.0, |b| b.e2);
+    if body == body::EARTH.id {
+        lat
+    } else {
+        planetographic(lat, e2)
+    }
+}
+
+/// The other way: the planetocentric latitude of a geodetic one, as other sources give positions
+/// on the body (radians).
+pub fn to_planetocentric(lat: f64, body: &str) -> f64 {
+    let e2 = body::all().iter().find(|b| b.id == body).map_or(0.0, |b| b.e2);
+    if body == body::EARTH.id {
+        lat
+    } else {
+        planetocentric(lat, e2)
+    }
+}
+
 fn planetocentric(lat: f64, e2: f64) -> f64 {
     (lat.tan() * (1.0 - e2)).atan()
 }
@@ -215,6 +237,17 @@ impl TileKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_and_tracks_land_where_the_imagery_puts_them() {
+        let l = 18.65f64.to_radians();
+        // Mars is flattened: about 0.2 degrees at Olympus Mons' latitude.
+        let g = from_planetocentric(l, "mars").to_degrees();
+        assert!((g - 18.854).abs() < 0.01, "{g}");
+        assert!((to_planetocentric(from_planetocentric(l, "mars"), "mars") - l).abs() < 1e-12);
+        assert_eq!(from_planetocentric(l, "moon"), l);
+        assert_eq!(from_planetocentric(l, "earth"), l);
+    }
 
     #[test]
     fn planetocentric_rows_convert_to_geodetic_latitude() {

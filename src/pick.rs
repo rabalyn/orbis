@@ -82,6 +82,9 @@ fn label_distance(style: LabelStyle, priority: i32) -> f64 {
         LabelStyle::Local => 3.0e3,
         LabelStyle::Peak => 5.0e3,
         LabelStyle::Road => 2.0e4,
+        // On other bodies the priority holds the diameter in hundreds of metres; the view
+        // ends where the feature fills about two thirds of it.
+        LabelStyle::Region | LabelStyle::Feature => -(priority as f64) * 150.0 * crate::body::EARTH.a / crate::body::current().a,
     }
 }
 

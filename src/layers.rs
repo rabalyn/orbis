@@ -55,7 +55,7 @@ impl NameKinds {
             LabelStyle::Country | LabelStyle::State | LabelStyle::City | LabelStyle::Town | LabelStyle::Village | LabelStyle::Local => {
                 self.cities
             }
-            LabelStyle::Sea | LabelStyle::Lake | LabelStyle::Peak => self.other,
+            LabelStyle::Sea | LabelStyle::Lake | LabelStyle::Peak | LabelStyle::Region | LabelStyle::Feature => self.other,
             LabelStyle::Road => self.other && self.streets,
         }
     }

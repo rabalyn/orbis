@@ -186,6 +186,10 @@ pub enum LabelStyle {
     Lake,
     Peak,
     Road,
+    /// A wide region of another body: a mare, a plain, a land.
+    Region,
+    /// Any other named feature of another body: a crater, a mountain, a valley.
+    Feature,
 }
 
 #[derive(Debug, Clone, PartialEq)]
