@@ -23,6 +23,7 @@
   "energy_oil": true,
   "energy_other_fossil": true,
   "energy_output": true,
+  "energy_own_use": true,
   "energy_palette": "standard",
   "energy_solar": true,
   "energy_wind_offshore": true,

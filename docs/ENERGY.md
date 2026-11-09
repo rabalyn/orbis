@@ -93,6 +93,63 @@ from the TSOs is evidence of curtailment. A gap in the estimate alone isn't, so 
 - **Picking**: a click on a bar opens a panel with name, operator, type, capacity, commissioning date, current output and
   whether that value is measured or estimated, like the existing click info.
 
+## Check against Ember
+
+`python3 -I tools/check_owid.py [--fetch DIR]` sums SMARD's quarter hours into calendar months (German time) per source
+and sets them against Ember's monthly figures for Germany in `data/owid_energy.bin`. It reads the weekly files from the
+program's disk cache (`~/.cache/orbis/tiles/power`) and fetches the rest into DIR, three requests a second at most. Its
+table `MAPPING` of SMARD series to Ember's sources is the program's `power_feed::owid_series`; a test keeps them in step.
+SMARD's monthly files (`{filter}_DE_month_{start}.json`), which the program reads for its factors, match the quarter-hour
+sums exactly (checked for 2025, all thirteen series).
+
+Ember / SMARD, run on 2026-11-09. Coal is lignite and hard coal, oil is "other conventional", total leaves out pumped
+storage (which Ember does not count), demand is set against SMARD's Netzlast; SMARD and Ember in TWh generated:
+
+| Period | Solar | Wind | Hydro | Bio | Other ren. | Coal | Gas | Oil | Total | Demand | SMARD | Ember |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2024 | 1.140 | 0.986 | 1.271 | 1.138 | 4.146 | 0.987 | 1.304 | 1.218 | 1.092 | 1.056 | 427.3 | 466.7 |
+| 2025 | 1.185 | 0.983 | 1.271 | 1.133 | 3.767 | 0.985 | 1.296 | 1.239 | 1.099 | 1.049 | 428.0 | 470.6 |
+| 2025-01 | 1.567 | 0.987 | 1.268 | 1.138 | 3.950 | 0.977 | 1.206 | 1.281 | 1.085 | 1.023 | 41.6 | 45.1 |
+| 2025-06 | 1.136 | 0.982 | 1.407 | 1.124 | 3.967 | 0.988 | 1.696 | 1.211 | 1.124 | 1.094 | 33.6 | 37.8 |
+| 2025-11 | 1.511 | 0.980 | 1.171 | 1.156 | 3.312 | 0.978 | 1.164 | 1.214 | 1.081 | 1.029 | 37.8 | 40.8 |
+| 2026, Jan–Jun | 1.198 | 0.979 | 1.201 | 1.166 | 3.990 | 0.978 | 1.245 | 1.223 | 1.095 | 1.050 | 226.4 | 247.9 |
+
+What explains the gaps:
+
+- **Own use.** Ember takes Germany's monthly gas and solar from Energy-Charts precisely to capture captive (industrial)
+  and distributed (rooftop) generation, and the other fuels from Agora Energiewende; SMARD's public net generation leaves
+  out what is used where it is made. Hence solar +19% over the year and far more in winter (+57% in January, when
+  SMARD's metered parks are a smaller part), gas +30% (industrial combined heat and power), bioenergy +13%, oil and
+  other gases +24%. Wind and coal, almost all fed into the public grid, are within 2%, Ember slightly lower.
+- **Other renewables** are about four times SMARD's "Sonstige Erneuerbare" (3.6 against 1.0 TWh in 2025): Ember's
+  category is wider (sewage, landfill and mine gas reported apart from biomass), and SMARD's is small, so the ratio
+  says little about the total.
+- **Hydro** +27%: SMARD's run-of-river and storage series misses small plants. Pumped storage (8 to 11 TWh a year in
+  SMARD) is in neither total.
+- **Demand** is 5% above the Netzlast: Ember's demand is its generation plus net imports, so it includes own use too.
+
+**Ember's months against its year.** Ember's twelve months of 2025 add up to 470.6 TWh, its year to 500.5 TWh (6.4%
+more; 2024: 466.7 against 496.0; 2023: 480.1 against 506.7). The two come from different Ember datasets: the year from
+"Yearly Electricity Data Europe", built from Eurostat's annual statistics, which are **gross** generation (including
+what power stations use themselves to run, their auxiliary consumption), with gas and solar from the Energy Institute and
+wind from IRENA; the months from "Monthly Electricity Data", which Ember reports as **net** generation for the EU. Ember's
+methodology says so ("In the EU, we report net generation for monthly data and gross generation for yearly data") and
+warns that summing its months does not give its year. The gap is largest for bioenergy (+24%) and coal (+10%), whose
+plants use most of their own output, smallest for solar and wind (+2 to 4%). Demand differs by the same 6%. Other
+renewables are folded into bioenergy in the yearly series (0.0 TWh there, 3.6 in the months).
+
+The program scales to the **monthly** figures: they are net like SMARD's, so a factor only adds own use rather than
+also power stations' auxiliary consumption, which never leaves the plant; they exist per month, so the season shows in
+the factors; and Ember's monthly carbon intensity, which the intensity is calibrated to, is on the same basis. The yearly
+figures serve only the year at a glance, where Ember's own renewable share for the year is quoted as it stands.
+
+**Carbon intensity.** Each series of SMARD's mix carries a lifecycle emission factor (IPCC AR5 WG3 Annex III medians,
+listed in [PROVENANCE.md](PROVENANCE.md)); per month, one factor brings the mix's average to Ember's monthly carbon
+intensity for Germany, so the quarter hours follow SMARD's mix and the month's average is Ember's. Ember's own factors
+differ (its coal factors come from UNECE and GEM, with lignite higher than hard coal), which the calibration absorbs:
+in 2025 it lies between 1.08 and 1.12 (1.08 for November), so the IPCC medians on SMARD's mix come out about 10% below
+Ember's figures.
+
 ## Phases
 
 1. **Plants, static.** MaStR tool, bars sized by capacity, type filters, clustering, build-out over the time window. No

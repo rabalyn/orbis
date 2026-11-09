@@ -44,6 +44,7 @@ mod import_draw;
 mod places;
 mod power_chart;
 mod power_feed;
+mod calibration;
 mod eclipse;
 mod energy;
 mod energy_style;
@@ -941,6 +942,15 @@ struct PowerState {
     problem: Option<String>,
     /// The quarter hour shown, and the shares of capacity running then.
     shown: Option<(power_feed::Moment, [f32; energy::SOURCES])>,
+    /// Years by month, for the factors to Ember's monthly figures.
+    years: HashMap<i32, power_feed::Year>,
+    years_asked: HashMap<i32, Instant>,
+    /// The factors to Ember's month in effect for the clock's month, if known.
+    factors: Option<calibration::Factors>,
+    /// Whether the output shown is brought to Ember's level.
+    own_use: bool,
+    /// The calibrated carbon intensity at the quarter hour shown, g per kWh.
+    intensity: Option<f32>,
 }
 
 /// What the energy bars show now, and what they were last built from.
@@ -2279,7 +2289,7 @@ impl Scene {
         let step = reach / 10.0;
         let centre = ((cam.lat / step).round() as i64, (cam.lon / step).round() as i64);
         // The quarter hour shown, and whether demand stands beside the bars.
-        let quarter = self.energy.power.shown.as_ref().map(|m| (m.0.time as i64) * 2 + self.view.energy_demand as i64);
+        let quarter = self.energy.power.shown.as_ref().map(|m| (m.0.time as i64) * 4 + self.energy.power.own_use as i64 * 2 + self.view.energy_demand as i64);
         let key = (level, month, shown, centre, r.tile_count(), quarter);
         let rescaled = self.energy.scale.is_none_or(|s| (s.per_kw / scale.per_kw - 1.0).abs() > 0.03);
         let same_but_terrain = self.energy.built_from.is_some_and(|b| (b.0, b.1, b.2, b.3, b.5) == (key.0, key.1, key.2, key.3, key.5));
@@ -2354,7 +2364,33 @@ impl Scene {
         let latest = p.index.as_deref().and_then(|i| i.last()) == Some(&week);
         // Live, SMARD is about three quarters of an hour behind: its latest values stand in.
         let moment = p.weeks.get(&week).and_then(|w| w.moment(time).or_else(|| w.last_moment().filter(|m| latest && m.time < time)));
+        // Ember's month, or the same month of an earlier year, and SMARD's months of its year.
+        let (y, m, _) = sky_time::civil_from_days((time / 86_400.0).floor() as i64);
+        let clock_month = (y as i32, m as u32);
+        let ember = owid::Owid::bundled().and_then(|o| o.country("DEU"));
+        let from = ember.and_then(|e| calibration::source_month(e, clock_month));
+        if let Some((fy, _)) = from {
+            // A year that is still going on is asked again after a day.
+            let due = p.years_asked.get(&fy).is_none_or(|t| now.duration_since(*t) > Duration::from_secs(86_400) && p.years.contains_key(&fy));
+            if due {
+                p.years_asked.insert(fy, now);
+                feed.ask_year(fy);
+                self.feeds_pending += 1;
+            }
+        }
+        p.factors = match (ember, from) {
+            (Some(e), Some((fy, _))) => p.years.get(&fy).and_then(|year| calibration::factors(e, clock_month, year)),
+            _ => None,
+        };
+        p.own_use = self.view.energy_own_use && p.factors.is_some();
+        let k = p.factors.as_ref().and_then(|f| f.intensity);
+        p.intensity = moment.as_ref().and_then(|m| Some(m.intensity()? * k?));
+        let scale = p.factors.as_ref().filter(|_| p.own_use).map(|f| f.output);
         p.shown = moment.map(|m| {
+            let m = match &scale {
+                Some(f) => m.scaled(f),
+                None => m,
+            };
             let shares = m.shares(&data.national(month));
             (m, shares)
         });
@@ -2373,12 +2409,20 @@ impl Scene {
         let day = (time / 86_400.0).floor() * 86_400.0;
         let p = &self.energy.power;
         let moment = |t: f64| p.index.as_deref().and_then(|i| power_feed::week_for(i, t)).and_then(|w| p.weeks.get(&w)).and_then(|w| w.moment(t));
-        let moments: Vec<Option<power_feed::Moment>> = (0..96).map(|k| moment(day + k as f64 * 900.0)).collect();
-        let have = moments.iter().filter(|m| m.is_some()).count();
+        let raw: Vec<Option<power_feed::Moment>> = (0..96).map(|k| moment(day + k as f64 * 900.0)).collect();
+        let have = raw.iter().filter(|m| m.is_some()).count();
+        // The intensity from SMARD's own mix, calibrated; the areas at the level the bars show.
+        let k = p.factors.as_ref().and_then(|f| f.intensity);
+        let intensity: Option<Vec<Option<f32>>> = k.map(|k| raw.iter().map(|m| m.as_ref().and_then(|m| m.intensity()).map(|v| v * k)).collect());
+        let scale = p.factors.as_ref().filter(|_| p.own_use).map(|f| f.output);
+        let moments: Vec<Option<power_feed::Moment>> = match &scale {
+            Some(f) => raw.iter().map(|m| m.as_ref().map(|m| m.scaled(f))).collect(),
+            None => raw,
+        };
         let date = &sky_time::format_utc(day, false)[..10];
         let model = power_chart::Model {
             title: format!("Germany {date}, GW"),
-            chart: (have > 0).then(|| power_chart::chart(&moments, Some((time - day) / 86_400.0), self.view.energy_palette)),
+            chart: (have > 0).then(|| power_chart::chart(&moments, intensity, Some((time - day) / 86_400.0), self.view.energy_palette)),
             note: if have > 0 {
                 "Areas above the line: surplus.".to_string()
             } else if self.feeds_pending > 0 {
@@ -2405,7 +2449,12 @@ impl Scene {
                     p.weeks.insert(start, week);
                     p.problem = None;
                 }
+                power_feed::Reply::Year(year, Ok(months)) => {
+                    p.years.insert(year, months);
+                }
                 power_feed::Reply::Index(Err(e)) | power_feed::Reply::Week(_, Err(e)) => p.problem = Some(e),
+                // Without SMARD's months the output stays SMARD's public net generation, and says so.
+                power_feed::Reply::Year(year, Err(e)) => eprintln!("SMARD's months of {year}: {e}"),
             }
         }
         if changed {
@@ -2499,6 +2548,10 @@ impl Scene {
         } else if self.view.energy_demand && self.energy.power.shown.is_some() {
             notes.push("White column: estimated use, Germany's consumption shared out by population".to_string());
         }
+        if let Some(basis) = self.power_basis() {
+            notes.push(basis);
+        }
+        let year = (level == energy::Level::States).then(|| self.year_at_a_glance()).flatten();
         Some(energy_panel::Model {
             detail: self.view.energy_detail,
             level,
@@ -2506,9 +2559,54 @@ impl Scene {
             month: energy::month_name(energy::month_of(self.clock.time())),
             scale: format_distance(1.0e6 * scale.per_kw),
             output: self.view.energy_output.then(|| self.power_status()),
+            year,
             notes,
             flat: self.nav.cam.total_tilt() < 0.3,
         })
+    }
+
+    /// What the output shown stands on: SMARD's public net generation, or brought to Ember's month.
+    fn power_basis(&self) -> Option<String> {
+        let p = &self.energy.power;
+        p.shown.as_ref()?;
+        let f = p.factors.as_ref();
+        let borrowed = |f: &calibration::Factors| {
+            format!(
+                " with the factors of {}, as Ember has not published {} yet",
+                calibration::month_words(f.from),
+                calibration::month_words(f.month)
+            )
+        };
+        Some(match f {
+            Some(f) if p.own_use => format!(
+                "Output includes own use: SMARD's quarter hours brought to Ember's monthly sums by source{}",
+                if f.borrowed() { borrowed(f) } else { String::new() }
+            ),
+            _ if self.view.energy_own_use => "Output: SMARD's public net generation, without own use (no factors to Ember's month for this time)".to_string(),
+            _ => "Output: SMARD's public net generation, without own use".to_string(),
+        } + &match f {
+            Some(f) if f.intensity.is_some() => format!(
+                ". CO\u{2082}: lifecycle factors on SMARD's mix, calibrated to Ember's average for {}.",
+                calibration::month_words(f.from)
+            ),
+            _ => ".".to_string(),
+        })
+    }
+
+    /// The renewable share of the clock's year and its change, from Ember.
+    fn year_at_a_glance(&self) -> Option<String> {
+        let ember = owid::Owid::bundled()?.country("DEU")?;
+        let (y, _, _) = sky_time::civil_from_days((self.clock.time() / 86_400.0).floor() as i64);
+        let s = calibration::year_share(ember, y as i32)?;
+        let span = match s.through {
+            Some(m) => format!("January to {}", calibration::month_words((s.year, m))),
+            None => s.year.to_string(),
+        };
+        let change = match s.change {
+            Some(c) => format!(", {}{:.1} points on {}", if c >= 0.0 { "+" } else { "\u{2212}" }, c.abs(), if s.through.is_some() { format!("the same months of {}", s.year - 1) } else { (s.year - 1).to_string() }),
+            None => String::new(),
+        };
+        Some(format!("{span}: {:.1}% renewable{change}", s.share))
     }
 
     /// Germany's generation against consumption at the quarter hour shown, or why there is none.
@@ -2525,10 +2623,12 @@ impl Scene {
         let gw = |mw: f32| format!("{:.1} GW", mw / 1000.0);
         let (generation, consumption) = (m.generation(), m.consumption());
         let balance = generation - consumption;
+        let intensity = p.intensity.map(|g| format!(", {g:.0} g CO\u{2082}/kWh")).unwrap_or_default();
         // The date is the clock's, shown above; only the quarter hour can differ.
         format!(
-            "{} UTC: {} generated, {:.0}% renewable; use {}, {} {}",
+            "{} UTC, {}: {} generated, {:.0}% renewable{intensity}; use {}, {} {}",
             &sky_time::format_utc(m.time, false)[11..16],
+            if p.own_use { "with own use" } else { "public net" },
             gw(generation),
             100.0 * m.renewable() / generation.max(1.0),
             gw(consumption),
@@ -3024,6 +3124,11 @@ impl Scene {
             if self.energy.power.shown.is_some() {
                 credits.push('\n');
                 credits.push_str(power_feed::CREDIT);
+            }
+            // Ember's months behind own use and carbon intensity, its years in the year at a glance.
+            if self.energy.power.factors.is_some() || self.energy.level == Some(energy::Level::States) {
+                credits.push('\n');
+                credits.push_str(owid::CREDIT);
             }
         }
         if self.search.credit_due() {

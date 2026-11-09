@@ -586,12 +586,27 @@ never confused:
 - With "Output at the clock's time" in the view options (on by default), each column shows the estimated output at the clock's
   quarter hour solid in its sources' colours, and above it the rest of each source's capacity see-through in the same colour,
   so that capacity standing idle never looks like a source of its own. The status line gives Germany's
-  generation, its renewable share, consumption, and the surplus or shortfall between them at that quarter hour, which
-  goes into exports, imports and storage.
+  generation, its renewable share, the carbon intensity of its electricity, consumption, and the surplus or shortfall
+  between them at that quarter hour, which goes into exports, imports and storage; it says whether own use is included
+  ("with own use") or not ("public net").
 - The figures are SMARD's (Bundesnetzagentur): public net generation by source and total consumption (Netzlast) for Germany,
   every 15 minutes, from 2015 to about three quarters of an hour ago. With the clock at the real time, the latest quarter hour
   stands in, and the status line gives its time. Before 2015, or in the future, the bars show capacity and the status line
   says why.
+- **Own use**: with "Include generation for own use" in the view options (on by default), each source's output is
+  scaled so that its month adds up to Ember's monthly figure for Germany, which includes what rooftop solar and industrial
+  plants make for their owners: the quarter hours keep SMARD's shape, the level becomes Ember's (in 2025 solar about
+  +19%, gas +30%, biomass +13%, wind and coal about 2% lower; consumption is brought to Ember's demand, +5%). Sources that
+  share one of Ember's categories share its factor: wind on land and at sea, lignite and hard coal. For a month Ember
+  hasn't published yet (it runs to June 2026), the same month of the year before stands in, and the energy card says
+  whose factors are used. Off, the figures are SMARD's public net generation. The energy card says which is shown.
+- **Carbon intensity** at the quarter hour comes from SMARD's mix with a lifecycle emission factor per source (IPCC
+  medians, from 11 g/kWh for wind on land to 820 for coal), calibrated each month so that the month's average is Ember's
+  carbon intensity for Germany (the same month of the year before where Ember has none yet). It needs SMARD's monthly
+  file of that year (twelve requests, kept on disk); until then it is left out.
+- **Year at a glance**: at the level of states the energy card gives the renewable share of the clock's year and its
+  change on the year before, from Ember via Our World in Data; for a year Ember hasn't finished, its months so far
+  against the same months a year earlier.
 - Output per bar is estimated: Germany's output of a source is shared out by capacity, so every bar of a source runs at the
   same share of its capacity, capped at its full capacity. SMARD reports oil and other fossil fuels together; they share one
   share. Nuclear, which SMARD no longer lists since the last plants shut down in 2023, counts as zero.
@@ -604,10 +619,11 @@ never confused:
   used and where less. It is Germany's consumption shared out by population. Clicking units without a position gives their
   municipality's use for comparison. "Estimated use beside the bars" in the view options turns the columns off.
 - A **day chart** at the top left shows the clock's day (UTC) for Germany: generation stacked by source (steady sources at the
-  bottom, wind and sun on top), consumption as a white line and the clock as a yellow marker that moves with it. Where the areas
+  bottom, wind and sun on top), consumption as a white line, the carbon intensity as a thin coral line on its own axis at the right (g CO₂/kWh), and
+  the clock as a yellow marker that moves with it. Where the areas
   rise above the line there is a surplus, where the line rises above them a shortfall. It shows while the bars show output; its
   close button or "Day chart of output and use" in the view options turns it off. It needs the day's one or two weekly files.
-- Weekly files of all thirteen series are fetched only while the bars show output, at most one request per 0.3 s, and kept on
+- Weekly files of all thirteen series, and for the factors to Ember the monthly files of one year, are fetched only while the bars show output, at most one request per 0.3 s, and kept on
   disk: weeks that ended over a day ago for good, the current week and the index for ten minutes. `--offline` uses what is
   stored.
 
@@ -635,8 +651,11 @@ never confused:
 ### Limitations
 - Planned units are left out.
 - Output is estimated from national figures, not measured per plant or region: a sunny south and a cloudy north show the same
-  share of solar running. Generation for owners' own use (much rooftop solar, industrial plants) is not in SMARD's public net
-  generation, so shares run low for those sources. No regional consumption is published, so use per area is Germany's
+  share of solar running. Own use is added by a monthly factor per source, so its own daily shape (a rooftop's
+  self-consumption, a factory's shifts) is taken to be that of the public feed-in; with the option off, shares run low
+  for rooftop solar and industrial plants. The carbon intensity is the national mix's, not that of the power used in an
+  area, and imports are left out of it, as Ember leaves them out. Factors borrowed from the year before miss a year's
+  growth of rooftop solar. No regional consumption is published, so use per area is Germany's
   shared out by population: industry, about 45% of the total, sits where the factories are, so industrial districts use more
   than shown and residential ones less.
 - Germany only, and no bars on the flat map (the outlines do show there).
@@ -651,15 +670,17 @@ never confused:
 
 - Electricity of 221 countries and the World, by year (population, generation, demand, net imports, carbon intensity,
   renewable share, generation by source) and, for the 88 countries Ember covers, by month: Our World in Data from Ember
-  and the Energy Institute (CC BY 4.0), with Natural Earth's country outlines (public domain). Nothing shows it yet; the
-  countries level of the energy layer and the information box will.
+  and the Energy Institute (CC BY 4.0), with Natural Earth's country outlines (public domain). Germany's figures serve
+  own use, the carbon intensity and the year at a glance above; the countries level of the energy layer and the
+  information box will use the rest.
 - Built into the program (`data/owid_energy.bin`, 610 KB; `data/countries.bin`, 210 KB); nothing is requested at
   runtime. Rebuilding downloads about 15 MB in a few seconds: `python3 -I tools/gen_owid.py data/owid_energy.bin
   data/countries.bin`.
 - Yearly electricity figures begin in 2000 for most countries, in 1985 for the 75 the Energy Institute covers (Ember's
   own from 1990 in Europe), and end in 2025 for 92 countries and 2024 or earlier for the rest. Monthly ones end in
   May or June 2026 for most (Germany's run from January 2015). Ember's months for Germany add up to about 6% less than
-  its year (470.6 against 500.5 TWh generated in 2025).
+  its year (470.6 against 500.5 TWh generated in 2025): the months are net generation, the year gross, including what
+  power stations use themselves ([ENERGY.md](ENERGY.md#check-against-ember)).
 
 ## Information on click
 

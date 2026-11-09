@@ -220,6 +220,8 @@ settings! {
     energy: bool = true, "energy";
     /// The bars show the estimated output at the clock's time, from SMARD, as far as there is data.
     energy_output: bool = true, "energy_output";
+    /// Output includes generation for the owners' own use: SMARD's quarter hours brought to Ember's monthly sums.
+    energy_own_use: bool = true, "energy_own_use";
     /// A chart of the clock's day of generation and consumption, while the bars show output.
     energy_chart: bool = true, "energy_chart";
     /// Beside each area's bar, its estimated demand: Germany's consumption shared out by population.

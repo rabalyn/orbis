@@ -52,6 +52,44 @@ pub const FILTERS: [(u32, Series); 13] = [
     (410, Series::Consumption),           // Stromverbrauch: Gesamt (Netzlast)
 ];
 
+/// Which of OWID's (Ember's) sources each series of `FILTERS` counts towards; `None` for pumped
+/// storage, which Ember leaves out, and for consumption. `tools/check_owid.py` has the same table.
+pub fn owid_series(i: usize) -> Option<crate::owid::Series> {
+    use crate::owid::Series as O;
+    match FILTERS[i].0 {
+        4068 => Some(O::Solar),
+        4067 | 1225 => Some(O::Wind),
+        1226 => Some(O::Hydro),
+        4066 => Some(O::Bioenergy),
+        1223 | 4069 => Some(O::Coal),
+        4071 => Some(O::Gas),
+        1227 => Some(O::Oil),
+        1224 => Some(O::Nuclear),
+        1228 => Some(O::OtherRenewables),
+        _ => None,
+    }
+}
+
+/// Lifecycle emissions per series of `FILTERS` in g CO₂-eq per kWh: the medians of IPCC AR5 WG3
+/// Annex III, table A.III.2 (2014). Its coal figure (pulverised coal) stands for lignite and hard
+/// coal, and, as it has none for oil or the gases and waste of "other conventional", for those
+/// too. Pumped storage moves energy that was counted when it was generated, so it adds none.
+pub const EMISSIONS: [f32; 13] = [
+    48.0,  // solar PV, utility scale (rooftop 41)
+    11.0,  // wind on land
+    12.0,  // wind at sea
+    24.0,  // hydro
+    230.0, // biomass, dedicated
+    820.0, // lignite: coal
+    820.0, // hard coal
+    490.0, // natural gas, combined cycle
+    820.0, // other conventional: coal's figure
+    12.0,  // nuclear
+    38.0,  // other renewables: geothermal
+    0.0,   // pumped storage
+    0.0,   // consumption
+];
+
 /// One week of all series: mean power in MW per quarter hour, `None` where SMARD has no value yet.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Week {
@@ -85,6 +123,17 @@ impl Moment {
 
     pub fn consumption(&self) -> f32 {
         self.mw[FILTERS.len() - 1]
+    }
+
+    /// The carbon intensity of the mix by `EMISSIONS` alone, in g per kWh, not calibrated.
+    /// Pumped storage is left out of the mix, as Ember leaves it out.
+    pub fn intensity(&self) -> Option<f32> {
+        mix_intensity(&self.mw.iter().map(|&v| v as f64).collect::<Vec<_>>()).map(|v| v as f32)
+    }
+
+    /// The moment with each series multiplied by its factor.
+    pub fn scaled(&self, factors: &[f32; FILTERS.len()]) -> Moment {
+        Moment { time: self.time, mw: self.mw.iter().zip(factors).map(|(v, f)| v * f).collect() }
     }
 
     /// The share of each source's capacity that ran, from the national capacity in kW of each
@@ -122,6 +171,52 @@ impl Week {
         let t = (self.start_ms + (len as i64 - 1) * QUARTER_MS) as f64 / 1000.0;
         (len > 0).then(|| self.moment(t)).flatten()
     }
+}
+
+/// The carbon intensity by `EMISSIONS` of amounts per series of `FILTERS` (power or energy).
+pub fn mix_intensity(amounts: &[f64]) -> Option<f64> {
+    let counted = |i: usize| owid_series(i).is_some();
+    let total: f64 = (0..FILTERS.len()).filter(|&i| counted(i)).map(|i| amounts[i]).sum();
+    let emitted: f64 = (0..FILTERS.len()).filter(|&i| counted(i)).map(|i| amounts[i] * EMISSIONS[i] as f64).sum();
+    (total > 0.0).then(|| emitted / total)
+}
+
+/// One year of all series by month: MWh per series of `FILTERS` and month, `None` where SMARD
+/// has no figure (yet).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Year {
+    pub year: i32,
+    pub mwh: Vec<[Option<f64>; 12]>,
+}
+
+impl Year {
+    /// All series of a month (1 to 12), if SMARD has the whole of it.
+    pub fn month(&self, month: u32) -> Option<Vec<f64>> {
+        self.mwh.iter().map(|m| m.get(month as usize - 1).copied().flatten()).collect()
+    }
+}
+
+/// Midnight of 1 January, German time, in milliseconds: where SMARD's monthly files start.
+pub fn year_start_ms(year: i32) -> i64 {
+    (crate::sky_time::days_from_civil(year as i64, 1, 1) * 86_400 - 3600) * 1000
+}
+
+/// One series of a year file at monthly resolution, in MWh per month. A month counts once the
+/// next one has begun, as the file's last value grows until then.
+pub fn parse_months(body: &str, year: i32, now_ms: i64) -> Option<[Option<f64>; 12]> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    let mut out = [None; 12];
+    for pair in v.get("series")?.as_array()? {
+        let (Some(t), Some(value)) = (pair.get(0).and_then(Value::as_i64), pair.get(1).and_then(Value::as_f64)) else { continue };
+        // Months start at midnight German time, an hour or two before midnight UTC.
+        let (y, m, _) = crate::sky_time::civil_from_days((t + 3 * 3_600_000).div_euclid(86_400_000));
+        let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+        let ended = crate::sky_time::days_from_civil(ny, nm, 1) * 86_400_000 <= now_ms;
+        if y == year as i64 && value.is_finite() && value >= 0.0 && ended {
+            out[m as usize - 1] = Some(value);
+        }
+    }
+    Some(out)
 }
 
 /// The week files' start times from an index answer, in milliseconds.
@@ -163,12 +258,14 @@ pub fn week_for(index: &[i64], time: f64) -> Option<i64> {
 pub enum Reply {
     Index(Result<Vec<i64>, String>),
     Week(i64, Result<Week, String>),
+    Year(i32, Result<Year, String>),
 }
 
 #[derive(Clone)]
 enum Job {
     Index,
     Week(i64),
+    Year(i32),
 }
 
 pub struct PowerFeed {
@@ -229,6 +326,21 @@ fn load_week(fetcher: &Fetcher, start: i64, wait: &mut Option<Instant>) -> Resul
     Ok(Week { start_ms: start, values })
 }
 
+/// A year by month. Years that ended two months ago are kept for good, as SMARD settles its
+/// figures by then; later ones for a day.
+fn load_year(fetcher: &Fetcher, year: i32, wait: &mut Option<Instant>) -> Result<Year, String> {
+    let start = year_start_ms(year);
+    let now_ms = (unix_now() * 1000.0) as i64;
+    let max_age = if year_start_ms(year + 1) + 61 * 86_400_000 < now_ms { f64::INFINITY } else { 86_400.0 };
+    let mut mwh = Vec::new();
+    for (filter, _) in FILTERS {
+        let url = format!("{BASE}/{filter}/DE/{filter}_DE_month_{start}.json");
+        let body = get(fetcher, &url, &format!("power/smard-month-{filter}-{start}.json"), max_age, wait)?;
+        mwh.push(if body == MISSING { [Some(0.0); 12] } else { parse_months(&body, year, now_ms).ok_or("SMARD's answer could not be read")? });
+    }
+    Ok(Year { year, mwh })
+}
+
 impl PowerFeed {
     pub fn new(fetcher: Arc<Fetcher>) -> Self {
         let mut wait = None;
@@ -239,6 +351,7 @@ impl PowerFeed {
                 Reply::Index(r.and_then(|b| parse_index(&b).ok_or_else(|| "SMARD's index could not be read".to_string())))
             }
             Job::Week(start) => Reply::Week(start, load_week(&fetcher, start, &mut wait)),
+            Job::Year(year) => Reply::Year(year, load_year(&fetcher, year, &mut wait)),
         });
         Self { worker }
     }
@@ -249,6 +362,11 @@ impl PowerFeed {
 
     pub fn ask_week(&self, start_ms: i64) {
         self.worker.submit(Job::Week(start_ms));
+    }
+
+    /// Asks for a year by month, for the factors to Ember's monthly figures.
+    pub fn ask_year(&self, year: i32) {
+        self.worker.submit(Job::Year(year));
     }
 
     pub fn poll(&self) -> Option<Reply> {
@@ -298,5 +416,41 @@ mod tests {
         assert_eq!(shares[0], 0.5);
         assert_eq!(shares[8], 1.0, "2 GW from 2 GW of oil and other together");
         assert_eq!(shares[9], 1.0);
+    }
+
+    #[test]
+    fn the_mapping_to_owid_is_the_check_scripts() {
+        // MAPPING in tools/check_owid.py: "    4068: \"solar\"," or "    4070: None,".
+        let script = include_str!("../tools/check_owid.py");
+        let table = &script[script.find("MAPPING = {").unwrap()..];
+        let table = &table[..table.find("\n}").unwrap()];
+        let mut seen = 0;
+        for line in table.lines().skip(1) {
+            let (filter, rest) = line.trim().split_once(':').unwrap();
+            let filter: u32 = filter.parse().unwrap();
+            let key = rest.split('#').next().unwrap().trim().trim_end_matches(',').trim_matches('"');
+            let i = FILTERS.iter().position(|f| f.0 == filter).unwrap_or_else(|| panic!("{filter} is not asked for"));
+            assert_eq!(owid_series(i).map(|s| s.key()).unwrap_or("None"), key, "series {filter}");
+            seen += 1;
+        }
+        assert_eq!(seen, FILTERS.len() - 1, "every generation series is in the script's table");
+    }
+
+    #[test]
+    fn year_files_count_months_that_have_ended() {
+        let start = year_start_ms(2026);
+        assert_eq!(start, 1_767_222_000_000, "as in SMARD's index of monthly files");
+        let feb = 1_769_900_400_000i64; // 1 February 2026, German time
+        let body = format!(r#"{{"series":[[{start},100.0],[{feb},50.0],[{},null]]}}"#, feb + 28 * 86_400_000);
+        let mid_feb = feb + 14 * 86_400_000;
+        let m = parse_months(&body, 2026, mid_feb).unwrap();
+        assert_eq!(m[0], Some(100.0));
+        assert_eq!(m[1], None, "February is not over");
+        let m = parse_months(&body, 2026, year_start_ms(2027)).unwrap();
+        assert_eq!(m[1], Some(50.0));
+        assert_eq!(m[2], None);
+        let y = Year { year: 2026, mwh: vec![m; FILTERS.len()] };
+        assert_eq!(y.month(1).unwrap().len(), FILTERS.len());
+        assert!(y.month(3).is_none());
     }
 }

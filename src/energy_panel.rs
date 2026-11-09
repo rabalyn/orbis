@@ -22,6 +22,8 @@ pub struct Model {
     pub scale: String,
     /// The figures at the clock's time, if output is shown.
     pub output: Option<String>,
+    /// The year at a glance, for states: the renewable share and its change, from Ember.
+    pub year: Option<String>,
     /// Further lines, such as about units without a position.
     pub notes: Vec<String>,
     /// Whether the bars' heights can be seen: not in a view straight down.
@@ -87,7 +89,15 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> Option<Action> {
                 ui.label(egui::RichText::new("Height").weak());
                 ui.label(format!("1 GW = {}", m.scale));
                 ui.end_row();
+                if let Some(y) = &m.year {
+                    ui.label(egui::RichText::new("Year").weak());
+                    ui.add(egui::Label::new(y).wrap());
+                    ui.end_row();
+                }
             });
+            if m.year.is_some() {
+                gui::note(ui, "Year: Ember via Our World in Data (CC BY 4.0)");
+            }
             if m.flat {
                 gui::note(ui, "Tilt the view to see the bars' heights.");
             }

@@ -26,7 +26,12 @@ pub struct Chart {
     pub marker: Option<f64>,
     /// The values' unit for the axis, and how many values one unit is: ("GW", 1000.0) for MW.
     pub unit: (String, f32),
+    /// A thin line on an axis of its own at the right: the carbon intensity in g per kWh.
+    pub intensity: Option<Vec<Option<f32>>>,
 }
+
+/// The colour of the intensity line and its axis.
+const INTENSITY: Color32 = Color32::from_rgb(255, 160, 140);
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Model {
@@ -61,7 +66,7 @@ fn layers(palette: Palette) -> [(usize, [u8; 3], &'static str, bool); 12] {
 
 /// The chart for a day of quarter hours, `None` where SMARD has none, with the marker at
 /// `marker` (0 to 1) if the clock is in the day.
-pub fn chart(moments: &[Option<Moment>], marker: Option<f64>, palette: Palette) -> Chart {
+pub fn chart(moments: &[Option<Moment>], intensity: Option<Vec<Option<f32>>>, marker: Option<f64>, palette: Palette) -> Chart {
     let values = |i: usize| moments.iter().map(|m| m.as_ref().map(|m| m.mw[i])).collect::<Vec<_>>();
     // Series SMARD does not have for the day are left out of the legend.
     let layers = layers(palette)
@@ -69,7 +74,8 @@ pub fn chart(moments: &[Option<Moment>], marker: Option<f64>, palette: Palette) 
         .map(|(i, colour, name, hatched)| (colour, name.to_string(), values(i), hatched))
         .filter(|l| l.2.iter().flatten().any(|&v| v > 0.0))
         .collect();
-    Chart { layers, line: ("Consumption".to_string(), values(FILTERS.len() - 1)), marker, unit: ("GW".to_string(), 1000.0) }
+    let intensity = intensity.filter(|v| v.iter().flatten().any(|&g| g > 0.0));
+    Chart { layers, line: ("Consumption".to_string(), values(FILTERS.len() - 1)), marker, unit: ("GW".to_string(), 1000.0), intensity }
 }
 
 /// What a click on the chart's buttons asks for.
@@ -132,7 +138,8 @@ fn plot(ui: &mut egui::Ui, c: &Chart, size: Vec2) {
     let v = ui.visuals();
     let (ink, weak, grid) = (v.text_color(), v.weak_text_color(), v.widgets.noninteractive.bg_stroke.color);
     let small = egui::FontId::proportional(11.0);
-    let plot = Rect::from_min_max(Pos2::new(r.left() + 28.0, r.top() + 6.0), Pos2::new(r.right() - 4.0, r.bottom() - 18.0));
+    let right = if c.intensity.is_some() { 30.0 } else { 4.0 };
+    let plot = Rect::from_min_max(Pos2::new(r.left() + 28.0, r.top() + 6.0), Pos2::new(r.right() - right, r.bottom() - 18.0));
     let p = ui.painter().with_clip_rect(r);
     let steps = c.line.1.len().max(c.layers.iter().map(|l| l.2.len()).max().unwrap_or(0)).max(1);
     let stack = |i: usize| c.layers.iter().map(|l| l.2.get(i).copied().flatten().unwrap_or(0.0)).sum::<f32>();
@@ -179,6 +186,34 @@ fn plot(ui: &mut egui::Ui, c: &Chart, size: Vec2) {
         }
     }
     flush(&mut run);
+    // The intensity on its own axis, in steps of 100 g with as many steps as the left axis has.
+    if let Some(g) = &c.intensity {
+        let ticks = (max / tick).round().max(1.0);
+        let top = g.iter().flatten().fold(0.0f32, |a, &b| a.max(b));
+        let step = (top / ticks / 100.0).ceil().max(1.0) * 100.0;
+        let gmax = step * ticks;
+        let gy = |v: f32| plot.bottom() - v / gmax * plot.height();
+        for k in 0..=ticks as usize {
+            let v = k as f32 * step;
+            p.text(Pos2::new(plot.right() + 3.0, gy(v)), egui::Align2::LEFT_CENTER, format!("{v:.0}"), small.clone(), INTENSITY.gamma_multiply(0.85));
+        }
+        let mut run: Vec<Pos2> = Vec::new();
+        let flush = |run: &mut Vec<Pos2>| {
+            if run.len() > 1 {
+                // A dark edge keeps the thin line apart from the areas under it.
+                p.add(egui::Shape::line(run.clone(), Stroke::new(3.0, Color32::from_black_alpha(150))));
+                p.add(egui::Shape::line(std::mem::take(run), Stroke::new(1.4, INTENSITY)));
+            }
+            run.clear();
+        };
+        for i in 0..g.len() {
+            match g[i] {
+                Some(v) => run.push(Pos2::new(plot.left() + (i as f32 + 0.5) / g.len() as f32 * plot.width(), gy(v))),
+                None => flush(&mut run),
+            }
+        }
+        flush(&mut run);
+    }
     if let Some(m) = c.marker {
         let x = plot.left() + m.clamp(0.0, 1.0) as f32 * plot.width();
         p.line_segment([Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())], Stroke::new(1.5, Color32::from_rgb(255, 214, 70)));
@@ -197,6 +232,12 @@ fn legend(ui: &mut egui::Ui, c: &Chart) {
         ui.painter().line_segment([r.left_center(), r.right_center()], Stroke::new(2.0, ui.visuals().text_color()));
         ui.label(egui::RichText::new(&c.line.0).small());
         ui.add_space(8.0);
+        if c.intensity.is_some() {
+            let (r, _) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), egui::Sense::hover());
+            ui.painter().line_segment([r.left_center(), r.right_center()], Stroke::new(1.2, INTENSITY));
+            ui.label(egui::RichText::new("g CO\u{2082}/kWh, right").small());
+            ui.add_space(8.0);
+        }
         for (colour, name, _, hatched) in c.layers.iter().rev() {
             gui::legend_entry(ui, [colour[0], colour[1], colour[2], 255], *hatched, name);
             ui.add_space(6.0);
@@ -219,12 +260,16 @@ mod tests {
     #[test]
     fn the_chart_holds_the_sources_that_ran_and_the_consumption() {
         let day: Vec<Option<Moment>> = (0..96).map(|i| (i < 60).then(|| moment(i as f32 * 100.0, 40_000.0))).collect();
-        let c = chart(&day, Some(0.5), Palette::Standard);
+        let c = chart(&day, None, Some(0.5), Palette::Standard);
         let names: Vec<&str> = c.layers.iter().map(|l| l.1.as_str()).collect();
         assert_eq!(names, ["Lignite", "Solar"], "stacked steady first, and only what ran");
         assert_eq!(c.line.1.len(), 96);
         assert_eq!(c.line.1[10], Some(40_000.0));
         assert_eq!(c.line.1[80], None);
         assert_eq!(c.layers[1].2[10], Some(1000.0));
+        assert!(c.intensity.is_none());
+        let g: Vec<Option<f32>> = day.iter().map(|m| m.as_ref().and_then(|m| m.intensity())).collect();
+        let c = chart(&day, Some(g), Some(0.5), Palette::Standard);
+        assert_eq!(c.intensity.as_ref().unwrap()[0], Some(820.0), "lignite alone at midnight");
     }
 }

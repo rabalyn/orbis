@@ -257,12 +257,18 @@ bundled; answers are cached on disk and fetched only while the energy bars show 
 |---|---|---|---|
 | Public net generation by source and total consumption (Netzlast), Germany, 15 minutes | `www.smard.de/app/chart_data/{filter}/DE/index_quarterhour.json` lists the weekly files; `.../{filter}/DE/{filter}_DE_quarterhour_{start}.json` holds `series` of [milliseconds, MWh per quarter hour or null]. Filters 4068, 4067, 1225, 1226, 4066, 1223, 4069, 4071, 1227, 1224, 1228, 4070, 410 | Data under § 111d EnWG for free use; market data under CC BY 4.0, attribution "Bundesnetzagentur \| SMARD.de". SMARD takes the data from ENTSO-E | `Generation and consumption: Bundesnetzagentur \| SMARD.de (CC BY 4.0)` |
 
+For the factors to Ember's months the program also reads SMARD's monthly files, one per series and year:
+`.../{filter}/DE/{filter}_DE_month_{start}.json`, `series` of [milliseconds of the month's start, MWh in the month], same
+terms and credit. A year that ended two months ago is kept for good, a later one for a day.
+
 Energy-Charts (Fraunhofer ISE) offers similar data, but its publishing notes allow its material for personal use only and
 require written approval for distribution, so it is not used.
 
 ### Electricity of the world's countries (`data/owid_energy.bin`, `data/countries.bin`)
-Built offline by `tools/gen_owid.py` (retrieved 2026-11-09) and bundled; the program requests nothing for it. Not shown
-yet: the countries level of the energy layer and the information box will use it.
+Built offline by `tools/gen_owid.py` (retrieved 2026-11-09) and bundled; the program requests nothing for it. Germany's
+monthly figures scale the output to include own use and calibrate the carbon intensity, and its yearly renewable share is
+the energy card's year at a glance; `owid::CREDIT` shows with them. The countries level of the energy layer and the
+information box will use the rest.
 
 | Data | Source | Terms | Credit shown |
 |---|---|---|---|
@@ -278,3 +284,26 @@ are dropped, values are rounded to 1 GWh (0.01 g/kWh, 0.01 %), and outlines are 
 1e-4°, with islands under 0.002 square degrees dropped (never a country's largest ring); the data is otherwise unchanged. The first year with Ember's
 demand marks where OWID's electricity figures switch from the Energy Institute to Ember, which is how the reader names
 each figure's source.
+
+### Emission factors (`power_feed::EMISSIONS`)
+Lifecycle emissions in g CO₂-eq per kWh, the medians of IPCC AR5 Working Group III, Annex III "Technology-specific cost
+and performance parameters", table A.III.2 (Schlömer et al., 2014), as Ember also quotes them for its renewable factors
+in its methodology (`files.ember-energy.org/public-downloads/ember_electricity_data_methodology.pdf`, read 2026-11-09).
+Figures from a published report, used as numbers; no text or tables are copied.
+
+| SMARD series | Factor | AR5 technology |
+|---|---|---|
+| Photovoltaik | 48 | Solar PV, utility (rooftop 41) |
+| Wind an Land | 11 | Wind onshore |
+| Wind auf See | 12 | Wind offshore |
+| Wasserkraft | 24 | Hydropower |
+| Biomasse | 230 | Biomass, dedicated |
+| Braunkohle, Steinkohle | 820 | Coal, pulverised (AR5 gives no figure for lignite of its own) |
+| Erdgas | 490 | Gas, combined cycle |
+| Sonstige Konventionelle | 820 | none in AR5 for oil, waste or works gases: coal's figure stands in |
+| Kernenergie | 12 | Nuclear |
+| Sonstige Erneuerbare | 38 | Geothermal |
+| Pumpspeicher | 0 | stored energy, counted when it was generated |
+
+The intensity of the mix is calibrated each month to Ember's monthly carbon intensity for Germany (above), so these
+factors set only the shape over the day.
