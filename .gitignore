@@ -2,3 +2,6 @@
 *.dmg
 *.png
 /dist
+
+# Raw source downloads, too large and not ours to redistribute as-is
+data-raw/
