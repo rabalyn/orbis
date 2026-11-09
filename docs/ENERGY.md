@@ -70,6 +70,17 @@ Real per-plant output is published only for large units. Everything else is esti
 3. **Measured where available**: ENTSO-E per-unit values replace the estimate for large units. The TSOs' per-control-area
    figures constrain each area's total in the same way as the national one.
 
+Beyond Germany (`world_output.rs`), each plant of Global Energy Monitor's list gets a **monthly** estimate of step 1's
+kind, from Ember instead of SMARD: `plant output = plant capacity × capacity factor`, where the factor of a country,
+source and month is Ember's generation of that source in the month (the year's average power where Ember has no months)
+over the capacity GEM lists for that country and source running in that month, held between 0 and 1. Ember's sources set
+the groups (wind not split by land and sea, coal not into lignite and hard coal, bioenergy with the other renewables).
+GEM's list misses rooftop solar, small units and TransitionZero's rows, so where its capacity cannot make Ember's
+figure even at full load, the rest is a per-country **gap**, "not in plant list", shown in the country's box and the
+state's, never spread onto plants; plants and gap add up to Ember's figure. Where the list's capacity suffices, the cap
+does not bind and generation from missing units lifts the listed plants' factor instead (Japan's solar in June 2025:
+about 75%), so the gap is a floor on what the list misses, not an estimate of it.
+
 The difference between "what the weather allowed" and "what was fed in" is where curtailment shows. Only redispatch data
 from the TSOs is evidence of curtailment. A gap in the estimate alone isn't, so it must be labelled as such.
 
@@ -161,8 +172,8 @@ Ember's figures.
 3. **Output, national split.** Energy-Charts feed, ghost and fill bars, playback over a day (estimate step 1).
 4. **Better estimates and bottleneck.** Weather weighting, ENTSO-E per-unit values, per-TSO totals,
    curtailment/redispatch and north–south arrows.
-5. **Other countries.** Global Energy Monitor trackers for locations (CC BY 4.0), ENTSO-E for Europe, OpenElectricity
-   for Australia (5-minute per-farm values), EIA for the US.
+5. **Other countries.** Global Energy Monitor's tracker for locations (CC BY 4.0), with monthly output estimated from
+   Ember (done); ENTSO-E for Europe, OpenElectricity for Australia (5-minute per-farm values), EIA for the US.
 
 ## Open questions
 

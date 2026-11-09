@@ -4,15 +4,19 @@
 //! plants are the Marktstammdatenregister's, in `energy.rs`, and GEM's German units are left out.
 //!
 //! A site is the units of one source at one GEM location. Its bar stands for installed capacity
-//! at the clock's month (no output estimate yet). The world's states get their installed
-//! capacity by summing the sites inside their outline.
+//! at the clock's month, solid up to its estimated output (`world_output.rs`: capacity times its
+//! country's capacity factor for the source and month) and the rest above as unused capacity.
+//! The world's states sum the sites inside their outline.
 
 use crate::countries::Countries;
 use crate::energy::{format_power, month_name, Bar, Palette, Source, Subject, Unit, SOURCES};
 use crate::info::{Card, Meter, Meters, Segment as Part};
-use crate::owid::Reader;
+use crate::owid::{Owid, Reader};
+use crate::world_energy::Figures;
+use crate::world_output::{year_month, Estimate};
 use crate::world_states::States;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 pub const CREDIT: &str = "Plants outside Germany: Global Energy Monitor, Global Integrated Power Tracker, Sept. 2026 (CC BY 4.0), modified";
 
@@ -63,8 +67,8 @@ pub struct Plants {
     pub release: (i64, i64, i64),
     codes: Vec<String>,
     /// Nationally aggregated distributed (<1 MW) solar by country index, in kW, which GEM lists
-    /// without positions: not plants, kept for the gap between plants and generation (M3 of
-    /// docs/WORLD_ENERGY_PLAN.md).
+    /// without positions: not plants. This release has none, so the estimates leave it out; its
+    /// generation falls in the gap that no plant accounts for.
     #[cfg_attr(not(test), allow(dead_code))]
     distributed: Vec<(u16, f32)>,
     kinds: Vec<String>,
@@ -72,6 +76,14 @@ pub struct Plants {
     owners: Vec<String>,
     pub plants: Vec<Plant>,
     cells: HashMap<(i32, i32), Vec<u32>>,
+    /// The latest month's estimates, kept while the clock stays in it.
+    estimates: Mutex<Option<Arc<Estimates>>>,
+}
+
+/// The countries' estimates for one month, by country index; `None` without Ember's figures.
+pub struct Estimates {
+    pub month: u16,
+    pub countries: Vec<Option<Estimate>>,
 }
 
 impl Plants {
@@ -152,7 +164,7 @@ impl Plants {
         for (i, p) in plants.iter().enumerate() {
             cells.entry(cell_of(p.lat, p.lon)).or_default().push(i as u32);
         }
-        Some(Plants { release, codes, distributed, kinds, details, owners, plants, cells })
+        Some(Plants { release, codes, distributed, kinds, details, owners, plants, cells, estimates: Mutex::new(None) })
     }
 
     pub fn count(&self) -> usize {
@@ -171,10 +183,61 @@ impl Plants {
         self.distributed.iter().map(|&(c, kw)| (self.codes[c as usize].as_str(), kw))
     }
 
+    /// The capacity of each country's plants running at `month`, by source, in kW.
+    pub fn country_capacity(&self, month: u16) -> Vec<[f32; SOURCES]> {
+        let mut out = vec![[0.0; SOURCES]; self.codes.len()];
+        for p in &self.plants {
+            out[p.country as usize][p.source as usize] += p.kw(month);
+        }
+        out
+    }
+
+    /// The countries' estimates at `month`, worked out once per month.
+    pub fn estimates(&self, month: u16) -> Arc<Estimates> {
+        let mut kept = self.estimates.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(e) = kept.as_ref().filter(|e| e.month == month) {
+            return e.clone();
+        }
+        let owid = Owid::bundled();
+        let capacity = self.country_capacity(month);
+        let countries = self
+            .codes
+            .iter()
+            .zip(capacity)
+            .map(|(code, cap)| {
+                let f = Figures::of(owid?.country(code)?, year_month(month))?;
+                Some(Estimate::of(&f, cap))
+            })
+            .collect();
+        let e = Arc::new(Estimates { month, countries });
+        *kept = Some(e.clone());
+        e
+    }
+
+    /// A country's estimate at `month`, by its code; `None` where it has no plants in the list or
+    /// Ember no figures.
+    pub fn estimate(&self, code: &str, month: u16) -> Option<Estimate> {
+        let c = self.codes.iter().position(|c| c == code)?;
+        self.estimates(month).countries[c].clone()
+    }
+
+    /// The estimated output of `plants` by source at `month`, in kW.
+    pub fn output(&self, plants: &[u32], month: u16) -> [f32; SOURCES] {
+        let e = self.estimates(month);
+        let mut kw = [0.0; SOURCES];
+        for &i in plants {
+            let p = &self.plants[i as usize];
+            let f = e.countries[p.country as usize].as_ref().map_or(0.0, |e| e.factor_of(p.source));
+            kw[p.source as usize] += p.kw(month) * f;
+        }
+        kw
+    }
+
     /// The bars of the sites at `month`, with the sources in `shown`, within a cap of (lat, lon,
     /// radius in radians) around a point if `near`.
     pub fn bars(&self, month: u16, shown: [bool; SOURCES], near: Option<(f64, f64, f64)>) -> Vec<Bar> {
         let mut bars = Vec::new();
+        let estimates = self.estimates(month);
         let mut push = |i: u32| {
             let p = &self.plants[i as usize];
             if !shown[p.source as usize] || near.is_some_and(|(lat, lon, r)| angle_between(p.lat, p.lon, lat, lon) > r) {
@@ -184,7 +247,10 @@ impl Plants {
             if kw > 0.0 {
                 let mut v = [0.0; SOURCES];
                 v[p.source as usize] = kw;
-                bars.push(Bar { lat: p.lat, lon: p.lon, kw: v, subject: Subject::Plant(i), demand: 0.0, faint: false });
+                let e = estimates.countries[p.country as usize].as_ref();
+                let running = Some(e.map_or(0.0, |e| e.factor_of(p.source)));
+                let faint = e.is_some_and(|e| matches!(e.basis, crate::world_energy::Basis::Year(_)));
+                bars.push(Bar { lat: p.lat, lon: p.lon, kw: v, subject: Subject::Plant(i), demand: 0.0, faint, running });
             }
         };
         match near {
@@ -295,7 +361,12 @@ impl Plants {
         let Some(p) = self.plants.get(i as usize) else { return card };
         let kw = p.kw(month);
         let all: f32 = p.units.iter().map(|u| u.kw).sum();
-        card.summary = if kw > 0.0 {
+        let estimate = self.estimates(month).countries[p.country as usize].clone();
+        let cf = estimate.as_ref().map_or(0.0, |e| e.factor_of(p.source));
+        let out = kw * cf;
+        card.summary = if kw > 0.0 && estimate.is_some() {
+            format!("About {} running in {} (est.), of {} installed.", format_power(out), month_name(month), format_power(kw))
+        } else if kw > 0.0 {
             format!("{} installed in {}.", format_power(kw), month_name(month))
         } else if p.units.iter().all(|u| u.start > month) {
             format!("Not built yet in {}.", month_name(month))
@@ -306,7 +377,14 @@ impl Plants {
         card.meters.push(Meters {
             title: String::new(),
             max: all.max(1.0),
-            rows: vec![Meter { label: "Installed".to_string(), segments: vec![Part { hatched: p.source.fossil(), ..Part::solid(kw, colour) }], text: format_power(kw) }],
+            rows: {
+                let mut rows = vec![Meter { label: "Installed".to_string(), segments: vec![Part { alpha: 150, hatched: p.source.fossil(), ..Part::solid(kw, colour) }], text: format_power(kw) }];
+                if estimate.is_some() && kw > 0.0 {
+                    let segments = vec![Part { hatched: p.source.fossil(), ..Part::solid(out, colour) }, Part { alpha: 60, ..Part::solid(kw - out, colour) }];
+                    rows.push(Meter { label: "Running (est.)".to_string(), segments, text: format_power(out) });
+                }
+                rows
+            },
             caption: if (all - kw).abs() > 0.5 { format!("Of {} over all its units' years.", format_power(all)) } else { String::new() },
         });
         let kind = self.kind(i);
@@ -317,6 +395,14 @@ impl Plants {
         card.facts.push(("Type".to_string(), kind));
         card.facts.push(("Drawn as".to_string(), p.source.name().to_string()));
         card.facts.push(("Capacity".to_string(), format_power(kw)));
+        if let Some(e) = &estimate {
+            let period = match e.basis {
+                crate::world_energy::Basis::Month(y, m) => crate::calibration::month_words((y, m)),
+                crate::world_energy::Basis::Year(y) => format!("{y} on average"),
+            };
+            card.facts.push(("Output (est.)".to_string(), format_power(out)));
+            card.facts.push(("Capacity factor (est.)".to_string(), format!("{:.0}% ({period})", cf * 100.0)));
+        }
         let years = |months: Vec<u16>| {
             let lo = months.iter().min().map(|m| 1900 + m / 12);
             let hi = months.iter().max().map(|m| 1900 + m / 12);
@@ -347,7 +433,14 @@ impl Plants {
         if let Some(url) = self.wiki_url(i) {
             card.links.push(("gem.wiki page".to_string(), url));
         }
-        card.notes.push("Installed capacity of the units of one source at one GEM location; no output estimate yet.".to_string());
+        card.notes.push("Installed capacity of the units of one source at one GEM location.".to_string());
+        match &estimate {
+            Some(e) => {
+                let capped = if e.factor_of(p.source) >= 1.0 { " Capped at 100%: the plants in the list cannot make all of Ember's figure, the rest counts as not in the plant list." } else { "" };
+                card.notes.push(format!("Output estimated: the capacity times the country's capacity factor for {} in the month, Ember's generation (via Our World in Data) over the capacity Global Energy Monitor lists for the country running then, at most 100%. The same for every plant of the source in the country.{capped}", p.source.name().to_lowercase()));
+            }
+            None => card.notes.push("Ember has no generation for the country at this time: no output estimate.".to_string()),
+        }
         if p.unknown_start > 0 {
             card.notes.push(format!("GEM gives no start year for {} of the units: they count from the release ({}) on.", p.unknown_start, month_name(self.release_month())));
         }
@@ -573,5 +666,32 @@ mod tests {
     fn rejects_other_files() {
         assert!(Plants::parse(b"ORBS\x01\0\0\0").is_none());
         assert!(Plants::parse(&FIXTURE[..FIXTURE.len() - 1]).is_none());
+    }
+
+    #[test]
+    fn world_plants_run_at_their_countrys_factor_and_say_so() {
+        let p = Plants::bundled().unwrap();
+        let m = month(2025, 6);
+        let bars = p.bars(m, [true; SOURCES], None);
+        assert!(bars.iter().all(|b| b.running.is_some_and(|r| (0.0..=1.0).contains(&r))));
+        let i = (0..p.count() as u32).find(|&i| p.code(i) == "FRA" && p.plants[i as usize].source == Source::Nuclear && p.plants[i as usize].kw(m) > 0.0).unwrap();
+        let e = p.estimate("FRA", m).unwrap();
+        let b = bars.iter().find(|b| b.subject == Subject::Plant(i)).unwrap();
+        assert_eq!(b.running, Some(e.factor_of(Source::Nuclear)));
+        let card = p.describe(i, m, Palette::Standard);
+        assert!(card.facts.iter().any(|f| f.0 == "Capacity factor (est.)" && f.1.starts_with(&format!("{:.0}%", e.factor_of(Source::Nuclear) * 100.0))), "{:?}", card.facts);
+        assert!(card.facts.iter().any(|f| f.0 == "Output (est.)"));
+        assert!(card.meters[0].rows.iter().any(|r| r.label == "Running (est.)"));
+        // The country's card tells the plants' share and what is not in the list; Germany's not.
+        let w = crate::world_energy::World::bundled().unwrap();
+        let card_of = |code: &str| {
+            let k = (0..w.count() as u16).find(|&k| w.code(k) == Some(code)).unwrap();
+            w.describe(k, (2025, 6), Palette::Standard, false)
+        };
+        let fra = card_of("FRA");
+        assert!(fra.facts.iter().any(|f| f.0 == "Plants account for"), "{:?}", fra.facts);
+        assert!(fra.facts.iter().any(|f| f.0 == "Not in plant list"));
+        let deu = card_of("DEU");
+        assert!(!deu.facts.iter().any(|f| f.0 == "Plants account for"));
     }
 }

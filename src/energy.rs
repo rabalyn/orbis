@@ -300,8 +300,8 @@ pub enum Subject {
 
 impl Subject {
     /// Whether its bar stands for installed capacity, of which the running share can be shown.
-    /// Countries and the world's states show average power instead; the world's plants show
-    /// their whole capacity, with no estimate of their output yet.
+    /// Countries and the world's states show average power instead; the world's plants carry
+    /// their own estimated running share (`Bar::running`).
     pub fn has_capacity(self) -> bool {
         !matches!(self, Subject::Country(_) | Subject::State(_) | Subject::Plant(_))
     }
@@ -317,6 +317,9 @@ pub struct Bar {
     pub demand: f32,
     /// Drawn lighter: a country's average of the year standing in for the month.
     pub faint: bool,
+    /// For a world plant: the estimated share of its capacity running, drawn solid with the rest
+    /// above it as unused capacity, in place of the shares of Germany's sources.
+    pub running: Option<f32>,
 }
 
 impl Bar {
@@ -631,7 +634,7 @@ impl Energy {
         if level != Level::Plants {
             for (i, a) in self.areas.iter().enumerate() {
                 if a.level == level && close(a.label.0, a.label.1) {
-                    bars.push(Bar { lat: a.label.0, lon: a.label.1, kw: pick(&self.totals[i]), subject: Subject::Area(i as u32), demand: 0.0, faint: false });
+                    bars.push(Bar { lat: a.label.0, lon: a.label.1, kw: pick(&self.totals[i]), subject: Subject::Area(i as u32), demand: 0.0, faint: false, running: None });
                 }
             }
         } else {
@@ -641,7 +644,7 @@ impl Energy {
                 if shown[s.source as usize] && close(s.lat, s.lon) {
                     let mut kw = [0.0; SOURCES];
                     kw[s.source as usize] = s.kw(month);
-                    bars.push(Bar { lat: s.lat, lon: s.lon, kw, subject: Subject::Site(i), demand: 0.0, faint: false });
+                    bars.push(Bar { lat: s.lat, lon: s.lon, kw, subject: Subject::Site(i), demand: 0.0, faint: false, running: None });
                 }
             };
             match near {
@@ -663,7 +666,7 @@ impl Energy {
         if level >= Level::Towns {
             for (i, a) in self.areas.iter().enumerate() {
                 if a.level == Level::Districts && a.kind == AreaKind::Admin && close(a.label.0, a.label.1) {
-                    bars.push(Bar { lat: a.label.0, lon: a.label.1, kw: pick(&self.unplaced[i]), subject: Subject::Unplaced(i as u32), demand: 0.0, faint: false });
+                    bars.push(Bar { lat: a.label.0, lon: a.label.1, kw: pick(&self.unplaced[i]), subject: Subject::Unplaced(i as u32), demand: 0.0, faint: false, running: None });
                 }
             }
         }
@@ -1258,7 +1261,10 @@ pub fn mesh(bars: &[Bar], scale: Scale, center: DVec3, ground: &dyn Fn(f64, f64)
             let mut idle: Vec<Segment> = Vec::new();
             for s in range.filter(|&s| bar.kw[s] > 0.0) {
                 let source = Source::ALL[s];
-                let share = shares.filter(|_| bar.subject.has_capacity()).map_or(1.0, |sh| (sh[s] as f64).clamp(0.0, 1.0));
+                let share = match bar.running {
+                    Some(r) => (r as f64).clamp(0.0, 1.0),
+                    None => shares.filter(|_| bar.subject.has_capacity()).map_or(1.0, |sh| (sh[s] as f64).clamp(0.0, 1.0)),
+                };
                 let colour = if bar.faint { lighter(style.colour(source)) } else { style.colour(source) };
                 segments.push(Segment { colour, alpha: 255, height: bar.kw[s] as f64 * share * scale.per_kw });
                 if let Some((colour, alpha)) = style.idle_colour(source) {
@@ -1632,7 +1638,7 @@ pub(crate) mod tests {
         let mut kw = [0.0; SOURCES];
         kw[Source::Solar as usize] = 100.0;
         kw[Source::Gas as usize] = 100.0;
-        let bar = Bar { lat: 0.8, lon: 0.2, kw, subject: Subject::Area(0), demand: 0.0, faint: false };
+        let bar = Bar { lat: 0.8, lon: 0.2, kw, subject: Subject::Area(0), demand: 0.0, faint: false, running: None };
         let scale = Scale { width: 10.0, per_kw: 1.0 };
         let m = mesh(&[bar], scale, geodetic_to_ecef(0.8, 0.2, 0.0), &|_, _| 0.0, None, &Style::default()).mesh;
         // Each colour comes in one shade of wall per height; the dark bands give gas a second set.
@@ -1650,11 +1656,35 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_world_plant_runs_at_its_own_share_and_germanys_bars_keep_theirs() {
+        let mut kw = [0.0; SOURCES];
+        kw[Source::Solar as usize] = 100.0;
+        let site = Bar { lat: 0.8, lon: 0.2, kw, subject: Subject::Site(0), demand: 0.0, faint: false, running: None };
+        let plant = Bar { lat: 0.8, lon: 0.25, kw, subject: Subject::Plant(0), demand: 0.0, faint: false, running: Some(0.4) };
+        let scale = Scale { width: 10.0, per_kw: 1.0 };
+        let center = geodetic_to_ecef(0.8, 0.2, 0.0);
+        let mut shares = [0.0; SOURCES];
+        shares[Source::Solar as usize] = 0.9;
+        let style = Style::default();
+        let alone = mesh(std::slice::from_ref(&site), scale, center, &|_, _| 0.0, Some(&shares), &style).mesh;
+        let both = mesh(&[site, plant.clone()], scale, center, &|_, _| 0.0, Some(&shares), &style).mesh;
+        // Germany's site is drawn exactly as without the world plant beside it.
+        let bytes = |v: &[crate::buildings::BuildingVertex]| bytemuck::cast_slice::<_, u8>(v).to_vec();
+        assert_eq!(bytes(&alone.vertices), bytes(&both.vertices[..alone.vertices.len()]));
+        // The plant's solid part is 40% of its capacity, whatever Germany's shares say.
+        let (.., up) = enu(0.8, 0.25);
+        let base = (geodetic_to_ecef(0.8, 0.25, 0.0) - center).dot(up);
+        let m = mesh(&[plant], scale, center, &|_, _| 0.0, Some(&shares), &style).mesh;
+        let top = m.vertices.iter().filter(|v| v.colour[3] == 255).map(|v| glam::Vec3::from_array(v.pos).as_dvec3().dot(up) - base).fold(f64::MIN, f64::max);
+        assert!((top - 40.0).abs() < 1.0, "{top}");
+    }
+
+    #[test]
     fn demand_stands_slim_and_west_of_the_columns() {
         let mut kw = [0.0; SOURCES];
         kw[Source::Solar as usize] = 100.0;
         kw[Source::Gas as usize] = 100.0;
-        let bar = Bar { lat: 0.8, lon: 0.2, kw, subject: Subject::Area(0), demand: 300.0, faint: false };
+        let bar = Bar { lat: 0.8, lon: 0.2, kw, subject: Subject::Area(0), demand: 300.0, faint: false, running: None };
         let scale = Scale { width: 10.0, per_kw: 1.0 };
         let center = geodetic_to_ecef(0.8, 0.2, 0.0);
         let m = mesh(&[bar], scale, center, &|_, _| 0.0, None, &Style::default()).mesh;

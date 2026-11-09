@@ -78,6 +78,7 @@ mod paths;
 mod web;
 mod wikilookup;
 mod world_energy;
+mod world_output;
 mod world_plants;
 mod world_states;
 
@@ -2772,12 +2773,12 @@ impl Scene {
             }
         } else if level == energy::Level::Plants {
             notes.push(format!("Shade: units without a position, full at {}/km²", energy::format_power(data.dense())));
-            notes.push("Beyond Germany: installed capacity of Global Energy Monitor's plants, no output estimate yet".to_string());
+            notes.push("Beyond Germany: Global Energy Monitor's plants, solid up to their estimated output (capacity times the country's capacity factor from Ember)".to_string());
         } else if self.view.energy_demand && self.energy.power.shown.is_some() {
             notes.push("White column: estimated use, Germany's consumption shared out by population".to_string());
         }
         if level == energy::Level::States {
-            notes.push("Beyond Germany: each country's use (Ember) shared out by population, in its mix of sources; installed capacity in each state's box".to_string());
+            notes.push("Beyond Germany: the estimated output of the plants in each state, its country's use (Ember) shared out by population beside it".to_string());
         }
         if let Some(basis) = self.power_basis().filter(|_| level != energy::Level::Countries || self.energy.power.shown.is_some()) {
             notes.push(basis);

@@ -5,17 +5,18 @@
 //! country's admin-1 units are many and fine (France's departments, Italy's provinces), they
 //! come merged into the regions Natural Earth groups them in, to compare with Germany's states.
 //!
-//! Until the world's plants give monthly output (M3), a state's bar is its country's use (Ember's
-//! demand, or its generation where there is none) shared out by population, in the country's
-//! mix of sources at the clock's month; it has no column of unused capacity. Its installed
-//! capacity, the world plants (`world_plants.rs`) inside its outline, is told in its card.
+//! A state's bar is the estimated output of the world plants (`world_plants.rs`) inside its
+//! outline at the clock's month, by source (see `world_output.rs`), with no column of unused
+//! capacity; beside it, its country's use (Ember's demand, or its generation where there is none)
+//! shared out by population. Generation in no plant of the list stays with the country.
 
 use crate::countries::Countries;
 use crate::energy::{format_power, group_thousands, Bar, Palette, Source, Subject, AREA_EDGE, SELECTED, SELECTED_FILL_ALPHA, SOURCES};
 use crate::import::{Imported, Item, Outline as Edge, Pos, Shape};
 use crate::info::{Card, Meter, Meters, Segment as Part};
 use crate::owid::{Owid, Reader};
-use crate::world_energy::{Basis, Figures, MAPPING};
+use crate::world_energy::{Basis, Figures};
+use crate::world_output::month_index;
 use crate::world_plants::Plants;
 
 pub const CREDIT: &str = "Country and state outlines: Natural Earth (public domain); population of states: Wikidata (CC0)";
@@ -150,16 +151,28 @@ impl States {
         self.list.iter().filter(|s| s.country == code).map(|s| s.population as f64).sum()
     }
 
-    /// A state's use at the clock's month: the country's figures and the state's power by the
-    /// program's sources with those in `shown`, in kW, and its use in kW.
+    /// A state at the clock's month: the country's figures, the estimated output of its plants
+    /// by source with those in `shown`, in kW, and its use by population in kW.
     fn estimate(&self, i: usize, month: (i32, u32), shown: [bool; SOURCES]) -> Option<(Figures, [f32; SOURCES], f32)> {
         let c = Owid::bundled()?.country(&self.list[i].country)?;
         let f = Figures::of(c, month)?;
-        let share = self.share(i) as f32;
-        let used = f.demand.filter(|d| *d > 0.0).unwrap_or(f.generation);
-        let k = if f.generation > 0.0 { used / f.generation * share } else { 0.0 };
-        let kw = f.kw(shown).map(|v| v * k);
-        Some((f, kw, used * share))
+        let used = f.demand.filter(|d| *d > 0.0).unwrap_or(f.generation) * self.share(i) as f32;
+        let kw = self.output(i, month, shown).unwrap_or([0.0; SOURCES]);
+        Some((f, kw, used))
+    }
+
+    /// The estimated output of the bundled world plants inside a state's outline at the clock's
+    /// month, by source with those in `shown`, in kW.
+    pub fn output(&self, i: usize, month: (i32, u32), shown: [bool; SOURCES]) -> Option<[f32; SOURCES]> {
+        let plants = Plants::bundled()?;
+        let list = Plants::bundled_by_state()?.get(i)?;
+        let mut kw = plants.output(list, month_index(month));
+        for (v, on) in kw.iter_mut().zip(shown) {
+            if !on {
+                *v = 0.0;
+            }
+        }
+        Some(kw)
     }
 
     /// The states' bars at the clock's month, with the sources in `shown` and their use beside
@@ -175,8 +188,9 @@ impl States {
                 subject: Subject::State(i as u16),
                 demand: if demand { used } else { 0.0 },
                 faint: matches!(f.basis, Basis::Year(_)),
+                running: None,
             };
-            if b.total() > 0.0 {
+            if b.total() > 0.0 || b.demand > 0.0 {
                 bars.push(b);
             }
         }
@@ -221,11 +235,10 @@ impl States {
 
     /// A state's installed capacity by source at the clock's month, in kW: the bundled world
     /// plants inside its outline, with the sources in `shown`.
-    pub fn capacity(&self, i: usize, (year, month): (i32, u32), shown: [bool; SOURCES]) -> Option<[f32; SOURCES]> {
+    pub fn capacity(&self, i: usize, month: (i32, u32), shown: [bool; SOURCES]) -> Option<[f32; SOURCES]> {
         let plants = Plants::bundled()?;
         let list = Plants::bundled_by_state()?.get(i)?;
-        let m = ((year - 1900) * 12 + month as i32 - 1).clamp(0, u16::MAX as i32 - 1) as u16;
-        let mut kw = plants.capacity(list, m);
+        let mut kw = plants.capacity(list, month_index(month));
         for (v, on) in kw.iter_mut().zip(shown) {
             if !on {
                 *v = 0.0;
@@ -252,14 +265,14 @@ impl States {
         self.list.get(i as usize).map(|s| (s.label[0].to_radians(), s.label[1].to_radians()))
     }
 
-    /// What the information box says about a state: its estimated use by source at the month,
-    /// its population and share of the country's, and the country's use.
+    /// What the information box says about a state: its plants' estimated output by source at
+    /// the month against their capacity, its use by population, and the country's figures.
     pub fn describe(&self, i: u16, month: (i32, u32), shown: [bool; SOURCES], palette: Palette) -> Card {
         let mut card = Card::default();
         let Some(s) = self.list.get(i as usize) else { return card };
         let country = self.country_name(s).unwrap_or_else(|| s.country.clone());
         let share = self.share(i as usize);
-        let Some((f, _, used)) = self.estimate(i as usize, month, shown) else {
+        let Some((f, out, used)) = self.estimate(i as usize, month, shown) else {
             card.summary = format!("No electricity figures for {country} at this time.");
             return card;
         };
@@ -267,32 +280,27 @@ impl States {
             Basis::Month(y, m) => crate::calibration::month_words((y, m)),
             Basis::Year(y) => format!("{y}, on average"),
         };
-        card.summary = format!("{period}: about {} used, {:.1}% of {country}'s by population.", format_power(used), share * 100.0);
-        let k = if f.generation > 0.0 { used / f.generation } else { 0.0 };
-        let colour = |n: usize| palette.colour(if n < MAPPING.len() { MAPPING[n].1 } else { Source::OtherFossil });
-        let fossil = |n: usize| n >= MAPPING.len() || MAPPING[n].1.fossil();
-        let name = |n: usize| if n < MAPPING.len() { MAPPING[n].2 } else { "Other fossil" };
-        let on = |n: usize| shown[if n < MAPPING.len() { MAPPING[n].1 } else { Source::OtherFossil } as usize];
-        let rows: Vec<(usize, f32)> = (0..f.by_series.len()).filter(|&n| on(n)).map(|n| (n, f.by_series[n] * k)).filter(|r| r.1 > 0.0).collect();
-        let largest = rows.iter().map(|r| r.1).fold(0.0f32, f32::max);
-        let mut by = Meters { title: "Use by the country's mix (est.)".to_string(), max: largest, rows: Vec::new(), caption: String::new() };
-        for &(n, kw) in &rows {
-            by.rows.push(Meter { label: name(n).to_string(), segments: vec![Part { hatched: fossil(n), ..Part::solid(kw, colour(n)) }], text: format_power(kw) });
-        }
-        by.caption = "Average power over the period. Hatched: fossil or nuclear.".to_string();
-        card.meters.push(by);
-        let installed = self.capacity(i as usize, month, shown);
-        if let Some(kw) = installed {
-            let total: f32 = kw.iter().sum();
-            let rows: Vec<(Source, f32)> = Source::ALL.into_iter().map(|s| (s, kw[s as usize])).filter(|r| r.1 > 0.0).collect();
-            let mut cap = Meters { title: "Installed capacity (GEM plants)".to_string(), max: rows.iter().map(|r| r.1).fold(0.0, f32::max), rows: Vec::new(), caption: String::new() };
-            for (s, v) in rows {
-                cap.rows.push(Meter { label: s.name().to_string(), segments: vec![Part { hatched: s.fossil(), ..Part::solid(v, palette.colour(s)) }], text: format_power(v) });
+        let made: f32 = out.iter().sum();
+        card.summary = format!("{period}: about {} from its plants (est.), about {} used ({:.1}% of {country}'s by population).", format_power(made), format_power(used), share * 100.0);
+        let installed = self.capacity(i as usize, month, shown).unwrap_or([0.0; SOURCES]);
+        let total: f32 = installed.iter().sum();
+        // Made against used, on one scale.
+        let mut sums = Meters { title: String::new(), max: made.max(used), rows: Vec::new(), caption: String::new() };
+        let parts = Source::ALL.into_iter().filter(|s| out[*s as usize] > 0.0).map(|s| Part { hatched: s.fossil(), ..Part::solid(out[s as usize], palette.colour(s)) }).collect();
+        sums.rows.push(Meter { label: "Plants (est.)".to_string(), segments: parts, text: format_power(made) });
+        sums.rows.push(Meter { label: "Use (est.)".to_string(), segments: vec![Part { ink: true, ..Part::solid(used, crate::energy::DEMAND) }], text: format!("\u{2248} {}", format_power(used)) });
+        card.meters.push(sums);
+        let rows: Vec<Source> = Source::ALL.into_iter().filter(|s| installed[*s as usize] > 0.0).collect();
+        if !rows.is_empty() {
+            let mut by = Meters { title: "Plants by source (GEM)".to_string(), max: rows.iter().map(|s| installed[*s as usize]).fold(0.0, f32::max), rows: Vec::new(), caption: String::new() };
+            for s in rows {
+                let (kw, o) = (installed[s as usize], out[s as usize]);
+                let colour = palette.colour(s);
+                let segments = vec![Part { hatched: s.fossil(), ..Part::solid(o, colour) }, Part { alpha: 60, ..Part::solid(kw - o, colour) }];
+                by.rows.push(Meter { label: s.name().to_string(), segments, text: format!("{} of {}", format_power(o), format_power(kw)) });
             }
-            cap.caption = format!("{} in all: the plants of Global Energy Monitor's tracker inside the outline.", format_power(total));
-            if !cap.rows.is_empty() {
-                card.meters.push(cap);
-            }
+            by.caption = format!("Solid: estimated output; faint: the rest of the {} installed in Global Energy Monitor's plants inside the outline.", format_power(total));
+            card.meters.push(by);
         }
         card.facts.push(("Country".to_string(), country.clone()));
         if !s.kind.is_empty() {
@@ -306,10 +314,18 @@ impl States {
         card.facts.push(("Share of the country".to_string(), format!("{:.2}%", share * 100.0)));
         let whole = f.demand.filter(|d| *d > 0.0);
         card.facts.push((if whole.is_some() { "Country's use" } else { "Country's generation" }.to_string(), format_power(whole.unwrap_or(f.generation))));
-        card.notes.push(format!("Estimated: {country}'s use shared out by population, in the country's mix of sources."));
-        if installed.is_some() {
-            card.notes.push("Installed capacity: Global Energy Monitor, Global Integrated Power Tracker, September 2026 release (CC BY 4.0); filtered by status and size, so small units and rooftop solar are missing.".to_string());
+        let estimate = Plants::bundled().and_then(|p| p.estimate(&s.country, month_index(month)));
+        let gap: f32 = match &estimate {
+            Some(e) => e.gap().iter().zip(shown).filter(|g| g.1).map(|g| *g.0).sum(),
+            None => f.kw(shown).iter().sum(),
+        };
+        if gap > 0.0 {
+            card.facts.push(("Country, not in plant list".to_string(), format!("{} (est.)", format_power(gap))));
         }
+        card.notes.push("Output estimated: each plant's capacity times its country's capacity factor for its source in the month, Ember's generation over the capacity in the plant list, at most 100%.".to_string());
+        card.notes.push(format!("Use estimated: {country}'s use shared out by population."));
+        card.notes.push("Not in plant list: the country's generation that its plants in the list cannot account for, such as rooftop solar and small units; it is not placed in any state.".to_string());
+        card.notes.push("Plants: Global Energy Monitor, Global Integrated Power Tracker, September 2026 release (CC BY 4.0); filtered by status and size, so small units and rooftop solar are missing.".to_string());
         if s.estimated {
             card.notes.push("Wikidata has no population for this state: it is estimated from its area and the country's population.".to_string());
         }
@@ -421,25 +437,56 @@ mod tests {
     }
 
     #[test]
-    fn a_states_bar_is_its_countrys_use_by_population() {
+    fn a_states_bar_is_its_plants_beside_its_countrys_use_by_population() {
         let s = states();
         let all = [true; SOURCES];
         let month = (2024, 6);
+        let m = month_index(month);
+        let plants = Plants::bundled().unwrap();
+        let by_state = Plants::bundled_by_state().unwrap();
         let bars = s.bars(month, all, true);
         let fra: Vec<&Bar> = bars.iter().filter(|b| matches!(b.subject, Subject::State(i) if s.all()[i as usize].country == "FRA")).collect();
         let c = Owid::bundled().unwrap().country("FRA").unwrap();
         let f = Figures::of(c, month).unwrap();
-        let used = f.demand.unwrap();
-        let sum: f32 = fra.iter().map(|b| b.total()).sum();
-        assert!((sum / used - 1.0).abs() < 0.01, "{sum} against {used}");
-        assert!(fra.iter().all(|b| (b.demand / b.total() - 1.0).abs() < 1e-3));
-        // Brittany: the country's mix, mostly nuclear.
+        // Use beside the bars: the country's, by population.
+        let used: f32 = fra.iter().map(|b| b.demand).sum();
+        assert!((used / f.demand.unwrap() - 1.0).abs() < 0.01, "{used}");
+        // Each bar is its plants' estimated output, plant by plant.
+        for b in &fra {
+            let Subject::State(i) = b.subject else { unreachable!() };
+            let list = &by_state[i as usize];
+            let mut sum = [0.0f32; SOURCES];
+            for &p in list {
+                let pl = &plants.plants[p as usize];
+                sum[pl.source as usize] += pl.kw(m) * plants.estimate("FRA", m).unwrap().factor_of(pl.source);
+            }
+            for (got, want) in b.kw.iter().zip(sum) {
+                assert!((got - want).abs() <= 1e-3 * want.max(1.0), "{got} against {want}");
+            }
+        }
+        // The states' plants and those in no state make the country's plants; with the gap, Ember's.
+        let placed: Vec<u32> = (0..s.count()).filter(|&i| s.country(i) == "FRA").flat_map(|i| by_state[i].clone()).collect();
+        let unplaced: Vec<u32> = (0..plants.count() as u32).filter(|&i| plants.code(i) == "FRA" && !placed.contains(&i)).collect();
+        let (a, b) = (plants.output(&placed, m), plants.output(&unplaced, m));
+        let e = plants.estimate("FRA", m).unwrap();
+        let (made, gap) = (e.plants(), e.gap());
+        for src in Source::ALL {
+            let g = crate::world_output::group(src) as usize;
+            if g != src as usize {
+                continue;
+            }
+            let summed: f32 = Source::ALL.iter().filter(|t| crate::world_output::group(**t) as usize == g).map(|t| a[*t as usize] + b[*t as usize]).sum();
+            assert!((summed - made[g]).abs() <= 1e-3 * made[g].max(1.0), "{src:?}: {summed} against {}", made[g]);
+            assert!(gap[g] >= 0.0 && (made[g] + gap[g] - e.generation[g]).abs() <= 1e-3 * e.generation[g].max(1.0));
+        }
+        // Brittany's card: the plants and the country's line.
         let i = s.all().iter().position(|st| st.iso == "FR-BRE").unwrap();
         let card = s.describe(i as u16, month, all, Palette::Standard);
         assert!(card.summary.contains("of France's by population"), "{}", card.summary);
         assert!(card.facts.iter().any(|f| f.0 == "Country" && f.1 == "France"));
         assert!(card.facts.iter().any(|f| f.0 == "ISO 3166-2" && f.1 == "FR-BRE"));
-        assert!(card.meters[0].rows.iter().any(|r| r.label == "Nuclear"));
+        assert!(card.meters[0].rows.iter().any(|r| r.label == "Plants (est.)"));
+        assert!(card.notes.iter().any(|n| n.contains("Not in plant list")));
         assert_eq!(s.title(i as u16), "Bretagne, France");
     }
 

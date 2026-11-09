@@ -309,7 +309,7 @@ impl World {
         let mut bars = Vec::new();
         for (i, e) in self.entries.iter().enumerate() {
             let Some((_, c)) = self.country(i as u16) else { continue };
-            let bar = |kw, use_kw: Option<f32>, faint| Bar { lat: e.lat, lon: e.lon, kw, subject: Subject::Country(i as u16), demand: if demand { use_kw.unwrap_or(0.0) } else { 0.0 }, faint };
+            let bar = |kw, use_kw: Option<f32>, faint| Bar { lat: e.lat, lon: e.lon, kw, subject: Subject::Country(i as u16), demand: if demand { use_kw.unwrap_or(0.0) } else { 0.0 }, faint, running: None };
             let b = match (germany, e.code == GERMANY) {
                 (Some(g), true) => bar(g.kw, Some(g.demand), false),
                 _ => {
@@ -429,6 +429,26 @@ impl World {
         }
         by.caption = "Average power over the period. Hatched: fossil or nuclear.".to_string();
         card.meters.push(by);
+        // Beyond Germany: how much of it the plants in GEM's list account for, and the rest.
+        let plants = crate::world_plants::Plants::bundled().filter(|_| c.code != GERMANY);
+        let estimate = plants.map(|p| p.estimate(&c.code, crate::world_output::month_index(month)));
+        if let Some(estimate) = estimate.clone() {
+            let e = estimate.unwrap_or_else(|| crate::world_output::Estimate::of(&f, [0.0; SOURCES]));
+            let (made, gap) = (e.plants(), e.gap());
+            let sources: Vec<Source> = Source::ALL.into_iter().filter(|s| e.generation[*s as usize] > 0.0).collect();
+            let mut split = Meters { title: "In the plant list and not (est.)".to_string(), max: sources.iter().map(|s| e.generation[*s as usize]).fold(0.0, f32::max), rows: Vec::new(), caption: String::new() };
+            for s in sources {
+                let colour = palette.colour(s);
+                let segments = vec![Part { hatched: s.fossil(), ..Part::solid(made[s as usize], colour) }, Part { alpha: 90, ..Part::solid(gap[s as usize], colour) }];
+                let text = if gap[s as usize] > 0.5 { format!("{} not in list", format_power(gap[s as usize])) } else { "all in list".to_string() };
+                split.rows.push(Meter { label: group_name(s).to_string(), segments, text });
+            }
+            split.caption = "Solid: the plants of Global Energy Monitor's list, estimated; faint: not in plant list (rooftop solar, small units), not placed anywhere.".to_string();
+            card.meters.push(split);
+            let share = e.plant_share().unwrap_or(0.0);
+            card.facts.push(("Plants account for".to_string(), format!("{:.0}% of the generation (est.)", share * 100.0)));
+            card.facts.push(("Not in plant list".to_string(), format!("{} (est.)", format_power(gap.iter().sum()))));
+        }
         if let Some(n) = f.net_imports {
             let words = if n >= 0.0 { format!("{} imported", format_power(n)) } else { format!("{} exported", format_power(-n)) };
             card.facts.push(("Net imports".to_string(), words));
@@ -464,12 +484,24 @@ impl World {
         if germany {
             card.notes.push("The bar on the globe is Germany's states summed: their output estimated from SMARD, as at the finer levels.".to_string());
         }
+        if estimate.is_some() {
+            card.notes.push("Plants: each one's output is its capacity times the country's capacity factor for its source in the month, Ember's generation over the capacity Global Energy Monitor lists running then, at most 100%. What that cannot account for is not in the plant list.".to_string());
+        }
         card.notes.push("Generation by source as Ember gives it: wind not split by land and sea, coal not into lignite and hard coal. No capacity: OWID does not have it by source for all countries.".to_string());
         card.notes.push(match f.basis {
             Basis::Month(..) => "Ember's monthly electricity data via Our World in Data (CC BY 4.0).".to_string(),
             Basis::Year(y) => format!("{} via Our World in Data (CC BY 4.0).", c.year_source(Series::Generation, y).name()),
         });
         card
+    }
+}
+
+/// The name of a source in Ember's terms, for the sources [`MAPPING`] draws.
+fn group_name(s: Source) -> &'static str {
+    match s {
+        Source::Biomass => "Bio & other",
+        Source::OtherFossil => "Other fossil",
+        s => MAPPING.iter().find(|m| m.1 == s).map_or(s.name(), |m| m.2),
     }
 }
 

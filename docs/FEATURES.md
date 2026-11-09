@@ -558,6 +558,11 @@ day chart and their legend swatches hatched, and on the ground hatched fills and
   the box say so. Before a country's first figure it has no bar. The time window's year slider moves through the years.
 - There is **no column of unused capacity**: OWID does not have capacity by source for all countries, and the energy card
   says so.
+- The box also sets the month's generation against the world plants below: per Ember source, how much the country's plants
+  in GEM's list make (estimated, see below) and the rest, **not in plant list** (rooftop solar, small units), with the
+  share of the generation the plants account for. That rest is never put on any plant or state; it is what the plants
+  cannot make even at full capacity, so it is often near nothing (the plants' factors take up the rest). Germany has no
+  world plants and no such lines.
 - **Germany's bar** is its state bars summed: their output estimated from SMARD at the clock's quarter hour (with own use,
   where chosen), and Germany's consumption beside it, so that it fits the finer levels. Without SMARD's figures (before 2015,
   in the future, or with output off) it is Ember's month like the others.
@@ -585,33 +590,40 @@ day chart and their legend swatches hatched, and on the ground hatched fills and
   Scotland, Wales and Northern Ireland, and likewise the Philippines, Slovenia, Thailand, Hungary, Uganda, Latvia, Malta,
   Azerbaijan, Burkina Faso and North Macedonia. The United States, Russia, Japan and Vietnam keep theirs, as do Turkey,
   Algeria and Romania, for which Natural Earth gives no grouping; most countries have fewer than 40.
-- Until the world's plants give monthly output, such a bar is the country's **use** (Ember's demand, or its generation where Ember
-  has no demand) in the clock's month, **shared out by population** and stacked in the country's mix of sources, lighter
-  where the year's average stands in. It has no column of unused capacity, and SMARD's output shares do
-  not apply to it; the white column beside it, where use is shown, is the same figure. The bars share the German states'
-  scale, so a Chinese province can stand a few times taller than Bavaria.
+- Such a bar is the **estimated output of the world plants** inside the state's outline in the clock's month (see below),
+  by source, lighter where the country's year stands in for the month. It has no column of unused capacity, and SMARD's
+  output shares do not apply to it. The white column beside it, where use is shown, is the country's **use** (Ember's
+  demand, or its generation where Ember has no demand) **shared out by population**. A state with no plants in the list
+  has only that column. The bars share the German states' scale, so a Chinese province can stand a few times taller than
+  Bavaria.
 - Population per state is Wikidata's figure for the state's item (CC0), for a merged region that of the item its units lie
   in, or their sum. Where Wikidata has none (619 states, many in Kosovo, Madagascar and small island states), the state's
   share of what the others leave of the country is estimated by area, and the box says so.
-- A **click** on such a bar outlines the state in the colour of its country's main source and opens the box: the state's
-  estimated use by source, its **installed capacity** by source (the world plants below whose position lies inside its
-  outline, at the clock's month; offshore parks lie in no state), its country, kind and ISO 3166-2 code, its population
-  and share of the country's, and the country's use.
+- A **click** on such a bar outlines the state in the colour of its plants' main source and opens the box: its plants'
+  estimated output against its estimated use, per source the output against the **installed capacity** (the world plants
+  below whose position lies inside its outline, at the clock's month; offshore parks lie in no state), its country, kind
+  and ISO 3166-2 code, its population and share of the country's, the country's use, and the country's generation **not
+  in plant list**.
 
 ### Power plants of the world
 - Close up (the Plants level, below about 15 km, or held there), beside Germany's sites, **round bars** stand for the
   world's plants outside Germany, from Global Energy Monitor's Global Integrated Power Tracker (September 2026, CC BY 4.0):
   units operating, mothballed or retired, of at least 1 MW (solar and wind outside Europe and the US: 10 MW). The units
   of one source at one GEM location make one site, as Germany's sites are the units of one source at one position.
-- A bar's height is the site's **installed capacity** at the clock's month, on the same scale as Germany's sites, with no
-  output estimate yet and so no faint column of unused capacity. Units count from January of their start year, retired
+- A bar's height is the site's **installed capacity** at the clock's month, on the same scale as Germany's sites, solid up
+  to its **estimated output** and the rest drawn as unused capacity, as Germany's plants are. The estimate is monthly: the
+  capacity times its country's **capacity factor** for the source and month, which is Ember's generation of the source
+  (the year's average where Ember has no months; the bar is then lighter) over the capacity GEM lists for the country and
+  source running that month, at most 100%. Every plant of a source in a country runs at the same share; wind at sea
+  shares Ember's wind with wind on land, lignite its coal with hard coal. Units count from January of their start year, retired
   ones through December of their retirement year, so moving the clock shows the build-out; units GEM gives no start year
   count from the release (September 2026) on.
 - GEM's types become the program's sources: wind at sea where the technology says offshore, coal as lignite where the fuel
   says so, oil and gas by the first fuel listed, geothermal drawn as biomass (as Ember's other renewables are), pumped
   storage as hydro.
-- A **click** rings the site and opens the box: name and country, capacity at the month, type with technology and fuel,
-  start and retirement years, units running, owner where GEM gives one, and a link to its gem.wiki page.
+- A **click** rings the site and opens the box: name and country, capacity at the month, its estimated output and the
+  capacity factor used (marked as estimates, with the period of Ember's figure), type with technology and fuel, start and
+  retirement years, units running, owner where GEM gives one, and a link to its gem.wiki page.
 - GEM's credit shows while its plants are in view, and at the States level. GEM's German units are not used: Germany keeps
   the Marktstammdatenregister's, unchanged. Units sourced from TransitionZero (CC BY-NC) are left out, which thins solar
   in South Korea, India, Türkiye, Spain and others.
