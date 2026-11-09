@@ -958,6 +958,10 @@ struct PowerState {
     intensity: Option<f32>,
 }
 
+/// The plant scale's inputs when last fitted: month, sources shown, the factor the view needs, the factor
+/// for all plants, and when.
+type PlantScaleFit = (u16, [bool; energy::SOURCES], Option<f64>, Option<f64>, Instant);
+
 /// What the energy bars show now, and what they were last built from.
 #[derive(Default)]
 struct EnergyLayer {
@@ -988,7 +992,7 @@ struct EnergyLayer {
     /// was last stepped.
     view_scale: Option<(energy::Level, world_energy::Easing, Instant)>,
     /// Cached plant scale inputs, refreshed when the month, sources or view changes.
-    plant_scale_fit: Option<(u16, [bool; energy::SOURCES], Option<f64>, Option<f64>, Instant)>,
+    plant_scale_fit: Option<PlantScaleFit>,
     /// Number of bars sent to the renderer after screen-space grouping.
     drawn_bars: usize,
 }

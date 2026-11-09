@@ -864,7 +864,8 @@ impl Energy {
         let fossil: f32 = rows.iter().filter(|r| r.0.fossil()).map(|r| r.1).sum();
         let running: f32 = rows.iter().map(|&(s, kw)| kw * share(s)).sum();
         let total = renewable + fossil;
-        let pct = |part: f32, of: f32| 100.0 * part / of.max(1e-6);
+        // Clamped, so that a rounding residue never prints as "-0%".
+        let pct = |part: f32, of: f32| (100.0 * part / of.max(1e-6)).max(0.0);
         let largest = rows.iter().copied().max_by(|a, b| a.1.total_cmp(&b.1));
         let demand = output.and_then(|o| self.demand_kw(subject, o.consumption_mw));
         let main = largest.map_or(String::new(), |(s, kw)| format!(" Largest: {} ({:.0}%).", s.name().to_lowercase(), pct(kw, total)));
