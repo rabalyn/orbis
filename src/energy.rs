@@ -1064,6 +1064,26 @@ const MIN_WIDTH_PX: f64 = 5.0;
 /// What plant sites are sized against, in metres, in place of an area's width.
 const PLANT_WIDTH: f64 = 2500.0;
 
+/// The share of the plant bars in view below the one the Plants level is scaled for.
+pub const PLANT_PERCENTILE: f64 = 0.98;
+/// The least capacity the Plants level is scaled for, in kW, so that a view of a few rooftops
+/// does not blow them up.
+pub const PLANT_FLOOR_KW: f32 = 1000.0;
+
+/// The height of a kW the plant bars in view need: the [`PLANT_PERCENTILE`] of the heights of
+/// the plant bars (Germany's sites and the world's alike) for which `visible` holds, at least
+/// [`PLANT_FLOOR_KW`], stands [`HEIGHT_SHARE`] of [`PLANT_WIDTH`] tall, as [`Energy::largest`] does
+/// for all of Germany's. `None` with no plant bar in view.
+pub fn plants_needed(bars: &[Bar], visible: &dyn Fn(f64, f64) -> bool) -> Option<f64> {
+    let mut heights: Vec<f32> = bars.iter().filter(|b| matches!(b.subject, Subject::Site(_) | Subject::Plant(_)) && visible(b.lat, b.lon)).map(Bar::height).filter(|h| *h > 0.0).collect();
+    if heights.is_empty() {
+        return None;
+    }
+    heights.sort_by(f32::total_cmp);
+    let at = ((heights.len() as f64 * PLANT_PERCENTILE) as usize).min(heights.len() - 1);
+    Some(HEIGHT_SHARE * PLANT_WIDTH / heights[at].max(PLANT_FLOOR_KW) as f64)
+}
+
 /// How the bars are sized: their width and the height of a kilowatt, in metres.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Scale {
@@ -1653,6 +1673,51 @@ pub(crate) mod tests {
         // A gas column 100 m tall in bands of 6 m: about 17 bands, half of them dark.
         assert!(gas > solar * 5, "solar {solar} shades, gas {gas}");
         assert!(m.indices.iter().all(|&i| (i as usize) < m.vertices.len()));
+    }
+
+    #[test]
+    fn the_plants_scale_takes_the_98th_percentile_of_the_plants_in_view() {
+        let bar = |i: u32, kw: f32, subject: Subject| {
+            let mut v = [0.0; SOURCES];
+            v[Source::Solar as usize] = kw;
+            Bar { lat: 0.8, lon: 0.001 * i as f64, kw: v, subject, demand: 0.0, faint: false, running: None }
+        };
+        // 100 sites of 1 to 100 MW: the 99th smallest sets the scale, the largest does not.
+        let mut bars: Vec<Bar> = (1..=100).map(|i| bar(i, i as f32 * 1000.0, if i % 2 == 0 { Subject::Site(i) } else { Subject::Plant(i) })).collect();
+        let per_kw = |bars: &[Bar], visible: &dyn Fn(f64, f64) -> bool| plants_needed(bars, visible).unwrap();
+        assert!((per_kw(&bars, &|_, _| true) - HEIGHT_SHARE * PLANT_WIDTH / 99_000.0).abs() < 1e-12);
+        // Areas and bars out of view do not count.
+        bars.push(bar(0, 1e9, Subject::Area(0)));
+        assert!((per_kw(&bars, &|_, lon| lon < 0.0105) - HEIGHT_SHARE * PLANT_WIDTH / 10_000.0).abs() < 1e-12);
+        // A view of rooftops is scaled for at least the floor; none in view, nothing.
+        let roofs: Vec<Bar> = (0..10).map(|i| bar(i, 10.0, Subject::Site(i))).collect();
+        assert!((per_kw(&roofs, &|_, _| true) - HEIGHT_SHARE * PLANT_WIDTH / PLANT_FLOOR_KW as f64).abs() < 1e-12);
+        assert!(plants_needed(&roofs, &|_, _| false).is_none());
+        // Held while the view needs less than 1.5 times more or less, then eased over half a second.
+        let mut e = crate::world_energy::Easing::new(per_kw(&bars, &|_, _| true));
+        let start = e.per_kw;
+        assert!(!e.step(Some(start * 1.4), 0.1) && e.per_kw == start);
+        assert!(e.step(Some(start / 2.0), 0.25) && e.per_kw < start && e.per_kw > start / 2.0);
+        assert!(!e.step(Some(start / 2.0), 0.3) && (e.per_kw - start / 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn over_germany_the_plants_scale_is_about_the_fixed_one() {
+        let e = Energy::bundled().unwrap();
+        let last = ((e.exported.0 - 1900) * 12 + e.exported.1 - 1) as u16;
+        let fixed = Scale::for_view(e, Level::Plants, 1e4, 1000.0).per_kw;
+        let all = e.bars(Level::Plants, last, [true; SOURCES], None);
+        // All of Germany: about the fixed scale, which takes the 98th percentile of all the
+        // level's bars (the bars of towns' units without a position among them).
+        let whole = plants_needed(&all, &|_, _| true).unwrap();
+        assert!((whole / fixed - 1.0).abs() < 0.05, "{whole} against {fixed}");
+        // Views of 50 km around German places stay within a few times of it: closer views follow
+        // their own sites (a city of rooftops stands taller, a lignite field lower).
+        for (name, lat, lon) in [("Kassel", 51.31, 9.48), ("Munich", 48.14, 11.58), ("Husum", 54.48, 9.05), ("Cottbus", 51.76, 14.33), ("Ruhr", 51.45, 7.0)] {
+            let (lat, lon) = (f64::to_radians(lat), f64::to_radians(lon));
+            let near = plants_needed(&all, &|a, b| angle_between(a, b, lat, lon) < 50.0 / 6371.0).unwrap();
+            assert!((0.4..=2.5).contains(&(near / fixed)), "{name}: {near} against {fixed}");
+        }
     }
 
     #[test]

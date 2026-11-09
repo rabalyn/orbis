@@ -610,7 +610,7 @@ day chart and their legend swatches hatched, and on the ground hatched fills and
   world's plants outside Germany, from Global Energy Monitor's Global Integrated Power Tracker (September 2026, CC BY 4.0):
   units operating, mothballed or retired, of at least 1 MW (solar and wind outside Europe and the US: 10 MW). The units
   of one source at one GEM location make one site, as Germany's sites are the units of one source at one position.
-- A bar's height is the site's **installed capacity** at the clock's month, on the same scale as Germany's sites, solid up
+- A bar's height is the site's **installed capacity** at the clock's month, on the same scale as Germany's sites in view, solid up
   to its **estimated output** and the rest drawn as unused capacity, as Germany's plants are. The estimate is monthly: the
   capacity times its country's **capacity factor** for the source and month, which is Ember's generation of the source
   (the year's average where Ember has no months; the bar is then lighter) over the capacity GEM lists for the country and
@@ -669,6 +669,12 @@ never confused:
   roots of their areas; 2.5 km for plant sites), and bars are 7% of that width wide, so a state bar is tens of kilometres
   tall, a district bar a few. A level keeps one scale whatever the date. The display gives the scale as the height of 1 GW
   (10 GW for countries).
+- The **Plants level** instead follows the plants **in view**, as the Countries level follows the countries: the 98th
+  percentile of the capacities of the plant bars on screen and on the near side of the globe (Germany's sites and the
+  world's plants alike, counting at least 1 MW) is 0.8 times 2.5 km tall. It changes only when the view needs 1.5 times
+  more or less, and then the bars grow or shrink to it over half a second; within one view, equal capacity stands equally
+  tall. Over all of Germany this is about the old fixed scale (1 GW = 368 km); close up it follows the sites around, so a
+  city of rooftops stands taller and a view with large plants abroad lower. The display's "1 GW = …" follows.
   From far away bars stay at least 5 pixels wide. Their heights show only in a tilted view, and the display says so in a
   straight-down view.
 - The bars follow the clock by month: a unit counts from the month it went into operation and stops in the month it was shut

@@ -984,8 +984,9 @@ struct EnergyLayer {
     style: Option<energy::Style>,
     /// The month the flat map's shade of countries was made for.
     map_from: Option<(i32, u32)>,
-    /// The countries' scale, following the countries in view, and when it was last stepped.
-    country_scale: Option<(world_energy::Easing, Instant)>,
+    /// The scale of the level that follows the bars in view (Countries or Plants), and when it
+    /// was last stepped.
+    view_scale: Option<(energy::Level, world_energy::Easing, Instant)>,
 }
 
 /// Sets up tile fetching, including sharing on the LAN if asked for.
@@ -2369,16 +2370,19 @@ impl Scene {
         self.update_power(data, energy::month_of(self.clock.time()));
         self.sync_power_chart();
         self.open_start_area(data);
+        let plants = level == energy::Level::Plants;
         let easing = match world.filter(|_| countries) {
             Some(w) => self.ease_country_scale(w, shown, aspect_height),
+            None if plants => self.ease_plant_scale(data, month, shown, aspect_height),
             None => {
-                self.energy.country_scale = None;
+                self.energy.view_scale = None;
                 false
             }
         };
         let cam = &self.nav.cam;
-        let scale = style.apply(match (world.filter(|_| countries), self.energy.country_scale) {
-            (Some(w), Some((e, _))) => w.scale(e.per_kw, cam.distance, aspect_height.1),
+        let scale = style.apply(match (world.filter(|_| countries), self.energy.view_scale) {
+            (Some(w), Some((energy::Level::Countries, e, _))) => w.scale(e.per_kw, cam.distance, aspect_height.1),
+            (_, Some((energy::Level::Plants, e, _))) if plants => energy::Scale { per_kw: e.per_kw, ..energy::Scale::for_view(data, level, cam.distance, aspect_height.1) },
             _ => energy::Scale::for_view(data, level, cam.distance, aspect_height.1),
         });
         // The centre in steps of a tenth of the bars' reach, so that panning rebuilds only now and then.
@@ -2389,7 +2393,7 @@ impl Scene {
         let quarter = self.energy.power.shown.as_ref().map(|m| (m.0.time as i64) * 4 + self.energy.power.own_use as i64 * 2 + self.view.energy_demand as i64);
         let key = (level, month, shown, centre, r.tile_count(), quarter);
         // Easing to a new scale, every step is drawn.
-        let limit = if countries { 0.0 } else { 0.03 };
+        let limit = if countries || plants { 0.0 } else { 0.03 };
         let rescaled = self.energy.scale.is_none_or(|s| (s.per_kw / scale.per_kw - 1.0).abs() > limit);
         let same_but_terrain = self.energy.built_from.is_some_and(|b| (b.0, b.1, b.2, b.3, b.5) == (key.0, key.1, key.2, key.3, key.5));
         let terrain_due = self.energy.built_at.is_none_or(|t| t.elapsed() > Duration::from_millis(500));
@@ -2442,7 +2446,7 @@ impl Scene {
 
     /// Steps the countries' scale towards what the countries in view need: those whose bar
     /// stands on screen and on the near side of the globe. Returns whether it is still moving.
-    fn ease_country_scale(&mut self, w: &world_energy::World, shown: [bool; energy::SOURCES], (aspect, height): (f64, f64)) -> bool {
+    fn ease_country_scale(&mut self, w: &world_energy::World, shown: [bool; energy::SOURCES], aspect_height: (f64, f64)) -> bool {
         let fresh;
         let bars = if self.energy.bars.first().is_some_and(|b| matches!(b.subject, energy::Subject::Country(_))) {
             &self.energy.bars
@@ -2450,25 +2454,59 @@ impl Scene {
             fresh = w.bars(self.clock_month(), shown, self.view.energy_demand, None);
             &fresh
         };
+        let visible = self.on_screen(aspect_height);
+        let needed = w.needed(bars, &visible);
+        let all = w.needed(bars, &|_, _| true);
+        self.step_view_scale(energy::Level::Countries, needed, all)
+    }
+
+    /// Steps the Plants level's scale towards what the plant bars in view need, Germany's sites
+    /// and the world's plants alike (see [`energy::plants_needed`]). Returns whether it is still
+    /// moving.
+    fn ease_plant_scale(&mut self, data: &energy::Energy, month: u16, shown: [bool; energy::SOURCES], aspect_height: (f64, f64)) -> bool {
+        let fresh;
+        let bars = if self.energy.built_from.is_some_and(|b| b.0 == energy::Level::Plants) {
+            &self.energy.bars
+        } else {
+            let cam = &self.nav.cam;
+            let reach = (self.nav.altitude * 6.0 / geo::radius()).clamp(0.02, std::f64::consts::PI);
+            let near = Some((cam.lat, cam.lon, reach));
+            let mut b = data.bars(energy::Level::Plants, month, shown, near);
+            if let Some(p) = world_plants::Plants::bundled() {
+                b.extend(p.bars(month, shown, near));
+            }
+            fresh = b;
+            &fresh
+        };
+        let visible = self.on_screen(aspect_height);
+        let needed = energy::plants_needed(bars, &visible);
+        let all = energy::plants_needed(bars, &|_, _| true);
+        self.step_view_scale(energy::Level::Plants, needed, all)
+    }
+
+    /// Whether a point on the ground (radians) is on screen and on the near side of the globe.
+    fn on_screen(&self, (aspect, height): (f64, f64)) -> impl Fn(f64, f64) -> bool {
         let basis = self.nav.cam.basis();
         let eye = basis.pos;
         let screen = Screen { basis, size: DVec2::new(aspect * height, height), reserved: Vec::new() };
-        let visible = |lat: f64, lon: f64| {
+        move |lat: f64, lon: f64| {
             let p = geo::geodetic_to_ecef(lat, lon, 0.0);
             (eye - p).dot(p) > 0.0 && screen.project(p).is_some_and(|q| q.x >= 0.0 && q.y >= 0.0 && q.x <= screen.size.x && q.y <= screen.size.y)
-        };
-        let needed = w.needed(bars, &visible);
+        }
+    }
+
+    /// Eases the scale of `level` towards `needed`; a level's first view takes its scale at once,
+    /// from `all` bars if none is in view. Returns whether it is still moving.
+    fn step_view_scale(&mut self, level: energy::Level, needed: Option<f64>, all: Option<f64>) -> bool {
         let now = Instant::now();
-        match &mut self.energy.country_scale {
-            Some((e, last)) => {
+        match &mut self.energy.view_scale {
+            Some((l, e, last)) if *l == level => {
                 let dt = now.duration_since(*last).as_secs_f64().min(0.1);
                 *last = now;
                 e.step(needed, dt)
             }
-            None => {
-                // The first view takes its scale at once.
-                let start = needed.or_else(|| w.needed(bars, &|_, _| true));
-                self.energy.country_scale = start.map(|n| (world_energy::Easing::new(n), now));
+            _ => {
+                self.energy.view_scale = needed.or(all).map(|n| (level, world_energy::Easing::new(n), now));
                 false
             }
         }
@@ -2773,6 +2811,7 @@ impl Scene {
             }
         } else if level == energy::Level::Plants {
             notes.push(format!("Shade: units without a position, full at {}/km²", energy::format_power(data.dense())));
+            notes.push("Height follows the plants in view: the 98th percentile of their capacity stands 2 km tall, changing at 1.5 times".to_string());
             notes.push("Beyond Germany: Global Energy Monitor's plants, solid up to their estimated output (capacity times the country's capacity factor from Ember)".to_string());
         } else if self.view.energy_demand && self.energy.power.shown.is_some() {
             notes.push("White column: estimated use, Germany's consumption shared out by population".to_string());
