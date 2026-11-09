@@ -309,7 +309,7 @@ impl World {
         let mut bars = Vec::new();
         for (i, e) in self.entries.iter().enumerate() {
             let Some((_, c)) = self.country(i as u16) else { continue };
-            let bar = |kw, use_kw: Option<f32>, faint| Bar { lat: e.lat, lon: e.lon, kw, subject: Subject::Country(i as u16), demand: if demand { use_kw.unwrap_or(0.0) } else { 0.0 }, faint, running: None };
+            let bar = |kw, use_kw: Option<f32>, faint| Bar { lat: e.lat, lon: e.lon, kw, subject: Subject::Country(i as u16), demand: if demand { use_kw.unwrap_or(0.0) } else { 0.0 }, faint, running: None, running_by_source: None };
             let b = match (germany, e.code == GERMANY) {
                 (Some(g), true) => bar(g.kw, Some(g.demand), false),
                 _ => {

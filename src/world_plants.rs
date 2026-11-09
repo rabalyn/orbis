@@ -262,7 +262,7 @@ impl Plants {
                 let e = estimates.countries[p.country as usize].as_ref();
                 let running = Some(e.map_or(0.0, |e| e.factor_of(p.class())));
                 let faint = e.is_some_and(|e| matches!(e.basis, crate::world_energy::Basis::Year(_)));
-                bars.push(Bar { lat: p.lat, lon: p.lon, kw: v, subject: Subject::Plant(i), demand: 0.0, faint, running });
+                bars.push(Bar { lat: p.lat, lon: p.lon, kw: v, subject: Subject::Plant(i), demand: 0.0, faint, running, running_by_source: None });
             }
         };
         match near {

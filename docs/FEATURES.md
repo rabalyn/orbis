@@ -679,6 +679,10 @@ never confused:
   city of rooftops stands taller and a view with large plants abroad lower. The display's "1 GW = …" follows.
   From far away bars stay at least 5 pixels wide. Their heights show only in a tilted view, and the display says so in a
   straight-down view.
+- When more than 12,000 plant sites are listed, overlapping visible bars are grouped into screen-space columns for
+  drawing, aiming for about 500 screen cells to keep wide views responsive. Their capacity and estimated output are
+  preserved in the grouped columns; click selection still uses the underlying sites, and zooming in separates the
+  columns. The scale fit is refreshed five times a second while the view moves.
 - The bars follow the clock by month: a unit counts from the month it went into operation and stops in the month it was shut
   down for good. Dragging the year slider of the time window shows the build-out over the years.
 

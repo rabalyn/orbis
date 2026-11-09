@@ -320,6 +320,9 @@ pub struct Bar {
     /// For a world plant: the estimated share of its capacity running, drawn solid with the rest
     /// above it as unused capacity, in place of the shares of Germany's sources.
     pub running: Option<f32>,
+    /// For a screen-space group of sites, the capacity-weighted running share of each source.
+    /// This keeps grouping faithful when plants from several countries overlap on screen.
+    pub running_by_source: Option<[f32; SOURCES]>,
 }
 
 impl Bar {
@@ -634,7 +637,7 @@ impl Energy {
         if level != Level::Plants {
             for (i, a) in self.areas.iter().enumerate() {
                 if a.level == level && close(a.label.0, a.label.1) {
-                    bars.push(Bar { lat: a.label.0, lon: a.label.1, kw: pick(&self.totals[i]), subject: Subject::Area(i as u32), demand: 0.0, faint: false, running: None });
+                    bars.push(Bar { lat: a.label.0, lon: a.label.1, kw: pick(&self.totals[i]), subject: Subject::Area(i as u32), demand: 0.0, faint: false, running: None, running_by_source: None });
                 }
             }
         } else {
@@ -644,7 +647,7 @@ impl Energy {
                 if shown[s.source as usize] && close(s.lat, s.lon) {
                     let mut kw = [0.0; SOURCES];
                     kw[s.source as usize] = s.kw(month);
-                    bars.push(Bar { lat: s.lat, lon: s.lon, kw, subject: Subject::Site(i), demand: 0.0, faint: false, running: None });
+                    bars.push(Bar { lat: s.lat, lon: s.lon, kw, subject: Subject::Site(i), demand: 0.0, faint: false, running: None, running_by_source: None });
                 }
             };
             match near {
@@ -666,7 +669,7 @@ impl Energy {
         if level >= Level::Towns {
             for (i, a) in self.areas.iter().enumerate() {
                 if a.level == Level::Districts && a.kind == AreaKind::Admin && close(a.label.0, a.label.1) {
-                    bars.push(Bar { lat: a.label.0, lon: a.label.1, kw: pick(&self.unplaced[i]), subject: Subject::Unplaced(i as u32), demand: 0.0, faint: false, running: None });
+                    bars.push(Bar { lat: a.label.0, lon: a.label.1, kw: pick(&self.unplaced[i]), subject: Subject::Unplaced(i as u32), demand: 0.0, faint: false, running: None, running_by_source: None });
                 }
             }
         }
@@ -1079,9 +1082,68 @@ pub fn plants_needed(bars: &[Bar], visible: &dyn Fn(f64, f64) -> bool) -> Option
     if heights.is_empty() {
         return None;
     }
-    heights.sort_by(f32::total_cmp);
     let at = ((heights.len() as f64 * PLANT_PERCENTILE) as usize).min(heights.len() - 1);
-    Some(HEIGHT_SHARE * PLANT_WIDTH / heights[at].max(PLANT_FLOOR_KW) as f64)
+    let (_, percentile, _) = heights.select_nth_unstable_by(at, f32::total_cmp);
+    Some(HEIGHT_SHARE * PLANT_WIDTH / percentile.max(PLANT_FLOOR_KW) as f64)
+}
+
+/// Screen-space grouping for the drawing pass. Site bars remain individual in `bars` for
+/// picking and counts; only this temporary mesh input is grouped when many sites overlap.
+pub fn visual_bars(
+    bars: &[Bar],
+    size: (f64, f64),
+    shares: Option<&[f32; SOURCES]>,
+    project: &dyn Fn(f64, f64) -> Option<glam::DVec2>,
+) -> Vec<Bar> {
+    const MAX_INDIVIDUAL: usize = 12_000;
+    const TARGET_CELLS: f64 = 500.0;
+    let site_count = bars.iter().filter(|b| matches!(b.subject, Subject::Site(_) | Subject::Plant(_))).count();
+    let grouping = site_count > MAX_INDIVIDUAL;
+    let cell = ((size.0.max(1.0) * size.1.max(1.0) / TARGET_CELLS).sqrt()).max(8.0);
+    let mut out = Vec::with_capacity(if grouping { MAX_INDIVIDUAL } else { bars.len() });
+    let mut groups: HashMap<(i32, i32, bool), Vec<(Bar, glam::DVec2)>> = HashMap::new();
+    for bar in bars {
+        if !matches!(bar.subject, Subject::Site(_) | Subject::Plant(_)) {
+            out.push(bar.clone());
+            continue;
+        }
+        let Some(p) = project(bar.lat, bar.lon).filter(|p| p.x >= 0.0 && p.y >= 0.0 && p.x <= size.0 && p.y <= size.1) else { continue };
+        if grouping {
+            groups.entry(((p.x / cell).floor() as i32, (p.y / cell).floor() as i32, bar.faint)).or_default().push((bar.clone(), p));
+        } else {
+            out.push(bar.clone());
+        }
+    }
+    for ((_, _, faint), members) in groups {
+        if members.len() == 1 {
+            out.push(members.into_iter().next().unwrap().0);
+            continue;
+        }
+        let mut kw = [0.0; SOURCES];
+        let mut output = [0.0; SOURCES];
+        let mut direction = glam::DVec3::ZERO;
+        let mut largest = 0.0f32;
+        let mut subject = Subject::Plant(0);
+        for (bar, _) in &members {
+            direction += geodetic_to_ecef(bar.lat, bar.lon, 0.0).normalize();
+            if bar.total() > largest {
+                largest = bar.total();
+                subject = bar.subject;
+            }
+            for s in 0..SOURCES {
+                let capacity = bar.kw[s].max(0.0);
+                kw[s] += capacity;
+                let factor = bar.running_by_source.map(|r| r[s]).or(bar.running).unwrap_or_else(|| shares.map_or(1.0, |r| r[s])).clamp(0.0, 1.0);
+                output[s] += capacity * factor;
+            }
+        }
+        let direction = direction.normalize_or_zero();
+        let lat = direction.z.atan2(direction.x.hypot(direction.y));
+        let lon = direction.y.atan2(direction.x);
+        let running_by_source = Some(std::array::from_fn(|s| if kw[s] > 0.0 { output[s] / kw[s] } else { 0.0 }));
+        out.push(Bar { lat, lon, kw, subject, demand: 0.0, faint, running: None, running_by_source });
+    }
+    out
 }
 
 /// How the bars are sized: their width and the height of a kilowatt, in metres.
@@ -1281,10 +1343,10 @@ pub fn mesh(bars: &[Bar], scale: Scale, center: DVec3, ground: &dyn Fn(f64, f64)
             let mut idle: Vec<Segment> = Vec::new();
             for s in range.filter(|&s| bar.kw[s] > 0.0) {
                 let source = Source::ALL[s];
-                let share = match bar.running {
-                    Some(r) => (r as f64).clamp(0.0, 1.0),
-                    None => shares.filter(|_| bar.subject.has_capacity()).map_or(1.0, |sh| (sh[s] as f64).clamp(0.0, 1.0)),
-                };
+                let share = bar.running_by_source.map(|r| r[s]).or(bar.running).map_or_else(
+                    || shares.filter(|_| bar.subject.has_capacity()).map_or(1.0, |sh| sh[s] as f64),
+                    f64::from,
+                ).clamp(0.0, 1.0);
                 let colour = if bar.faint { lighter(style.colour(source)) } else { style.colour(source) };
                 segments.push(Segment { colour, alpha: 255, height: bar.kw[s] as f64 * share * scale.per_kw });
                 if let Some((colour, alpha)) = style.idle_colour(source) {
@@ -1658,7 +1720,7 @@ pub(crate) mod tests {
         let mut kw = [0.0; SOURCES];
         kw[Source::Solar as usize] = 100.0;
         kw[Source::Gas as usize] = 100.0;
-        let bar = Bar { lat: 0.8, lon: 0.2, kw, subject: Subject::Area(0), demand: 0.0, faint: false, running: None };
+        let bar = Bar { lat: 0.8, lon: 0.2, kw, subject: Subject::Area(0), demand: 0.0, faint: false, running: None, running_by_source: None };
         let scale = Scale { width: 10.0, per_kw: 1.0 };
         let m = mesh(&[bar], scale, geodetic_to_ecef(0.8, 0.2, 0.0), &|_, _| 0.0, None, &Style::default()).mesh;
         // Each colour comes in one shade of wall per height; the dark bands give gas a second set.
@@ -1680,7 +1742,7 @@ pub(crate) mod tests {
         let bar = |i: u32, kw: f32, subject: Subject| {
             let mut v = [0.0; SOURCES];
             v[Source::Solar as usize] = kw;
-            Bar { lat: 0.8, lon: 0.001 * i as f64, kw: v, subject, demand: 0.0, faint: false, running: None }
+            Bar { lat: 0.8, lon: 0.001 * i as f64, kw: v, subject, demand: 0.0, faint: false, running: None, running_by_source: None }
         };
         // 100 sites of 1 to 100 MW: the 99th smallest sets the scale, the largest does not.
         let mut bars: Vec<Bar> = (1..=100).map(|i| bar(i, i as f32 * 1000.0, if i % 2 == 0 { Subject::Site(i) } else { Subject::Plant(i) })).collect();
@@ -1699,6 +1761,24 @@ pub(crate) mod tests {
         assert!(!e.step(Some(start * 1.4), 0.1) && e.per_kw == start);
         assert!(e.step(Some(start / 2.0), 0.25) && e.per_kw < start && e.per_kw > start / 2.0);
         assert!(!e.step(Some(start / 2.0), 0.3) && (e.per_kw - start / 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn visual_plant_bars_group_overlapping_sites_without_losing_capacity_or_output() {
+        let mut kw = [0.0; SOURCES];
+        kw[Source::Solar as usize] = 10.0;
+        let bars: Vec<_> = (0..13_000).map(|i| Bar {
+            lat: 0.8, lon: i as f64 * 1e-9, kw, subject: Subject::Plant(i), demand: 0.0,
+            faint: false, running: Some(0.4), running_by_source: None,
+        }).collect();
+        let mut shares = [0.0; SOURCES];
+        shares[Source::Solar as usize] = 0.9;
+        let visual = visual_bars(&bars, (1000.0, 800.0), Some(&shares), &|_, _| Some(glam::DVec2::new(400.0, 300.0)));
+        assert!(visual.len() < 10);
+        assert!((visual.iter().map(Bar::total).sum::<f32>() - bars.iter().map(Bar::total).sum::<f32>()).abs() < 1.0);
+        let solar = Source::Solar as usize;
+        let output: f32 = visual.iter().map(|b| b.kw[solar] * b.running_by_source.map_or_else(|| b.running.unwrap_or(shares[solar]), |r| r[solar])).sum();
+        assert!((output - 13_000.0 * 10.0 * 0.4).abs() < 1.0);
     }
 
     #[test]
@@ -1724,8 +1804,8 @@ pub(crate) mod tests {
     fn a_world_plant_runs_at_its_own_share_and_germanys_bars_keep_theirs() {
         let mut kw = [0.0; SOURCES];
         kw[Source::Solar as usize] = 100.0;
-        let site = Bar { lat: 0.8, lon: 0.2, kw, subject: Subject::Site(0), demand: 0.0, faint: false, running: None };
-        let plant = Bar { lat: 0.8, lon: 0.25, kw, subject: Subject::Plant(0), demand: 0.0, faint: false, running: Some(0.4) };
+        let site = Bar { lat: 0.8, lon: 0.2, kw, subject: Subject::Site(0), demand: 0.0, faint: false, running: None, running_by_source: None };
+        let plant = Bar { lat: 0.8, lon: 0.25, kw, subject: Subject::Plant(0), demand: 0.0, faint: false, running: Some(0.4), running_by_source: None };
         let scale = Scale { width: 10.0, per_kw: 1.0 };
         let center = geodetic_to_ecef(0.8, 0.2, 0.0);
         let mut shares = [0.0; SOURCES];
@@ -1749,7 +1829,7 @@ pub(crate) mod tests {
         let mut kw = [0.0; SOURCES];
         kw[Source::Solar as usize] = 100.0;
         kw[Source::Gas as usize] = 100.0;
-        let bar = Bar { lat: 0.8, lon: 0.2, kw, subject: Subject::Area(0), demand: 300.0, faint: false, running: None };
+        let bar = Bar { lat: 0.8, lon: 0.2, kw, subject: Subject::Area(0), demand: 300.0, faint: false, running: None, running_by_source: None };
         let scale = Scale { width: 10.0, per_kw: 1.0 };
         let center = geodetic_to_ecef(0.8, 0.2, 0.0);
         let m = mesh(&[bar], scale, center, &|_, _| 0.0, None, &Style::default()).mesh;

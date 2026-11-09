@@ -933,8 +933,8 @@ struct GuiDone {
 
 type OutlineKey = (energy::Level, [bool; energy::SOURCES], Option<energy::Subject>, Option<u16>);
 
-/// Level, month, sources, centre, tile count, and the quarter hour of the output shown.
-type EnergyBuild = (energy::Level, u16, [bool; energy::SOURCES], (i64, i64), usize, Option<i64>);
+/// Level, month, sources, centre, tile count, output time, and view size.
+type EnergyBuild = (energy::Level, u16, [bool; energy::SOURCES], (i64, i64), usize, Option<i64>, (u32, u32));
 
 /// Generation and consumption from SMARD: what has arrived and what was asked.
 #[derive(Default)]
@@ -987,6 +987,10 @@ struct EnergyLayer {
     /// The scale of the level that follows the bars in view (Countries or Plants), and when it
     /// was last stepped.
     view_scale: Option<(energy::Level, world_energy::Easing, Instant)>,
+    /// Cached plant scale inputs, refreshed when the month, sources or view changes.
+    plant_scale_fit: Option<(u16, [bool; energy::SOURCES], Option<f64>, Option<f64>, Instant)>,
+    /// Number of bars sent to the renderer after screen-space grouping.
+    drawn_bars: usize,
 }
 
 /// Sets up tile fetching, including sharing on the LAN if asked for.
@@ -2391,11 +2395,12 @@ impl Scene {
         let centre = ((cam.lat / step).round() as i64, (cam.lon / step).round() as i64);
         // The quarter hour shown, and whether demand stands beside the bars.
         let quarter = self.energy.power.shown.as_ref().map(|m| (m.0.time as i64) * 4 + self.energy.power.own_use as i64 * 2 + self.view.energy_demand as i64);
-        let key = (level, month, shown, centre, r.tile_count(), quarter);
+        let view_size = ((aspect_height.0 * aspect_height.1).round().max(1.0) as u32, aspect_height.1.round().max(1.0) as u32);
+        let key = (level, month, shown, centre, r.tile_count(), quarter, view_size);
         // Easing to a new scale, every step is drawn.
         let limit = if countries || plants { 0.0 } else { 0.03 };
         let rescaled = self.energy.scale.is_none_or(|s| (s.per_kw / scale.per_kw - 1.0).abs() > limit);
-        let same_but_terrain = self.energy.built_from.is_some_and(|b| (b.0, b.1, b.2, b.3, b.5) == (key.0, key.1, key.2, key.3, key.5));
+        let same_but_terrain = self.energy.built_from.is_some_and(|b| (b.0, b.1, b.2, b.3, b.5, b.6) == (key.0, key.1, key.2, key.3, key.5, key.6));
         let terrain_due = self.energy.built_at.is_none_or(|t| t.elapsed() > Duration::from_millis(500));
         if !rescaled && (self.energy.built_from == Some(key) || (same_but_terrain && !terrain_due)) {
             return easing;
@@ -2436,7 +2441,22 @@ impl Scene {
         let ground = |lat: f64, lon: f64| r.ground(lat, lon).unwrap_or(0.0);
         // Country bars show generation, without a column of unused capacity.
         let shares = self.energy.power.shown.as_ref().map(|m| m.1).filter(|_| !countries);
-        let bars = energy::mesh(&self.energy.bars, scale, geo::geodetic_to_ecef(cam.lat, cam.lon, 0.0), &ground, shares.as_ref(), &style);
+        let draw_bars;
+        let mesh_input = if plants {
+            let basis = cam.basis();
+            let screen = Screen { basis, size: DVec2::new(aspect_height.0 * aspect_height.1, aspect_height.1), reserved: Vec::new() };
+            let eye = basis.pos;
+            let project = |lat: f64, lon: f64| {
+                let p = geo::geodetic_to_ecef(lat, lon, 0.0);
+                ((eye - p).dot(p) > 0.0).then(|| screen.project(p)).flatten()
+            };
+            draw_bars = energy::visual_bars(&self.energy.bars, (screen.size.x, screen.size.y), shares.as_ref(), &project);
+            &draw_bars
+        } else {
+            &self.energy.bars
+        };
+        self.energy.drawn_bars = mesh_input.len();
+        let bars = energy::mesh(mesh_input, scale, geo::geodetic_to_ecef(cam.lat, cam.lon, 0.0), &ground, shares.as_ref(), &style);
         r.set_energy(Some((&bars.mesh, bars.solid)));
         self.energy.scale = Some(scale);
         self.energy.built_from = Some(key);
@@ -2464,10 +2484,9 @@ impl Scene {
     /// and the world's plants alike (see [`energy::plants_needed`]). Returns whether it is still
     /// moving.
     fn ease_plant_scale(&mut self, data: &energy::Energy, month: u16, shown: [bool; energy::SOURCES], aspect_height: (f64, f64)) -> bool {
-        let fresh;
-        let bars = if self.energy.built_from.is_some_and(|b| b.0 == energy::Level::Plants) {
-            &self.energy.bars
-        } else {
+        let now = Instant::now();
+        let dirty = self.energy.plant_scale_fit.is_none_or(|(m, s, _, _, at)| m != month || s != shown || now.duration_since(at) >= Duration::from_millis(200));
+        if dirty {
             let cam = &self.nav.cam;
             let reach = (self.nav.altitude * 6.0 / geo::radius()).clamp(0.02, std::f64::consts::PI);
             let near = Some((cam.lat, cam.lon, reach));
@@ -2475,12 +2494,12 @@ impl Scene {
             if let Some(p) = world_plants::Plants::bundled() {
                 b.extend(p.bars(month, shown, near));
             }
-            fresh = b;
-            &fresh
-        };
-        let visible = self.on_screen(aspect_height);
-        let needed = energy::plants_needed(bars, &visible);
-        let all = energy::plants_needed(bars, &|_, _| true);
+            let visible = self.on_screen(aspect_height);
+            let needed = energy::plants_needed(&b, &visible);
+            let all = energy::plants_needed(&b, &|_, _| true);
+            self.energy.plant_scale_fit = Some((month, shown, needed, all, now));
+        }
+        let (_, _, needed, all, _) = self.energy.plant_scale_fit.unwrap();
         self.step_view_scale(energy::Level::Plants, needed, all)
     }
 
@@ -2813,6 +2832,10 @@ impl Scene {
             notes.push(format!("Shade: units without a position, full at {}/km²", energy::format_power(data.dense())));
             notes.push("Height follows the plants in view: the 98th percentile of their capacity stands 2 km tall, changing at 1.5 times".to_string());
             notes.push("Beyond Germany: Global Energy Monitor's plants, solid up to their estimated output (capacity times the country's capacity factor from Ember)".to_string());
+            let site_bars = self.energy.bars.iter().filter(|b| matches!(b.subject, energy::Subject::Site(_) | energy::Subject::Plant(_))).count();
+            if site_bars > 12_000 && self.energy.drawn_bars < self.energy.bars.len() {
+                notes.push(format!("At this zoom, overlapping sites are grouped into {} draw columns. Click a column for a site; zoom in to separate them.", self.energy.drawn_bars));
+            }
         } else if self.view.energy_demand && self.energy.power.shown.is_some() {
             notes.push("White column: estimated use, Germany's consumption shared out by population".to_string());
         }

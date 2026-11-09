@@ -189,6 +189,7 @@ impl States {
                 demand: if demand { used } else { 0.0 },
                 faint: matches!(f.basis, Basis::Year(_)),
                 running: None,
+                running_by_source: None,
             };
             if b.total() > 0.0 || b.demand > 0.0 {
                 bars.push(b);
