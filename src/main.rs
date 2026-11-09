@@ -3502,9 +3502,10 @@ impl Scene {
         let below = readout::text_box(ctx, &mut self.gui, "search-box", &search, 10.0);
         let side = self.side_panel_text();
         readout::text_box(ctx, &mut self.gui, "side-box", &side, if below > 0.0 { below + 18.0 } else { 10.0 });
-        if self.view.energy != self.energy_card_was_on {
-            self.energy_card_was_on = self.view.energy;
-            self.gui.set_visible(energy_panel::WINDOW, self.view.energy);
+        let card_wanted = self.view.energy && self.view.energy_panel;
+        if card_wanted != self.energy_card_was_on {
+            self.energy_card_was_on = card_wanted;
+            self.gui.set_visible(energy_panel::WINDOW, card_wanted);
         }
         if let Some(card) = self.energy_card() {
             done.energy = energy_panel::show(ctx, &mut self.gui, &card);
@@ -3562,6 +3563,7 @@ impl Scene {
         match d.energy {
             Some(energy_panel::Action::Detail(detail)) => self.view.energy_detail = detail,
             Some(energy_panel::Action::Style) => self.toggle_dialog(energy_style::WINDOW),
+            Some(energy_panel::Action::Closed) => self.view.energy_panel = false,
             None => {}
         }
         changed | d.energy.is_some()

@@ -218,6 +218,8 @@ settings! {
     missions: bool = true, "missions";
     /// Bars of renewable generating capacity in Germany, and the areas they stand for.
     energy: bool = true, "energy";
+    /// The Electricity window (detail, scale, totals) while the bars are on; its close button turns this off.
+    energy_panel: bool = true, "energy_panel";
     /// The bars show the estimated output at the clock's time, from SMARD, as far as there is data.
     energy_output: bool = true, "energy_output";
     /// Output includes generation for the owners' own use: SMARD's quarter hours brought to Ember's monthly sums.

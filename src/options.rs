@@ -46,9 +46,10 @@ const TOGGLES: &[(&str, &[Toggle])] = &[
         ],
     ),
     (
-        "Renewable energy, Germany",
+        "Electricity",
         &[
             ("Capacity bars", |s| s.energy, |s, v| s.energy = v),
+            ("Electricity window (detail, scale, totals)", |s| s.energy_panel, |s, v| s.energy_panel = v),
             ("Output at the clock's time", |s| s.energy_output, |s, v| s.energy_output = v),
             ("Include generation for own use", |s| s.energy_own_use, |s, v| s.energy_own_use = v),
             ("Day chart of output and use", |s| s.energy_chart, |s, v| s.energy_chart = v),

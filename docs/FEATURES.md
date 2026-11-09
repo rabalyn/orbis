@@ -722,6 +722,9 @@ never confused:
   consumption at the clock's quarter hour on the same scale as the bars, so that a glance shows where more is generated than
   used and where less. It is Germany's consumption shared out by population. Clicking units without a position gives their
   municipality's use for comparison. "Estimated use beside the bars" in the view options turns the columns off.
+- The **Electricity window** (the energy card) holds the detail slider, the height scale and the totals for the clock's
+  time. It opens with the bars; its close button or "Electricity window" in the view options (section Electricity)
+  turns it off, and the switch brings it back.
 - A **day chart** at the top left shows the clock's day (UTC) for Germany: generation stacked by source (steady sources at the
   bottom, wind and sun on top), consumption as a white line, the carbon intensity as a thin coral line on its own axis at the right (g CO₂/kWh), and
   the clock as a yellow marker that moves with it. Where the areas

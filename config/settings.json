@@ -25,6 +25,7 @@
   "energy_output": true,
   "energy_own_use": true,
   "energy_palette": "standard",
+  "energy_panel": true,
   "energy_solar": true,
   "energy_wind_offshore": true,
   "energy_wind_onshore": true,

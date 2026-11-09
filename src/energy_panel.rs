@@ -34,10 +34,12 @@ pub struct Model {
 pub enum Action {
     Detail(Detail),
     Style,
+    /// The close button: the window is to stay off until switched on in the settings.
+    Closed,
 }
 
 /// The card, while the bars are on.
-/// The card can be closed on its own; it comes back when the bars are switched on again.
+/// Closing it turns off its setting, so it stays closed until switched on again in the settings.
 pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> Option<Action> {
     let mut open = gui.is_visible(WINDOW);
     if !open {
@@ -116,6 +118,9 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> Option<Action> {
         gui.cover(r.response.rect);
     }
     gui.set_visible(WINDOW, open);
+    if !open {
+        return Some(Action::Closed);
+    }
     action
 }
 
