@@ -3445,7 +3445,9 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
         if screenshot_busy(scene.loader.is_idle(), scene.waiting, scene.text.is_idle(), scene.feeds_pending, scene.nav.is_animating() || scene.map.is_animating(), click_pending) {
             quiet_since = Instant::now();
         } else if quiet_since.elapsed() > Duration::from_millis(300) {
-            let pending: Vec<DVec2> = clicks.by_ref().copied().collect();
+            // One click at a time, each once the last has settled, so a click can land in a box
+            // an earlier one opened.
+            let pending: Vec<DVec2> = clicks.next().copied().into_iter().collect();
             let double: Vec<DVec2> = doubles.by_ref().copied().collect();
             let dragged: Vec<(DVec2, DVec2)> = drags.by_ref().copied().collect();
             if pending.is_empty() && double.is_empty() && dragged.is_empty() {
