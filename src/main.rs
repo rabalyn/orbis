@@ -1271,6 +1271,7 @@ impl Scene {
             time: (time / 60.0).floor() * 60.0,
             reading: self.clock.reading(),
             running: self.clock.is_running(),
+            rate: self.clock.rate(),
             earth,
             eclipse: if earth { self.eclipse_watch.status(time) } else { None },
         };
@@ -1299,7 +1300,9 @@ impl Scene {
                 self.clock.release();
                 self.sky_key(ClockKey::Now);
             }
-            Action::PauseRun => self.sky_key(ClockKey::PauseResume),
+            Action::Play { backwards } => self.clock.play(backwards),
+            Action::Pause => self.clock.pause(),
+            Action::Speed(speed) => self.clock.set_speed(speed),
             Action::PreviousEclipse | Action::NextEclipse => {
                 let found = match action {
                     Action::NextEclipse => time_slider::next_eclipse(before),

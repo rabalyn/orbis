@@ -1,11 +1,13 @@
-//! The time icon and dialog: three sliders (year, day of the year, time of day), the buttons for
-//! the clock and for the eclipses, and what is less accurate at the date.
+//! The time icon and dialog: three sliders (year, day of the year, time of day), the speed and
+//! direction the clock plays at, the buttons for the clock and for the eclipses, and what is less
+//! accurate at the date.
 //!
 //! The dialog shows a [`Model`] shared with the scene, which fills it from the clock; what the
 //! user does comes back from [`show`] as an [`Action`] for the scene to carry out on the clock.
 //! The date arithmetic is in `time_slider`.
 
 use crate::gui::{self, Gui, Slide};
+use crate::sky_time::{self, RATES};
 use crate::time_slider::{self, Level, Track};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -22,6 +24,8 @@ pub struct Model {
     /// The full reading of the clock with its seconds and its state.
     pub reading: String,
     pub running: bool,
+    /// Clock seconds per real second; below zero the clock plays backwards.
+    pub rate: f64,
     /// Eclipses are worked out for the Earth only.
     pub earth: bool,
     /// The eclipse going on at the clock's time, if any.
@@ -30,7 +34,7 @@ pub struct Model {
 
 impl Default for Model {
     fn default() -> Self {
-        Self { time: 0.0, reading: String::new(), running: true, earth: true, eclipse: None }
+        Self { time: 0.0, reading: String::new(), running: true, rate: 1.0, earth: true, eclipse: None }
     }
 }
 
@@ -46,7 +50,11 @@ pub enum Action {
     End,
     Step(Track, i32),
     Now,
-    PauseRun,
+    /// Plays forwards, or backwards, at the chosen speed.
+    Play { backwards: bool },
+    Pause,
+    /// One of `RATES`; the direction stays.
+    Speed(f64),
     PreviousEclipse,
     NextEclipse,
 }
@@ -92,15 +100,51 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Vec<Action> {
                 });
                 ui.add_space(2.0);
             }
-            let half = (width - ui.spacing().item_spacing.x) / 2.0;
+            let speed_at = RATES.iter().position(|r| *r >= model.rate.abs() - 1e-9).unwrap_or(0);
+            let last = RATES.len() - 1;
             ui.horizontal(|ui| {
-                if ui.add_sized([half, 26.0], egui::Button::new("Now")).clicked() {
-                    actions.push(Action::Now);
+                ui.label("Speed");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(sky_time::rate_name(RATES[speed_at])).color(gui::accent()));
+                });
+            });
+            for slide in gui::track(ui, speed_at as f64 / last as f64, width) {
+                let to = match slide {
+                    Slide::Jump(p) | Slide::Move(p) => (p * last as f64).round() as usize,
+                    Slide::Step(n) => speed_at.saturating_add_signed(n as isize).min(last),
+                    Slide::Grab | Slide::End => continue,
+                };
+                if to != speed_at {
+                    actions.push(Action::Speed(RATES[to]));
                 }
-                if ui.add_sized([half, 26.0], egui::Button::new(if model.running { "Pause" } else { "Run" })).clicked() {
-                    actions.push(Action::PauseRun);
+            }
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(sky_time::rate_name(RATES[0])).weak().small());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(sky_time::rate_name(RATES[last])).weak().small())
+                });
+            });
+            ui.add_space(4.0);
+            let gap = ui.spacing().item_spacing.x;
+            let third = (width - 2.0 * gap) / 3.0;
+            let backwards = model.running && model.rate < 0.0;
+            let forwards = model.running && model.rate >= 0.0;
+            ui.horizontal(|ui| {
+                let button = |ui: &mut egui::Ui, text: &str, on: bool| ui.add_sized([third, 26.0], egui::Button::new(text).selected(on)).clicked();
+                if button(ui, "\u{25c0} Backwards", backwards) {
+                    actions.push(Action::Play { backwards: true });
+                }
+                if button(ui, "Pause", !model.running) {
+                    actions.push(Action::Pause);
+                }
+                if button(ui, "Forwards \u{25b6}", forwards) {
+                    actions.push(Action::Play { backwards: false });
                 }
             });
+            let half = (width - gap) / 2.0;
+            if ui.add_sized([width, 26.0], egui::Button::new("Now")).on_hover_text("Back to the real time, running at real speed").clicked() {
+                actions.push(Action::Now);
+            }
             if model.earth {
                 ui.horizontal(|ui| {
                     if ui.add_sized([half, 26.0], egui::Button::new("\u{25c0} Previous eclipse")).clicked() {

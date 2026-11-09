@@ -12,8 +12,25 @@ const REDRAW_ANGLE_DEG: f64 = 0.05;
 const SUN_DEG_PER_SECOND: f64 = 360.0 / 86_400.0;
 /// From this speed on, the picture changes fast enough to redraw every frame.
 const CONTINUOUS_RATE: f64 = 600.0;
-/// Speeds the faster and slower keys step through, in clock seconds per real second.
-const RATES: [f64; 9] = [1.0, 10.0, 60.0, 600.0, 3600.0, 21_600.0, 86_400.0, 604_800.0, 2_592_000.0];
+/// Speeds the faster and slower keys and the time dialog step through, in clock seconds per real second.
+pub const RATES: [f64; 9] = [1.0, 10.0, 60.0, 600.0, 3600.0, 21_600.0, 86_400.0, 604_800.0, 2_592_000.0];
+
+/// How a speed of `RATES` reads in the time dialog.
+pub fn rate_name(rate: f64) -> String {
+    let rate = rate.abs();
+    let names = [
+        (1.0, "real time"),
+        (10.0, "10 s per second"),
+        (60.0, "1 min per second"),
+        (600.0, "10 min per second"),
+        (3600.0, "1 hour per second"),
+        (21_600.0, "6 hours per second"),
+        (86_400.0, "1 day per second"),
+        (604_800.0, "1 week per second"),
+        (2_592_000.0, "30 days per second"),
+    ];
+    names.iter().find(|(r, _)| (r - rate).abs() < 1e-9).map_or_else(|| format!("x{rate}"), |(_, n)| n.to_string())
+}
 
 pub fn wall_clock_now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
@@ -103,7 +120,7 @@ impl Clock {
         self.time
     }
 
-    #[cfg(test)]
+    /// Clock seconds per real second; below zero the clock runs backwards.
     pub fn rate(&self) -> f64 {
         self.rate
     }
@@ -142,6 +159,17 @@ impl Clock {
 
     pub fn set_rate(&mut self, rate: f64) {
         self.rate = rate;
+    }
+
+    /// Runs forwards or backwards at the speed it had.
+    pub fn play(&mut self, backwards: bool) {
+        self.rate = if backwards { -self.rate.abs() } else { self.rate.abs() };
+        self.running = true;
+    }
+
+    /// Sets the speed and keeps the direction.
+    pub fn set_speed(&mut self, speed: f64) {
+        self.rate = speed.abs().copysign(self.rate);
     }
 
     /// Brings the clock up to a reading of real time, in seconds from any fixed start.
@@ -204,6 +232,8 @@ impl Clock {
         let mut text = format_utc(self.time, seconds);
         if !self.running {
             text.push_str("  paused");
+        } else if self.rate < 0.0 {
+            text.push_str(&format!("  backwards x{}", -self.rate));
         } else if self.rate != 1.0 {
             text.push_str(&format!("  x{}", self.rate));
         }
@@ -237,7 +267,8 @@ fn step_size(large: bool) -> f64 {
 fn next_rate(rate: f64, faster: bool) -> f64 {
     let at = RATES.iter().position(|r| *r >= rate.abs() - 1e-9).unwrap_or(0);
     let at = if faster { (at + 1).min(RATES.len() - 1) } else { at.saturating_sub(1) };
-    RATES[at]
+    // The keys change the speed, not the direction.
+    RATES[at].copysign(rate)
 }
 
 /// Days since 1970-01-01 of a civil date (proleptic Gregorian), after H. Hinnant's
@@ -432,6 +463,24 @@ mod tests {
             c.apply(ClockKey::Slower, 0.0);
         }
         assert_eq!(c.rate(), 1.0, "and bottoms out at real speed");
+    }
+
+    #[test]
+    fn clock_plays_backwards_at_the_speed_it_had() {
+        let mut c = Clock::new(10_000.0, 0.0);
+        c.pause();
+        c.set_speed(3600.0);
+        c.play(true);
+        c.advance(2.0);
+        assert_eq!(c.time(), 10_000.0 - 7200.0);
+        assert!(c.reading().ends_with("backwards x3600"), "{}", c.reading());
+        c.apply(ClockKey::Faster, 0.0);
+        assert_eq!(c.rate(), -21_600.0, "the keys keep the direction");
+        c.set_speed(60.0);
+        assert_eq!(c.rate(), -60.0);
+        c.play(false);
+        assert_eq!(c.rate(), 60.0);
+        assert_eq!(rate_name(-86_400.0), "1 day per second");
     }
 
     #[test]

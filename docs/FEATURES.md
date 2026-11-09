@@ -267,7 +267,11 @@ take that difference into account.
   the drag. Grabbing the thumb does not move it. A press on the bar beside it moves the thumb there and goes on as a drag. The mouse wheel over
   a slider steps it by one year, one day or ten minutes.
 - While a thumb is held the clock does not advance. On release it goes on as it was, running or paused, at the same rate.
-- The window also has Now (as T), Pause or Run (as Space), and on the Earth Previous eclipse and Next eclipse, which set the clock to the
+- A speed slider picks how fast the clock plays, in steps from real time through 10 s, 1 min, 10 min, 1 hour, 6 hours, 1 day and 1 week
+  to 30 days per second (the same steps as - and =). Backwards, Pause and Forwards play the clock in either direction at that speed, or stop
+  it; the one in effect is lit. Space pauses and goes on in the same direction, and the keys change the speed without turning it round.
+  The heading says "backwards" while the clock runs back.
+- The window also has Now (as T: the real time, forwards at real speed), and on the Earth Previous eclipse and Next eclipse, which set the clock to the
   greatest moment of the closest eclipse before or after the clock and pause it. The window does not fly the view; use E for that.
 - A line under the buttons names the eclipse while one is going on, such as "Total solar eclipse, greatest 18:17", and says so when there is none.
   On other bodies there are no eclipse buttons or line.
