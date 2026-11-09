@@ -36,6 +36,8 @@ pub struct Card {
     pub meters: Vec<Meters>,
     /// A small line over the years, drawn after the bars.
     pub trend: Option<Trend>,
+    /// Links drawn after the facts: text and address.
+    pub links: Vec<(String, String)>,
 }
 
 /// A small line chart: a heading, points of (year, value), the values at the top and bottom of the chart,
@@ -495,6 +497,10 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> (bool, Option<Acti
                         if !card.facts.is_empty() {
                             ui.add_space(6.0);
                             facts(ui, &card.facts);
+                        }
+                        for (text, url) in &card.links {
+                            ui.add_space(4.0);
+                            ui.hyperlink_to(text, url).on_hover_text(url);
                         }
                         for note in &card.notes {
                             ui.add_space(4.0);

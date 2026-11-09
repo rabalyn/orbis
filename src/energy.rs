@@ -294,13 +294,16 @@ pub enum Subject {
     Country(u16),
     /// A state of `world_states::States` beyond Germany, by its index there.
     State(u16),
+    /// A plant site of `world_plants::Plants` beyond Germany, by its index there.
+    Plant(u32),
 }
 
 impl Subject {
     /// Whether its bar stands for installed capacity, of which the running share can be shown.
-    /// Countries and the world's states show average power instead.
+    /// Countries and the world's states show average power instead; the world's plants show
+    /// their whole capacity, with no estimate of their output yet.
     pub fn has_capacity(self) -> bool {
-        !matches!(self, Subject::Country(_) | Subject::State(_))
+        !matches!(self, Subject::Country(_) | Subject::State(_) | Subject::Plant(_))
     }
 }
 
@@ -480,7 +483,7 @@ impl Energy {
         let area = match subject {
             Subject::Area(i) => i,
             Subject::Unplaced(i) => i,
-            Subject::Site(_) | Subject::Country(_) | Subject::State(_) => return None,
+            Subject::Site(_) | Subject::Country(_) | Subject::State(_) | Subject::Plant(_) => return None,
         };
         let p = self.people(area)?;
         Some((consumption_mw as f64 * 1000.0 * p as f64 / self.people_total) as f32)
@@ -795,7 +798,7 @@ impl Energy {
                 let s = &self.sites[i as usize];
                 format!("{} site in {}", s.source.name(), chain(Some(s.area)))
             }
-            Subject::Country(_) | Subject::State(_) => String::new(),
+            Subject::Country(_) | Subject::State(_) | Subject::Plant(_) => String::new(),
         }
     }
 
@@ -812,7 +815,7 @@ impl Energy {
                     0.0
                 }
             }
-            Subject::Country(_) | Subject::State(_) => 0.0,
+            Subject::Country(_) | Subject::State(_) | Subject::Plant(_) => 0.0,
         }
     }
 
@@ -905,7 +908,7 @@ impl Energy {
         }
         let area = match subject {
             Subject::Area(i) | Subject::Unplaced(i) => Some(i),
-            Subject::Site(_) | Subject::Country(_) | Subject::State(_) => None,
+            Subject::Site(_) | Subject::Country(_) | Subject::State(_) | Subject::Plant(_) => None,
         };
         if let Some(p) = area.and_then(|i| self.people(i)) {
             card.facts.push(("Population".to_string(), group_thousands(p)));
@@ -939,7 +942,7 @@ impl Energy {
             }
             Subject::Unplaced(_) => "Units without a published position, mostly private rooftop solar. They shade the municipality instead of standing as a bar.".to_string(),
             Subject::Site(_) => "Units of one source at one published position.".to_string(),
-            Subject::Country(_) | Subject::State(_) => String::new(),
+            Subject::Country(_) | Subject::State(_) | Subject::Plant(_) => String::new(),
         });
         if output.is_some() {
             card.notes.push("Output is estimated: Germany's output of each source (SMARD) shared out by capacity.".to_string());
@@ -1238,7 +1241,7 @@ pub fn mesh(bars: &[Bar], scale: Scale, center: DVec3, ground: &dyn Fn(f64, f64)
     let mut ghost: Vec<u32> = Vec::new();
     for bar in bars {
         let (sides, width) = match bar.subject {
-            Subject::Site(_) => (8, scale.width * 0.7),
+            Subject::Site(_) | Subject::Plant(_) => (8, scale.width * 0.7),
             _ => (4, scale.width),
         };
         let (east, north, up) = enu(bar.lat, bar.lon);

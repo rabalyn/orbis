@@ -5,9 +5,10 @@
 //! country's admin-1 units are many and fine (France's departments, Italy's provinces), they
 //! come merged into the regions Natural Earth groups them in, to compare with Germany's states.
 //!
-//! Until the world's plants are placed by state, a state's bar is its country's use (Ember's
+//! Until the world's plants give monthly output (M3), a state's bar is its country's use (Ember's
 //! demand, or its generation where there is none) shared out by population, in the country's
-//! mix of sources at the clock's month; it has no column of unused capacity.
+//! mix of sources at the clock's month; it has no column of unused capacity. Its installed
+//! capacity, the world plants (`world_plants.rs`) inside its outline, is told in its card.
 
 use crate::countries::Countries;
 use crate::energy::{format_power, group_thousands, Bar, Palette, Source, Subject, AREA_EDGE, SELECTED, SELECTED_FILL_ALPHA, SOURCES};
@@ -15,6 +16,7 @@ use crate::import::{Imported, Item, Outline as Edge, Pos, Shape};
 use crate::info::{Card, Meter, Meters, Segment as Part};
 use crate::owid::{Owid, Reader};
 use crate::world_energy::{Basis, Figures, MAPPING};
+use crate::world_plants::Plants;
 
 pub const CREDIT: &str = "Country and state outlines: Natural Earth (public domain); population of states: Wikidata (CC0)";
 
@@ -107,6 +109,31 @@ impl States {
         self.list.len()
     }
 
+    /// A state's country code.
+    pub fn country(&self, i: usize) -> &str {
+        &self.list[i].country
+    }
+
+    /// A state's ISO 3166-2 code; empty where Natural Earth has none.
+    #[cfg(test)]
+    pub fn iso(&self, i: usize) -> &str {
+        &self.list[i].iso
+    }
+
+    /// South, west, north and east of a state, in degrees.
+    pub fn bounds(&self, i: usize) -> [f64; 4] {
+        let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+        for p in self.list[i].rings.iter().flatten() {
+            b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
+        }
+        b
+    }
+
+    /// Whether a point (degrees) lies inside a state's outline.
+    pub fn contains(&self, i: usize, lat: f64, lon: f64) -> bool {
+        inside(&self.list[i].rings, lat, lon)
+    }
+
     /// A state's share of its country's population, 0 to 1.
     pub fn share(&self, i: usize) -> f64 {
         let total = self.people[i];
@@ -192,6 +219,21 @@ impl States {
         out
     }
 
+    /// A state's installed capacity by source at the clock's month, in kW: the bundled world
+    /// plants inside its outline, with the sources in `shown`.
+    pub fn capacity(&self, i: usize, (year, month): (i32, u32), shown: [bool; SOURCES]) -> Option<[f32; SOURCES]> {
+        let plants = Plants::bundled()?;
+        let list = Plants::bundled_by_state()?.get(i)?;
+        let m = ((year - 1900) * 12 + month as i32 - 1).clamp(0, u16::MAX as i32 - 1) as u16;
+        let mut kw = plants.capacity(list, m);
+        for (v, on) in kw.iter_mut().zip(shown) {
+            if !on {
+                *v = 0.0;
+            }
+        }
+        Some(kw)
+    }
+
     /// The state's name and its country's.
     pub fn title(&self, i: u16) -> String {
         let Some(s) = self.list.get(i as usize) else { return String::new() };
@@ -239,6 +281,19 @@ impl States {
         }
         by.caption = "Average power over the period. Hatched: fossil or nuclear.".to_string();
         card.meters.push(by);
+        let installed = self.capacity(i as usize, month, shown);
+        if let Some(kw) = installed {
+            let total: f32 = kw.iter().sum();
+            let rows: Vec<(Source, f32)> = Source::ALL.into_iter().map(|s| (s, kw[s as usize])).filter(|r| r.1 > 0.0).collect();
+            let mut cap = Meters { title: "Installed capacity (GEM plants)".to_string(), max: rows.iter().map(|r| r.1).fold(0.0, f32::max), rows: Vec::new(), caption: String::new() };
+            for (s, v) in rows {
+                cap.rows.push(Meter { label: s.name().to_string(), segments: vec![Part { hatched: s.fossil(), ..Part::solid(v, palette.colour(s)) }], text: format_power(v) });
+            }
+            cap.caption = format!("{} in all: the plants of Global Energy Monitor's tracker inside the outline.", format_power(total));
+            if !cap.rows.is_empty() {
+                card.meters.push(cap);
+            }
+        }
         card.facts.push(("Country".to_string(), country.clone()));
         if !s.kind.is_empty() {
             card.facts.push(("Kind".to_string(), s.kind.clone()));
@@ -251,9 +306,10 @@ impl States {
         card.facts.push(("Share of the country".to_string(), format!("{:.2}%", share * 100.0)));
         let whole = f.demand.filter(|d| *d > 0.0);
         card.facts.push((if whole.is_some() { "Country's use" } else { "Country's generation" }.to_string(), format_power(whole.unwrap_or(f.generation))));
-        card.notes.push(format!(
-            "Estimated: {country}'s use shared out by population, in the country's mix of sources. The plants of the state are not counted yet, so there is no capacity."
-        ));
+        card.notes.push(format!("Estimated: {country}'s use shared out by population, in the country's mix of sources."));
+        if installed.is_some() {
+            card.notes.push("Installed capacity: Global Energy Monitor, Global Integrated Power Tracker, September 2026 release (CC BY 4.0); filtered by status and size, so small units and rooftop solar are missing.".to_string());
+        }
         if s.estimated {
             card.notes.push("Wikidata has no population for this state: it is estimated from its area and the country's population.".to_string());
         }
@@ -263,6 +319,22 @@ impl States {
         card.notes.push("Outline: Natural Earth (public domain). Population: Wikidata (CC0). Electricity: Ember via Our World in Data (CC BY 4.0).".to_string());
         card
     }
+}
+
+/// Even-odd test over all rings, in degrees.
+fn inside(rings: &[Vec<[f64; 2]>], lat: f64, lon: f64) -> bool {
+    let mut hit = false;
+    for ring in rings {
+        let mut prev = ring[ring.len() - 1];
+        for &p in ring {
+            let ([y0, x0], [y1, x1]) = (prev, p);
+            if (y0 > lat) != (y1 > lat) && lon < x0 + (lat - y0) * (x1 - x0) / (y1 - y0) {
+                hit = !hit;
+            }
+            prev = p;
+        }
+    }
+    hit
 }
 
 fn polygon(rings: &[Vec<[f64; 2]>]) -> Item {
@@ -293,21 +365,6 @@ mod tests {
         assert_eq!((idf.name.as_str(), idf.country.as_str()), ("Île-de-France", "FRA"));
         assert!((idf.label[0] - 48.7).abs() < 0.5 && (idf.label[1] - 2.5).abs() < 0.7, "{:?}", idf.label);
         assert!(s.all().iter().any(|st| st.iso == "US-CA" && st.country == "USA"));
-    }
-
-    fn inside(rings: &[Vec<[f64; 2]>], lat: f64, lon: f64) -> bool {
-        let mut hit = false;
-        for ring in rings {
-            let mut prev = ring[ring.len() - 1];
-            for &p in ring {
-                let ([y0, x0], [y1, x1]) = (prev, p);
-                if (y0 > lat) != (y1 > lat) && lon < x0 + (lat - y0) * (x1 - x0) / (y1 - y0) {
-                    hit = !hit;
-                }
-                prev = p;
-            }
-        }
-        hit
     }
 
     #[test]

@@ -1,0 +1,28 @@
+Type,Country/area,Region,Plant / Project name,Unit / Phase name,Capacity (MW),Status,Start year,Retired year,Technology,Fuel (combustion only),Owner(s),Latitude,Longitude,Other IDs (unit/phase),GEM location ID,GEM unit/phase ID,GEM.Wiki URL
+oil/gas,Austria,Europe,Kraftwerk Wien,Unit 1,400,operating,2005,,combined cycle,fossil gas: natural gas,Wien Energie [100%],48.2,16.4,,L1,G1,https://www.gem.wiki/Kraftwerk_Wien
+hydropower,Austria,Europe,Alpen Wasser,--,120,operating,1960,,run-of-river,,Verbund [100%],47.3,11.4,,L2,G2,
+utility-scale solar,France,Europe,Pas Solar,--,5,operating,2019,,PV,,,50.5,2.5,,L3,G3,
+utility-scale solar,France,Europe,Tiny Solar,--,0.5,operating,2019,,PV,,,50.6,2.6,,L4,G4,
+utility-scale solar,France,Europe,France distributed solar (aggregated),--,1234.5,operating,2024,,PV,,,,,,L5,G5,
+coal,United States,Americas,Old Coal Station,Unit 1,200,retired,1970,2015,subcritical,coal: bituminous,Coal Co [60%]; Other Co [40%],39.0,-80.0,,L6,G6,https://www.gem.wiki/Old_Coal_Station
+coal,United States,Americas,Old Coal Station,Unit 2,250,operating,1980,,supercritical,coal: bituminous,Coal Co [60%]; Other Co [40%],39.0,-80.0,,L6,G7,https://www.gem.wiki/Old_Coal_Station
+coal,Poland,Europe,Brown Coal Plant,Unit 1,1000,operating,1985,,subcritical,coal: lignite,PGE [100%],51.26,19.33,,L7,G8,
+oil/gas,United States,Americas,Mothballed Gas,--,50,mothballed,,,gas turbine,fossil gas: natural gas,,40.0,-75.0,,L8,G9,
+wind,United Kingdom,Europe,North Sea Offshore,Phase 1,600,operating,2020,,Offshore hard mount,,,54.0,2.0,,L9,G10,
+wind,United States,Americas,Iowa Wind,Phase 1,200,operating,2010,,Onshore,,,42.0,-93.5,,L10,G11,
+wind,United States,Americas,Iowa Wind,Phase 2,100,operating,2012,,Onshore,,,42.0,-93.5,,L10,G12,
+nuclear,United States,Americas,Iowa Reactor,Unit 1,600,operating,1975,,boiling water reactor,,,41.5,-91.8,,L11,G13,
+utility-scale solar,India,Asia,Big Far Solar,--,50,operating,2018,,PV,,,26.0,71.0,,L12,G14,
+wind,India,Asia,Small Far Wind,--,5,operating,2018,,Onshore,,,26.5,71.5,,L13,G15,
+utility-scale solar,India,Asia,TZ Solar,--,80,operating,2021,,PV,,,25.0,72.0,"OpenStreetMap: 1,TZ: 12345",L14,G16,
+oil/gas,Fiji,Oceania,Diesel Island,--,20,operating,1995,,internal combustion,"fossil liquids: diesel, fossil gas: natural gas",,-17.8,179.95,,L15,G17,
+oil/gas,China,Asia,Steel Works Gas,--,100,operating,2008,,steam turbine,industrial by-product: blast furnace gas,,39.6,118.2,,L16,G18,
+nuclear,Japan,Asia,Reactor One,Unit 1,1100,operating,1985,,boiling water reactor,,TEPCO [100%],37.43,138.6,,L17,G19,
+geothermal,Iceland,Europe,Hot Springs,--,90,operating,2006,,flash steam - double,,,64.04,-21.4,,L18,G20,
+bioenergy,Brazil,Americas,Wood Power,--,30,operating,2012,,,bioenergy: wood & other biomass (solids),,-21.0,-48.0,,L19,G21,
+oil/gas,Germany,Europe,Berlin Gas,--,300,operating,2000,,combined cycle,fossil gas: natural gas,,52.5,13.4,,L20,G22,
+utility-scale solar,France,Europe,Planned Solar Park,--,100,announced,,,PV,,,45.0,1.0,,L21,G23,
+coal,India,Asia,Cancelled Coal,--,600,cancelled,,,subcritical,coal: unknown,,22.0,80.0,,L22,G24,
+wind,Brazil,Americas,Building Wind,--,200,construction,,,Onshore,,,-5.0,-37.0,,L23,G25,
+oil/gas,Poland,Europe,Shelved Gas,--,400,shelved - inferred 2 y,,,combined cycle,fossil gas: natural gas,,52.0,21.0,,L24,G26,
+coal,Poland,Europe,Retired Unknown Year,--,300,retired,1960,,subcritical,coal: bituminous,,50.0,19.0,,L25,G27,

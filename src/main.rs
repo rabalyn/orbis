@@ -78,6 +78,7 @@ mod paths;
 mod web;
 mod wikilookup;
 mod world_energy;
+mod world_plants;
 mod world_states;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -1113,6 +1114,19 @@ fn next_retry(retries: &mut HashMap<TileKey, (Instant, u32)>, k: TileKey, until:
 }
 
 /// The credits for what is on screen: those always shown, then any aerial imagery in view.
+/// The ground drawn for the energy bars, with a ring at the foot of a chosen world plant, as
+/// Germany's sites have.
+fn with_plant_ring(mut ground: import::Imported, selected: Option<energy::Subject>) -> import::Imported {
+    if let (Some(energy::Subject::Plant(i)), Some(p)) = (selected, world_plants::Plants::bundled()) {
+        if let Some((lat, lon)) = p.position(i) {
+            let mut item = import::Item::new("", import::Shape::Point(import::Pos { lat, lon, alt: None }));
+            item.mark = Some(import::Mark { radius: 9.0, colour: [255, 255, 255, 240] });
+            ground.items.push(item);
+        }
+    }
+    ground
+}
+
 fn credits_for<'a>(detail: impl Iterator<Item = &'a str>) -> String {
     let credits = body::current().credit;
     // Map services' credits start with a mark and are listed apart from the aerial images.
@@ -2343,7 +2357,7 @@ impl Scene {
                     let german = data.outlines(level, shown, self.energy.selected, month, style.palette);
                     match world_states::States::bundled().filter(|_| level == energy::Level::States) {
                         Some(s) => s.with_germany(german, self.energy.selected, self.clock_month(), shown, style.palette),
-                        None => german,
+                        None => with_plant_ring(german, self.energy.selected),
                     }
                 }
             }));
@@ -2399,6 +2413,10 @@ impl Scene {
                 // Beyond Germany, the world's states and provinces.
                 if let Some(s) = world_states::States::bundled().filter(|_| level == energy::Level::States) {
                     bars.extend(s.bars(self.clock_month(), shown, self.view.energy_demand));
+                }
+                // Beyond Germany, the world's plants.
+                if let Some(p) = world_plants::Plants::bundled().filter(|_| level == energy::Level::Plants) {
+                    bars.extend(p.bars(month, shown, near));
                 }
                 bars
             }
@@ -2690,6 +2708,17 @@ impl Scene {
             self.show_info();
             return;
         }
+        if let (energy::Subject::Plant(i), Some(p)) = (subject, world_plants::Plants::bundled()) {
+            *self.info.borrow_mut() = info::Model {
+                title: p.title(i),
+                at: p.position(i).map(|(lat, lon)| (lat.to_degrees(), lon.to_degrees())),
+                content: info::Content::Facts(p.describe(i, month, self.view.energy_palette)),
+                note: None,
+                data: None,
+            };
+            self.show_info();
+            return;
+        }
         if let (energy::Subject::State(i), Some(s)) = (subject, world_states::States::bundled()) {
             *self.info.borrow_mut() = info::Model {
                 title: s.title(i),
@@ -2743,11 +2772,12 @@ impl Scene {
             }
         } else if level == energy::Level::Plants {
             notes.push(format!("Shade: units without a position, full at {}/km²", energy::format_power(data.dense())));
+            notes.push("Beyond Germany: installed capacity of Global Energy Monitor's plants, no output estimate yet".to_string());
         } else if self.view.energy_demand && self.energy.power.shown.is_some() {
             notes.push("White column: estimated use, Germany's consumption shared out by population".to_string());
         }
         if level == energy::Level::States {
-            notes.push("Beyond Germany: each country's use (Ember) shared out by population, in its mix of sources; no capacity yet".to_string());
+            notes.push("Beyond Germany: each country's use (Ember) shared out by population, in its mix of sources; installed capacity in each state's box".to_string());
         }
         if let Some(basis) = self.power_basis().filter(|_| level != energy::Level::Countries || self.energy.power.shown.is_some()) {
             notes.push(basis);
@@ -2759,6 +2789,7 @@ impl Scene {
             counts: energy::Level::ALL.map(|l| match l {
                 energy::Level::Countries => world.map_or(0, |w| w.count()),
                 energy::Level::States => data.count(l) + world_states::States::bundled().map_or(0, |s| s.count()),
+                energy::Level::Plants => data.count(l) + world_plants::Plants::bundled().map_or(0, |p| p.count()),
                 _ => data.count(l),
             }),
             month: energy::month_name(energy::month_of(self.clock.time())),
@@ -3345,6 +3376,11 @@ impl Scene {
             if levels.contains(&self.energy.level) {
                 credits.push('\n');
                 credits.push_str(world_states::CREDIT);
+            }
+            // GEM's plants: standing as bars, or summed in the world's states' boxes.
+            if self.energy.level == Some(energy::Level::States) || self.energy.bars.iter().any(|b| matches!(b.subject, energy::Subject::Plant(_))) {
+                credits.push('\n');
+                credits.push_str(world_plants::CREDIT);
             }
         }
         if self.search.credit_due() {

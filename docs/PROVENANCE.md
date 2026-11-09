@@ -310,6 +310,38 @@ field (England's regions and the other three nations for the UK), outlines union
 that the level compares with Germany's states. Outlines are simplified by 0.025° and rounded to 1/250°, with islands under 0.005
 square degrees dropped (never a state's largest ring); the data is otherwise unchanged.
 
+### Power plants of the world (`data/plants_world.bin`)
+Built offline by `tools/gen_world_plants.py` from Global Energy Monitor's spreadsheet, which the user downloaded through
+GEM's form (`Global Integrated Power September 2026 V2.xlsx`, kept in the gitignored `data-raw/gem/`), and bundled; the
+program requests nothing for it. It gives the Plants level of the energy layer the plants beyond Germany and the world's
+states their installed capacity (`world_plants.rs`).
+
+| Data | Source | Terms | Credit shown |
+|---|---|---|---|
+| Power units outside Germany: type, technology, fuel, capacity, status, start and retirement year, owner, position, GEM location ID and gem.wiki page; 60,028 sites of 80,471 units in 198 countries | Global Energy Monitor, Global Integrated Power Tracker (GIPT), September 2026 release, sheets "Power facilities" and "Regions, area, and countries" (for ISO 3166 alpha-3 codes) | Creative Commons Attribution 4.0 International, as the file's About sheet states ("Copyright © Global Energy Monitor. Global Integrated Power Tracker, September 2026 release. Distributed under a Creative Commons Attribution 4.0 International License"); licence page accepted at download: <https://globalenergymonitor.org/creative-commons-license> | `world_plants::CREDIT`: `Plants outside Germany: Global Energy Monitor, Global Integrated Power Tracker, Sept. 2026 (CC BY 4.0), modified`, while world plants stand as bars and at the States level (their capacity is in the states' boxes); each plant's box names the release and links its gem.wiki page |
+
+Recommended citation (from the About sheet): "Global Energy Monitor, Global Integrated Power Tracker, September 2026
+release." GEM does not endorse Orbis; the credit names the source only.
+
+Changes made (as CC BY 4.0 asks them to be stated): units are **filtered** by status (operating, mothballed and retired
+kept; announced, pre-construction, construction, shelved and cancelled dropped), by size (at least 1 MW; solar and wind
+outside Europe and the United States at least 10 MW), by date (retired units without a retirement year, and retired ones
+without a start year, dropped) and by country (Germany's units dropped, as the Marktstammdatenregister covers them);
+units of one source at one GEM location are **merged into sites** (name, position and gem.wiki page of the first unit,
+the owner and technology of most of the capacity, owners' shares dropped); sources are **mapped** onto the program's
+(geothermal drawn as biomass, oil/gas by its first fuel); start and retirement years become months; positions are rounded
+to 1e-4°; GEM's overseas French departments and Bonaire count to France and the Netherlands; and the data is **converted**
+to the program's binary format. Nationally aggregated distributed (<1 MW) solar, which GEM keeps per country, would be
+stored per country rather than as plants; this release's spreadsheet has none (the About sheet says it is in the solar
+tracker's summary tables), so the table is empty.
+
+Left out for its licence: units whose "Other IDs (unit/phase)" carry a `TZ:` ID (18,730 rows), which the About sheet
+says were partly or wholly sourced from TransitionZero's Solar Asset Mapper (August 2025) under CC BY-NC 4.0. Without
+them, everything bundled is under CC BY 4.0.
+
+The test fixture `tests/fixtures/gem/` (`plants.csv`, `regions.csv` and the `plants_world.bin` made from them) is
+hand-made with invented plants in GEM's column layout; it holds no GEM data.
+
 ### Emission factors (`power_feed::EMISSIONS`)
 Lifecycle emissions in g CO₂-eq per kWh, the medians of IPCC AR5 Working Group III, Annex III "Technology-specific cost
 and performance parameters", table A.III.2 (Schlömer et al., 2014), as Ember also quotes them for its renewable factors
