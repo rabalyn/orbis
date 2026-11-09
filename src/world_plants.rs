@@ -526,6 +526,49 @@ mod tests {
         assert_eq!(kw, p.capacity(&by[hubei], month(2025, 1)));
     }
 
+    /// The height of a lone bar drawn on flat ground, in metres.
+    fn drawn_height(bar: &Bar, scale: crate::energy::Scale, shares: Option<&[f32; SOURCES]>) -> f64 {
+        let base = crate::geo::geodetic_to_ecef(bar.lat, bar.lon, 0.0);
+        let up = crate::geo::enu(bar.lat, bar.lon).2;
+        let m = crate::energy::mesh(std::slice::from_ref(bar), scale, base, &|_, _| 0.0, shares, &crate::energy::Style::default()).mesh;
+        m.vertices.iter().map(|v| glam::DVec3::new(v.pos[0] as f64, v.pos[1] as f64, v.pos[2] as f64).dot(up)).fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn equal_capacity_stands_equally_tall_in_germany_and_beyond() {
+        use crate::energy::{Energy, Level, Scale};
+        let Some(e) = Energy::bundled() else { return };
+        let now = month(2026, 1);
+        let all = [true; SOURCES];
+        let p = Plants::bundled().unwrap();
+        // A German site and a Polish plant of the Plants level, the latter given the former's capacity.
+        let de = e.bars(Level::Plants, now, all, Some((51.0f64.to_radians(), 10.0f64.to_radians(), 0.05))).into_iter().find(|b| matches!(b.subject, Subject::Site(_))).unwrap();
+        let mut pl = p.bars(now, all, Some((52.0f64.to_radians(), 19.0f64.to_radians(), 0.1))).into_iter().next().unwrap();
+        pl.kw = de.kw;
+        let scale = Scale::for_view(e, Level::Plants, 50_000.0, 800.0);
+        let (a, b) = (drawn_height(&de, scale, None), drawn_height(&pl, scale, None));
+        assert!(a > 0.0 && (a / b - 1.0).abs() < 1e-3, "German site {a} m, world plant {b} m");
+        // 1 GW, either side of the border.
+        let mut gw = [0.0; SOURCES];
+        gw[Source::Gas as usize] = 1e6;
+        let (mut de, mut pl) = (de, pl);
+        de.kw = gw;
+        pl.kw = gw;
+        assert!((drawn_height(&de, scale, None) / drawn_height(&pl, scale, None) - 1.0).abs() < 1e-3);
+        assert!((drawn_height(&pl, scale, None) / (1e6 * scale.per_kw) - 1.0).abs() < 1e-3);
+        // With SMARD's shares, Germany's columns split into running and idle parts of the same height.
+        let shares = [0.3; SOURCES];
+        assert!((drawn_height(&de, scale, Some(&shares)) / drawn_height(&pl, scale, Some(&shares)) - 1.0).abs() < 1e-3);
+        // The States level: a German state's bar and a world state's of the same power.
+        let s = States::bundled().unwrap();
+        let mut german = e.bars(Level::States, now, all, None).into_iter().next().unwrap();
+        let mut world = s.bars((2026, 1), all, false).into_iter().next().unwrap();
+        german.kw = gw;
+        world.kw = gw;
+        let scale = Scale::for_view(e, Level::States, 2_000_000.0, 800.0);
+        assert!((drawn_height(&german, scale, None) / drawn_height(&world, scale, None) - 1.0).abs() < 1e-3);
+    }
+
     #[test]
     fn rejects_other_files() {
         assert!(Plants::parse(b"ORBS\x01\0\0\0").is_none());
