@@ -43,6 +43,7 @@ cargo run --release -- --lat 46.5 --lon 11.8 --distance 25000 --tilt 70 --screen
 | Fly to a place or label | Double-click |
 | Wikipedia article and Wikidata facts for a place | Click |
 | Roads, names and 3D buildings | R, L and B; V for each kind |
+| Roofs from the aerial imagery, or buildings coloured by zone | V, Building colours |
 | View options, saved between runs | V, or the second icon |
 | Flat map in five projections | M, then P |
 | Sun, day and night, cast shadows | Follow the clock; S for flat, always-lit imagery |

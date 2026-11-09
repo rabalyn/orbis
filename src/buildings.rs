@@ -18,13 +18,32 @@ const MAX_VERTICES: usize = 1_500_000;
 const WALL_SHADE: f32 = 0.85;
 /// Darkening where walls meet the ground, which helps buildings look grounded.
 const WALL_BASE_SHADE: f32 = 0.72;
+/// With aerial roofs, walls take this much of the roof's average colour, the rest being the
+/// light plaster of `DEFAULT_COLOUR`. Roofs seen from above are mostly dark grey (tar, gravel,
+/// solar panels); walls the roof's colour alone came out as heavy dark blocks, while real
+/// façades are mostly light. A red-tiled house still gets warm walls.
+const WALL_FROM_ROOF: f32 = 0.4;
+
+fn wall_from_roof(roof: f32, plaster: u8) -> u8 {
+    (roof * WALL_FROM_ROOF + plaster as f32 * (1.0 - WALL_FROM_ROOF)).round() as u8
+}
+/// The wall colours of a tile are a texture this many buildings wide.
+pub const WALL_COLUMNS: u32 = 256;
+/// Samples taken from the aerial picture across one footprint, at most, in each direction.
+const ROOF_SAMPLES: usize = 12;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Debug)]
 pub struct BuildingVertex {
     pub pos: [f32; 3],
-    /// sRGB colour with shading applied, and full alpha.
+    /// sRGB colour with shading applied. On buildings, full alpha marks a roof, and on walls
+    /// alpha is the shading, so that walls coloured from the aerial picture get it too. The
+    /// energy bars use it for their opacity.
     pub colour: [u8; 4],
+    /// On a roof, its position in the tile, from 0 to 65535, where the aerial picture is
+    /// sampled. On a wall, the index of its building in the tile, low half first, where the
+    /// wall colour is looked up.
+    pub roof: [u16; 2],
 }
 
 pub struct BuildingMesh {
@@ -70,6 +89,87 @@ fn shaded(colour: [f32; 3], shade: f32) -> [u8; 4] {
     [c[0], c[1], c[2], 255]
 }
 
+/// A wall's colour: shaded, with the shading kept in alpha.
+fn wall_shaded(colour: [f32; 3], shade: f32) -> [u8; 4] {
+    let mut c = shaded(colour, shade);
+    c[3] = (shade * 255.0).round() as u8;
+    c
+}
+
+/// Where a roof corner lies in the tile's aerial picture. Footprints cut at the tile's edge
+/// end on it, so clamping only catches rounding.
+pub fn roof_uv(p: [f32; 2]) -> [u16; 2] {
+    p.map(|c| (c.clamp(0.0, 1.0) * 65535.0).round() as u16)
+}
+
+/// The index of a building, as its walls carry it.
+fn wall_index(i: usize) -> [u16; 2] {
+    [(i & 0xffff) as u16, (i >> 16) as u16]
+}
+
+/// Whether a tile position lies inside a footprint and outside its courtyards.
+fn inside(rings: &[Vec<[f32; 2]>], p: [f32; 2]) -> bool {
+    let mut odd = false;
+    for ring in rings {
+        for pair in ring.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) {
+                odd = !odd;
+            }
+        }
+    }
+    odd
+}
+
+/// The wall colour of each building, in the order of `buildings`: the average of its roof in the
+/// tile's aerial picture, darkened, as sRGB. Alpha is 0 where the picture has nothing under the
+/// roof, and the walls then keep their zone colour.
+pub fn wall_colours(buildings: &[Building], picture: &image::RgbaImage) -> Vec<[u8; 4]> {
+    let (w, h) = picture.dimensions();
+    let pixel = |p: [f32; 2]| {
+        let x = ((p[0].clamp(0.0, 1.0) * w as f32) as u32).min(w - 1);
+        let y = ((p[1].clamp(0.0, 1.0) * h as f32) as u32).min(h - 1);
+        picture.get_pixel(x, y).0
+    };
+    buildings
+        .iter()
+        .map(|b| {
+            let Some(outer) = b.rings.first().filter(|r| r.len() >= 4) else { return [0; 4] };
+            let (lo, hi) = outer.iter().fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), p| {
+                ([lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])])
+            });
+            // Red, green and blue summed, and the count of samples with imagery.
+            let mut sum = [0u32; 4];
+            let add = |sum: &mut [u32; 4], c: [u8; 4]| {
+                if c[3] >= 128 {
+                    (0..3).for_each(|i| sum[i] += c[i] as u32);
+                    sum[3] += 1;
+                }
+            };
+            for i in 0..ROOF_SAMPLES {
+                for j in 0..ROOF_SAMPLES {
+                    let p = [
+                        lo[0] + (hi[0] - lo[0]) * (i as f32 + 0.5) / ROOF_SAMPLES as f32,
+                        lo[1] + (hi[1] - lo[1]) * (j as f32 + 0.5) / ROOF_SAMPLES as f32,
+                    ];
+                    if inside(&b.rings, p) {
+                        add(&mut sum, pixel(p));
+                    }
+                }
+            }
+            if sum[3] == 0 {
+                // Too thin for the samples to land in it.
+                add(&mut sum, pixel([(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0]));
+            }
+            if sum[3] == 0 {
+                return [0; 4];
+            }
+            let c = [0, 1, 2].map(|i| wall_from_roof(sum[i] as f32 / sum[3] as f32, DEFAULT_COLOUR[i]));
+            [c[0], c[1], c[2], 255]
+        })
+        .collect()
+}
+
 /// Whether a wall lies along the cut where a footprint was clipped at the tile's edge. The
 /// neighbouring tile continues the building there, so no wall should stand on that line.
 fn on_cut(a: [f32; 2], b: [f32; 2]) -> bool {
@@ -95,7 +195,7 @@ pub fn build_mesh(
     let mut flat: Vec<[f64; 2]> = Vec::new();
     let mut holes: Vec<u32> = Vec::new();
 
-    for building in buildings {
+    for (index, building) in buildings.iter().enumerate() {
         if vertices.len() >= MAX_VERTICES {
             break;
         }
@@ -142,7 +242,7 @@ pub fn build_mesh(
             }
             for p in &ring[..ring.len() - 1] {
                 flat.push([p[0] as f64, p[1] as f64]);
-                vertices.push(BuildingVertex { pos: position(*p, top), colour: roof_colour });
+                vertices.push(BuildingVertex { pos: position(*p, top), colour: roof_colour, roof: roof_uv(*p) });
             }
         }
         earcut.earcut(flat.iter().copied(), &holes, &mut triangles);
@@ -166,12 +266,13 @@ pub fn build_mesh(
                 if on_cut(a, b) {
                     continue;
                 }
-                let (up, down) = (shaded(colour, WALL_SHADE), shaded(colour, WALL_SHADE * WALL_BASE_SHADE));
+                let (up, down) = (wall_shaded(colour, WALL_SHADE), wall_shaded(colour, WALL_SHADE * WALL_BASE_SHADE));
                 let start = vertices.len() as u32;
-                vertices.push(BuildingVertex { pos: position(a, top), colour: up });
-                vertices.push(BuildingVertex { pos: position(b, top), colour: up });
-                vertices.push(BuildingVertex { pos: position(a, bottom), colour: down });
-                vertices.push(BuildingVertex { pos: position(b, bottom), colour: down });
+                let roof = wall_index(index);
+                vertices.push(BuildingVertex { pos: position(a, top), colour: up, roof });
+                vertices.push(BuildingVertex { pos: position(b, top), colour: up, roof });
+                vertices.push(BuildingVertex { pos: position(a, bottom), colour: down, roof });
+                vertices.push(BuildingVertex { pos: position(b, bottom), colour: down, roof });
                 // Wound to face outwards, so that a camera inside a building can see out.
                 indices.extend([start, start + 1, start + 2, start + 1, start + 3, start + 2]);
             }
@@ -323,6 +424,70 @@ mod tests {
         assert_eq!(density(3.0), 0.0);
         assert_eq!(density(500.0), 1.0);
         assert!((density(LOW_RISE * (HIGH_RISE / LOW_RISE).sqrt()) - 0.5).abs() < 1e-4);
+    }
+
+    fn roof_vertices(mesh: &BuildingMesh) -> Vec<&BuildingVertex> {
+        mesh.vertices.iter().filter(|v| v.colour[3] == 255).collect()
+    }
+
+    #[test]
+    fn roofs_carry_their_place_in_the_tile() {
+        let mesh = build_mesh(TileKey::new(14, 8000, 5000), &[building(vec![square(0.25, 0.5, 0.1)])], &|_, _| 0.0).unwrap();
+        let roof = roof_vertices(&mesh);
+        assert_eq!(roof.len(), 4);
+        let us: Vec<u16> = roof.iter().map(|v| v.roof[0]).collect();
+        let vs: Vec<u16> = roof.iter().map(|v| v.roof[1]).collect();
+        let at = |f: f32| (f * 65535.0).round() as u16;
+        assert_eq!((*us.iter().min().unwrap(), *us.iter().max().unwrap()), (at(0.25), at(0.35)));
+        assert_eq!((*vs.iter().min().unwrap(), *vs.iter().max().unwrap()), (at(0.5), at(0.6)));
+        // A footprint cut at the tile's corner reaches the very edge of the picture and stays in it.
+        let cut = building(vec![vec![[-0.0001, -0.0001], [0.1, -0.0001], [0.1, 0.1], [-0.0001, 0.1], [-0.0001, -0.0001]]]);
+        let mesh = build_mesh(TileKey::new(14, 8000, 5000), &[cut], &|_, _| 0.0).unwrap();
+        let corners: Vec<[u16; 2]> = roof_vertices(&mesh).iter().map(|v| v.roof).collect();
+        assert!(corners.contains(&[0, 0]), "{corners:?}");
+        assert_eq!(roof_uv([1.2, 0.5]), [65535, at(0.5)]);
+    }
+
+    #[test]
+    fn walls_carry_their_building_and_shading() {
+        let houses: Vec<Building> = (0..3).map(|i| building(vec![square(0.1 + 0.2 * i as f32, 0.4, 0.1)])).collect();
+        let mesh = build_mesh(TileKey::new(14, 8000, 5000), &houses, &|_, _| 0.0).unwrap();
+        let walls: Vec<&BuildingVertex> = mesh.vertices.iter().filter(|v| v.colour[3] < 255).collect();
+        assert_eq!(walls.len(), 3 * 4 * 4);
+        for (n, w) in walls.iter().enumerate() {
+            assert_eq!(w.roof, [(n / 16) as u16, 0], "the building's index");
+        }
+        let shades: Vec<u8> = walls.iter().map(|w| w.colour[3]).collect();
+        assert!(shades.contains(&217) && shades.contains(&156), "top and base: {shades:?}");
+        assert_eq!(wall_index(70_000), [4464, 1]);
+    }
+
+    #[test]
+    fn walls_take_the_average_of_their_roof_lightened_towards_plaster() {
+        // The left half red, the right half grey with a stripe of white; the far right has no imagery.
+        let picture = image::RgbaImage::from_fn(100, 100, |x, y| {
+            image::Rgba(match x {
+                0..50 => [200, 0, 0, 255],
+                50..80 if y < 50 => [100, 100, 100, 255],
+                50..80 => [200, 200, 200, 255],
+                _ => [0, 0, 0, 0],
+            })
+        });
+        let red = building(vec![square(0.1, 0.1, 0.2)]);
+        let grey = building(vec![square(0.55, 0.4, 0.2)]);
+        let dark = building(vec![square(0.85, 0.1, 0.1)]);
+        let walls = wall_colours(&[red, grey, dark, building(vec![])], &picture);
+        let p = DEFAULT_COLOUR;
+        let wall = |c: [f32; 3]| {
+            let w = [0, 1, 2].map(|i| wall_from_roof(c[i], p[i]));
+            [w[0], w[1], w[2], 255]
+        };
+        assert_eq!(walls[0], wall([200.0, 0.0, 0.0]));
+        assert!(walls[0][0] > walls[0][1] + 50, "a red roof gives warm walls");
+        assert_eq!(walls[1], wall([150.0; 3]), "half grey, half white");
+        assert!(walls[1][0] > 150, "a grey roof gives walls lighter than the roof");
+        assert_eq!(walls[2][3], 0, "no imagery: the walls keep their zone colour");
+        assert_eq!(walls[3], [0; 4]);
     }
 
     #[test]

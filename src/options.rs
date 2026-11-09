@@ -6,7 +6,7 @@
 
 use crate::atlas::Projection;
 use crate::pacing::FrameLimit;
-use crate::settings::{Settings, ViewKind};
+use crate::settings::{BuildingColour, Settings, ViewKind};
 use crate::gui::{self, Gui};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -103,6 +103,7 @@ pub enum Action {
     /// The checkbox with this index in [`TOGGLES`] to this value.
     Set(usize, bool),
     View(ViewKind),
+    BuildingColour(BuildingColour),
     Projection(Projection),
     /// Another body to show.
     Body(&'static str),
@@ -138,6 +139,16 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Option<Action>
                             action = Some(Action::Set(n, on));
                         }
                         n += 1;
+                    }
+                    if *name == "Scene" {
+                        gui::section(ui, "Building colours");
+                        ui.horizontal(|ui| {
+                            for (label, c) in [("Aerial roofs", BuildingColour::Aerial), ("Zones", BuildingColour::Zones)] {
+                                if ui.radio(st.buildings_colour == c, label).clicked() {
+                                    action = Some(Action::BuildingColour(c));
+                                }
+                            }
+                        });
                     }
                     if name.starts_with("For comparison") && ui.button("Colours and bar size\u{2026}").clicked() {
                         action = Some(Action::EnergyStyle);

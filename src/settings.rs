@@ -101,6 +101,31 @@ impl Setting for ViewKind {
     }
 }
 
+/// How the 3D buildings are coloured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuildingColour {
+    /// Roofs from the aerial imagery, walls from the roof's average.
+    Aerial,
+    /// By zone: living, business, industry, or the colour in the map data.
+    Zones,
+}
+
+impl Setting for BuildingColour {
+    fn from_json(v: &Value) -> Option<Self> {
+        match v.as_str()? {
+            "aerial" => Some(Self::Aerial),
+            "zones" => Some(Self::Zones),
+            _ => None,
+        }
+    }
+    fn to_json(&self) -> Value {
+        Value::from(match self {
+            Self::Aerial => "aerial",
+            Self::Zones => "zones",
+        })
+    }
+}
+
 impl Setting for Projection {
     fn from_json(v: &Value) -> Option<Self> {
         Projection::parse(v.as_str()?)
@@ -183,6 +208,7 @@ settings! {
     /// Names of peaks, water and streets.
     other_names: bool = false, "other_names";
     buildings: bool = true, "buildings_3d";
+    buildings_colour: BuildingColour = BuildingColour::Aerial, "buildings_colour";
     /// Terrain and buildings cast shadows when the Sun lights the scene.
     cast_shadows: bool = true, "cast_shadows";
     sunlight: bool = true, "sunlight";
@@ -401,12 +427,14 @@ mod tests {
         let s = Settings {
             trails: false,
             view: ViewKind::Map,
+            buildings_colour: BuildingColour::Zones,
             projection: Projection::PlateCarree,
             frame_rate: FrameLimit::Fps90,
             language: "de".into(),
             body: "mars".into(),
             ..Settings::default()
         };
+        assert!(s.to_text().contains("\"buildings_colour\": \"zones\""));
         let mut w = Vec::new();
         assert_eq!(Settings::parse(&s.to_text(), &mut w), s);
         assert!(w.is_empty());

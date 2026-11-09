@@ -2,13 +2,13 @@
 //! floats stay precise at any distance from the Earth's centre.
 
 use crate::atlas::{self, AtlasVertex, AtlasView, Mesh};
-use crate::buildings::{BuildingMesh, BuildingVertex};
+use crate::buildings::{BuildingMesh, BuildingVertex, WALL_COLUMNS};
 use crate::camera::{Camera, FOV_Y};
 use crate::geo::{geodetic_to_ecef, radius, TileKey};
 use crate::labels::{AtlasRect, Mask, Shelves, TextKey, TextWorker, ATLAS_SIZE};
 use crate::shadows;
 use crate::sky::SkyPoint;
-use crate::loader::{mesh_indices, TileData, Vertex, GRID, TILE_MAX_Z};
+use crate::loader::{mesh_indices, RoofData, TileData, Vertex, GRID, TILE_MAX_Z};
 use bytemuck::{Pod, Zeroable};
 use glam::{DMat3, DVec3};
 use std::collections::{HashMap, HashSet};
@@ -22,6 +22,12 @@ const MAX_TILES: usize = 1500;
 const MAX_OVERLAYS: usize = 500;
 /// Building meshes kept on the GPU; city tiles take up to a few megabytes each.
 const MAX_BUILDING_TILES: usize = 300;
+/// Graphics memory for the aerial pictures of roofs, beyond those in view. A picture at the
+/// finest zoom takes 22 MB with its mip levels, one a level coarser 5.6 MB.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_ROOF_BYTES: u64 = 320 << 20;
+#[cfg(target_arch = "wasm32")]
+const MAX_ROOF_BYTES: u64 = 128 << 20;
 /// Latitude where Web Mercator imagery ends, just inside the polar caps.
 const IMAGERY_LIMIT_DEG: f64 = 85.06;
 
@@ -116,6 +122,15 @@ struct GpuBuildings {
     center: DVec3,
     radius: f64,
     last_used: u64,
+    roof: Option<GpuRoof>,
+}
+
+/// The aerial picture of a building tile and its wall colours, bound for drawing.
+struct GpuRoof {
+    bind: wgpu::BindGroup,
+    /// The imagery zoom it was made from.
+    z: u8,
+    bytes: u64,
 }
 
 #[repr(C)]
@@ -141,6 +156,11 @@ pub struct Renderer {
     label_pipeline: wgpu::RenderPipeline,
     building_pipeline: wgpu::RenderPipeline,
     building_ghost_pipeline: wgpu::RenderPipeline,
+    roof_layout: wgpu::BindGroupLayout,
+    /// For buildings drawn in their zone colours, and the energy bars.
+    no_roof: wgpu::BindGroup,
+    /// Whether roofs show the aerial imagery where it has arrived.
+    aerial_roofs: bool,
     buildings: HashMap<TileKey, GpuBuildings>,
     /// Which building tiles to draw this frame.
     visible_buildings: Vec<TileKey>,
@@ -202,6 +222,24 @@ pub struct Renderer {
     depth: Option<(wgpu::TextureView, u32, u32)>,
     tiles: HashMap<TileKey, GpuTile>,
     frame_no: u64,
+}
+
+fn roof_bind(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    picture: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    walls: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("roof"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(picture) },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(walls) },
+        ],
+    })
 }
 
 fn tile_texture_view(
@@ -539,12 +577,17 @@ impl Renderer {
             cache: None,
         });
         let sky_points = create_sky_buffer(&device, 0);
+        // A roof's aerial picture, and the wall colours of the tile, looked up by building.
+        let roof_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("roof"),
+            entries: &[texture_entry(0), sampler_entry(1), texture_entry(2)],
+        });
         let building_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("building"),
-            bind_group_layouts: &[Some(&frame_layout)],
+            bind_group_layouts: &[Some(&frame_layout), Some(&roof_layout)],
             immediate_size: 0,
         });
-        let building_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4];
+        let building_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4, 3 => Unorm16x2];
         let building_instance_attrs = wgpu::vertex_attr_array![2 => Float32x3];
         let building_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("building"),
@@ -844,6 +887,7 @@ impl Renderer {
             &[(1, 1, vec![0, 0, 0, 0])],
         );
         let no_overlay = texture_bind(&empty_view, &tile_sampler, "no overlay");
+        let no_roof = roof_bind(&device, &roof_layout, &empty_view, &tile_sampler, &empty_view);
 
         let label_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("label atlas"),
@@ -875,6 +919,9 @@ impl Renderer {
             label_pipeline,
             building_pipeline,
             building_ghost_pipeline,
+            roof_layout,
+            no_roof,
+            aerial_roofs: true,
             buildings: HashMap::new(),
             visible_buildings: Vec::new(),
             energy: None,
@@ -1079,8 +1126,33 @@ impl Renderer {
                 center: mesh.center,
                 radius: reach,
                 last_used: self.frame_no,
+                roof: None,
             },
         );
+    }
+
+    /// The imagery zoom of a building tile's aerial picture, 0 when it has none.
+    pub fn roof_z(&self, k: TileKey) -> u8 {
+        self.buildings.get(&k).and_then(|b| b.roof.as_ref()).map_or(0, |r| r.z)
+    }
+
+    /// Gives a building tile its aerial picture and wall colours. A tile not loaded keeps none.
+    pub fn insert_roofs(&mut self, k: TileKey, z: u8, data: &RoofData) {
+        let Some(b) = self.buildings.get_mut(&k) else { return };
+        let picture = tile_texture_view(&self.device, &self.queue, wgpu::TextureFormat::Rgba8UnormSrgb, &data.mips);
+        // Whole rows, so that every building's index finds a texel.
+        let rows = (data.walls.len() as u32).div_ceil(WALL_COLUMNS).max(1);
+        let mut walls: Vec<u8> = bytemuck::cast_slice(&data.walls).to_vec();
+        walls.resize((WALL_COLUMNS * rows * 4) as usize, 0);
+        let walls = tile_texture_view(&self.device, &self.queue, wgpu::TextureFormat::Rgba8Unorm, &[(WALL_COLUMNS, rows, walls)]);
+        let bytes = data.mips.iter().map(|m| m.2.len() as u64).sum::<u64>() + u64::from(WALL_COLUMNS * rows * 4);
+        let bind = roof_bind(&self.device, &self.roof_layout, &picture, &self.tile_sampler, &walls);
+        b.roof = Some(GpuRoof { bind, z, bytes });
+    }
+
+    /// Whether roofs show the aerial imagery, or every building its zone colour.
+    pub fn set_aerial_roofs(&mut self, on: bool) {
+        self.aerial_roofs = on;
     }
 
     /// Sets the shadow maps for the next frames: their plan, and the loaded tiles beyond the drawn ones
@@ -1151,6 +1223,7 @@ impl Renderer {
             center: mesh.center,
             radius: 0.0,
             last_used: 0,
+            roof: None,
         }, solid));
     }
 
@@ -1345,6 +1418,26 @@ impl Renderer {
             old.sort_unstable();
             for (_, k) in old.into_iter().take(self.buildings.len() - MAX_BUILDING_TILES) {
                 self.buildings.remove(&k);
+            }
+        }
+        // Roofs out of view are given up first, the longest unused before others; those in view stay.
+        let mut roof_bytes: u64 = self.buildings.values().filter_map(|b| b.roof.as_ref()).map(|r| r.bytes).sum();
+        if roof_bytes > MAX_ROOF_BYTES {
+            let shown: HashSet<TileKey> = self.visible_buildings.iter().copied().collect();
+            let mut old: Vec<_> = self
+                .buildings
+                .iter()
+                .filter(|(k, b)| b.roof.is_some() && !shown.contains(*k))
+                .map(|(k, b)| (b.last_used, *k))
+                .collect();
+            old.sort_unstable();
+            for (_, k) in old {
+                if roof_bytes <= MAX_ROOF_BYTES {
+                    break;
+                }
+                if let Some(roof) = self.buildings.get_mut(&k).and_then(|b| b.roof.take()) {
+                    roof_bytes -= roof.bytes;
+                }
             }
         }
         let overlays = self.tiles.values().filter(|t| t.overlay.is_some()).count();
@@ -1665,6 +1758,8 @@ impl Renderer {
                 for (i, k) in shown.iter().enumerate() {
                     let b = &self.buildings[k];
                     let instance = first_building + i as u32;
+                    let roof = b.roof.as_ref().filter(|_| self.aerial_roofs).map_or(&self.no_roof, |r| &r.bind);
+                    pass.set_bind_group(1, roof, &[]);
                     pass.set_vertex_buffer(0, b.vertices.slice(..));
                     pass.set_index_buffer(b.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..b.index_count, 0, instance..instance + 1);
@@ -1672,6 +1767,7 @@ impl Renderer {
             }
 
             if let (Some((e, solid)), None) = (&self.energy, &self.atlas) {
+                pass.set_bind_group(1, &self.no_roof, &[]);
                 pass.set_vertex_buffer(1, self.instances.slice(..));
                 pass.set_vertex_buffer(0, e.vertices.slice(..));
                 pass.set_index_buffer(e.indices.slice(..), wgpu::IndexFormat::Uint32);

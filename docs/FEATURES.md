@@ -162,7 +162,15 @@ and they appear once the server answers again.
 ## 3D buildings
 
 - Buildings rise from OpenStreetMap footprints with their mapped heights, courtyards and raised parts such as stepped towers.
-- They are coloured by the zoned land use they stand in, as a city builder shows its zones: **green** in residential areas,
+- **Building colours** in the view options (V) chooses how they look: *Aerial roofs* (the default) or *Zones*.
+- With **aerial roofs**, each roof shows the aerial imagery of the ground it stands on, so flat grey roofs, solar panels and
+  red tiles look as they are. The picture of each building tile (zoom 14, about 1.5 km across in Central Europe) is put
+  together from the best imagery there is, as for the ground: a national orthophoto where a country has one, else
+  VersaTiles or EOx. Its sharpness follows the ground drawn in the tile, up to about a metre per pixel (zoom 17, 2048 pixels
+  across) close to the camera, and down to 256 pixels for distant tiles; on the web it stops at 1024 pixels. Each building's
+  walls take one colour, its roof's average mixed with light plaster (two parts roof to three parts plaster), so a red-tiled house gets warm walls and a dark flat roof light ones, with the usual shading and darker base. Until a
+  tile's picture has arrived, and wherever the imagery has nothing, roofs and walls keep their zone colours.
+- With **zones**, they are coloured by the zoned land use they stand in, as a city builder shows its zones: **green** in residential areas,
   **blue** in commercial and retail ones, **yellow** in industrial ones. The shade gives the density, from light for low
   buildings (5 m and less) to dark for towers (40 m and more), on a log scale of the height. Where areas overlap, as shops within
   a residential area, the smaller one counts. Buildings outside these areas (old town centres, schools, hospitals, stations,
@@ -172,10 +180,19 @@ and they appear once the server answers again.
   windows load detail, and so buildings, from further away.
 - Only outward faces are drawn, so a camera inside a building sees out. Edges are anti-aliased where the GPU supports it.
 - Each face is lit by the direction it points, and buildings cast and receive shadows.
-- B or `--no-buildings` hides them.
+- B or `--no-buildings` hides them. `--zone-colours` starts with zone colours for one run.
+- `screenshots/darmstadt-lincoln-siedlung-aerial-roofs.png` and `-zones.png` show both, taken with `--lat 49.8451 --lon 8.6426
+  --distance 700 --tilt 50 --time 2026-06-21T10:00:00Z` and the energy layer off.
+- The pictures of roofs come through the same cache as the ground's imagery. Those of tiles in view stay in graphics memory;
+  others are given up beyond 320 MB (128 MB on the web), the longest unused first, and come back from the cache when needed.
 
 ### Limitations
-- Flat roofs and plain colours: no textures, windows or real roof shapes.
+- Flat roofs: no real roof shapes. The walls are one colour each, not photographs, and have no windows.
+- Orthophotos other than true orthophotos are taken looking straight down only at their centre, so tall buildings lean away from
+  it and their roofs are shifted a little in the picture: a roof can show a strip of its own wall, its shadow or the street, and
+  miss a strip on the other side. Trees overhanging a roof show on it.
+- Roofs are as sharp as the imagery at zoom 17 at most, which is coarser than the ground close up. Where only coarse imagery
+  exists, roofs are blurred patches of colour.
 - Height and colour are only as good as the map data, and buildings without a height get a default.
 - The land use is the OpenMapTiles `landuse` layer's `class` (residential, commercial, retail, industrial), so a building is
   zoned by the area it stands in, not by its own use: a shop in a residential area is green, and much of a city centre, which
@@ -705,7 +722,7 @@ never confused:
 ### View options window
 The second icon at the bottom right, between the clock and the question mark, and the key V open it; Escape or its close button closes it.
 
-- It has checkboxes for the six map layers, 3D buildings, sunlight, cast shadows, stars and planets, event markers, information on click, and the energy bars with a switch for each renewable, fossil and nuclear source. It also offers a choice of globe or flat map, a projection (usable on the flat map only), a body, the Earth's imagery (the usual imagery, or a service of the user's library) and the frame rate limit. Clicking acts at once and is saved.
+- It has checkboxes for the six map layers, 3D buildings and their colours (aerial roofs or zones), sunlight, cast shadows, stars and planets, event markers, information on click, and the energy bars with a switch for each renewable, fossil and nuclear source. It also offers a choice of globe or flat map, a projection (usable on the flat map only), a body, the Earth's imagery (the usual imagery, or a service of the user's library) and the frame rate limit. Clicking acts at once and is saved.
 - The window sits at the bottom left and the help window at the bottom right. Where they would overlap, opening one closes the other.
 - Keys that change one of these options go through the same path, and the window shows the live state, whichever way it changed.
 
@@ -714,7 +731,7 @@ The second icon at the bottom right, between the clock and the question mark, an
 - Order of precedence: defaults, then saved settings, then the command line. A flag applies to that run only and is not written back. Only what the user changes in the window is written, one field at a time, through a temporary file and a rename.
 - A value that is missing, of the wrong kind or unknown is the default for that field, with a warning on standard error, and other keys are kept when the file is written. A file that is not JSON is moved to `settings.json.bad`.
 - A `--screenshot` ignores saved settings and saves none, so that pictures are reproducible, unless `--config-dir` is given.
-- Saved: the map layers, 3D buildings, sunlight, cast shadows, stars and planets, event markers, information on click, the energy bars and their sources, globe or flat map, projection, frame rate limit, the body, the library service used as the base imagery, and a language code for names (empty follows the system; set in the file only). Not saved: the camera, the clock and which windows are open; each start opens on the [start view](#start-view).
+- Saved: the map layers, 3D buildings and their colours, sunlight, cast shadows, stars and planets, event markers, information on click, the energy bars and their sources, globe or flat map, projection, frame rate limit, the body, the library service used as the base imagery, and a language code for names (empty follows the system; set in the file only). Not saved: the camera, the clock and which windows are open; each start opens on the [start view](#start-view).
 
 ### Limitations
 - Only services in the user's library are listed as imagery; the directory is reached through the services list (G). Overlays and opacity are not in the window.

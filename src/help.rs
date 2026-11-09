@@ -65,7 +65,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("I", "List of imported items"),
             ("E", "Eclipses and events; 1 to 5 filter the feeds"),
             ("G", "List of map services"),
-            ("V", "View options: choose lines, names, scene, projection, imagery"),
+            ("V", "View options: choose lines, names, scene, building colours, projection, imagery"),
             ("H, ?, F1", "Show or hide this window"),
             ("F12", "Technical figures: tiles, frame rate, downloads"),
         ],

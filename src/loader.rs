@@ -29,6 +29,15 @@ const BLOCKED_CHECK: Duration = Duration::from_millis(20);
 /// Finished results waiting to be collected. Workers pause beyond this, which limits how
 /// much memory decoded tiles can take when they are produced faster than they are uploaded.
 const RESULT_QUEUE: usize = 32;
+/// The zoom of the imagery that aerial roofs are made from, at most: about a metre per pixel, so
+/// a building tile's picture is 2048 pixels across. On the web the work runs between frames, so
+/// it stops one level coarser, at 1024 pixels.
+#[cfg(not(target_arch = "wasm32"))]
+pub const ROOF_MAX_Z: u8 = 17;
+#[cfg(target_arch = "wasm32")]
+pub const ROOF_MAX_Z: u8 = 16;
+/// Pixels across one imagery tile's place in a roof picture.
+const ROOF_CELL: u32 = 256;
 const DEM_CACHE: usize = 64;
 const VECTOR_CACHE: usize = 64;
 
@@ -81,8 +90,22 @@ pub enum Outcome {
     /// A tile's building mesh, or `None` when it has no buildings.
     Buildings(TileKey, Option<Box<BuildingMesh>>),
     BuildingsRetry(TileKey, Option<SystemTime>),
+    /// The aerial picture of a building tile at an imagery zoom, or `None` when there is no imagery
+    /// for it.
+    Roofs(TileKey, u8, Option<Box<RoofData>>),
+    RoofsRetry(TileKey, Option<SystemTime>),
     /// Getting on with this job now would mean waiting, so it goes back in the queue.
     Deferred(Wait),
+}
+
+/// What the roofs and walls of a building tile are coloured with.
+pub struct RoofData {
+    /// The tile's aerial picture, sRGB with mip levels, largest first. Alpha is 0 where there
+    /// was no imagery.
+    pub mips: Vec<(u32, u32, Vec<u8>)>,
+    /// The wall colour of each building, in the order the mesh has them; see
+    /// [`buildings::wall_colours`].
+    pub walls: Vec<[u8; 4]>,
 }
 
 /// What a failed fetch means for a job: another try now or later.
@@ -127,11 +150,24 @@ fn keep_tile_part(img: image::RgbaImage, rect: (f64, f64, f64)) -> (image::RgbaI
     (part, (0.0, 0.0, 1.0))
 }
 
+/// The part of an image at `rect`, as `rect_in` gives it.
+fn image_part(img: &image::RgbaImage, rect: (f64, f64, f64)) -> image::RgbaImage {
+    let (u, v, size) = rect;
+    let (w, h) = img.dimensions();
+    let x = ((u * w as f64).floor() as u32).min(w - 1);
+    let y = ((v * h as f64).floor() as u32).min(h - 1);
+    let pw = ((size * w as f64).round() as u32).clamp(1, w - x);
+    let ph = ((size * h as f64).round() as u32).clamp(1, h - y);
+    image::imageops::crop_imm(img, x, y, pw, ph).to_image()
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Job {
     Tile(TileKey),
     Overlay(TileKey),
     Buildings(TileKey),
+    /// A building tile's aerial picture, at this imagery zoom.
+    Roofs(TileKey, u8),
 }
 
 /// A square elevation grid.
@@ -418,6 +454,90 @@ impl Shared {
         Outcome::Buildings(k, mesh.map(Box::new))
     }
 
+    fn load_roofs(&self, k: TileKey, z: u8) -> Outcome {
+        let tile = match self.vector(k) {
+            Ok(tile) => tile,
+            Err(e) => return after_failure(e, k, Outcome::RoofsRetry),
+        };
+        let picture = match self.roof_picture(k, z) {
+            Ok(Some(p)) => p,
+            Ok(None) => return Outcome::Roofs(k, z, None),
+            Err(e) => return after_failure(e, k, Outcome::RoofsRetry),
+        };
+        let walls = buildings::wall_colours(&tile.buildings, &picture);
+        let (w, h) = picture.dimensions();
+        Outcome::Roofs(k, z, Some(Box::new(RoofData { mips: build_mips(w, h, picture.into_raw()), walls })))
+    }
+
+    /// The picture of a tile composed from the best imagery for each of its descendants at zoom `z`,
+    /// each given [`ROOF_CELL`] pixels. Where a source is coarser, a part of its tile is enlarged.
+    /// `None` when no imagery has anything for it. A download that must wait is begun for every
+    /// part before the wait is passed on, so that the next try finds them all.
+    fn roof_picture(&self, k: TileKey, z: u8) -> Result<Option<image::RgbaImage>, FetchError> {
+        let n = 1u32 << (z - k.z);
+        let mut picture = image::RgbaImage::new(n * ROOF_CELL, n * ROOF_CELL);
+        let mut decoded: HashMap<(&'static str, TileKey), Option<Arc<image::RgbaImage>>> = HashMap::new();
+        let mut waiting: Option<FetchError> = None;
+        let mut any = false;
+        for cy in 0..n {
+            for cx in 0..n {
+                let cell = TileKey::new(z, (k.x << (z - k.z)) + cx, (k.y << (z - k.z)) + cy);
+                for (source, source_key) in sources::imagery_for(cell) {
+                    if source.blank_means_missing() && self.fetcher.empty_above(source, source_key) {
+                        continue;
+                    }
+                    let img = match decoded.get(&(source.id, source_key)) {
+                        Some(img) => img.clone(),
+                        None => {
+                            let bytes = match self.fetcher.try_fetch(source, source_key) {
+                                Ok(bytes) => bytes,
+                                Err(FetchError::Missing) => continue,
+                                Err(e) => {
+                                    waiting.get_or_insert(e);
+                                    break;
+                                }
+                            };
+                            if waiting.is_some() {
+                                // It will be decoded on the next try, with the rest.
+                                break;
+                            }
+                            let img = match image::load_from_memory(&bytes) {
+                                Ok(img) => Some(img.to_rgba8()),
+                                Err(_) => {
+                                    self.fetcher.discard(source, source_key);
+                                    None
+                                }
+                            };
+                            let img = img.filter(|i| {
+                                let blank = source.blank_means_missing() && is_blank(i.as_raw());
+                                if blank {
+                                    self.fetcher.mark_missing(source, source_key);
+                                }
+                                !blank
+                            });
+                            let img = img.map(Arc::new);
+                            decoded.insert((source.id, source_key), img.clone());
+                            img
+                        }
+                    };
+                    let Some(img) = img else { continue };
+                    let part = image_part(&img, cell.rect_in(source_key));
+                    if source.blank_means_missing() && is_blank(part.as_raw()) {
+                        continue;
+                    }
+                    let part = image::imageops::resize(&part, ROOF_CELL, ROOF_CELL, image::imageops::FilterType::Triangle);
+                    image::imageops::replace(&mut picture, &part, (cx * ROOF_CELL) as i64, (cy * ROOF_CELL) as i64);
+                    any = true;
+                    break;
+                }
+            }
+        }
+        match waiting {
+            Some(e) => Err(e),
+            None => Ok(any.then_some(picture)),
+        }
+    }
+
     fn load_overlay(&self, k: TileKey) -> Outcome {
         let source = k.ancestor(k.z.min(VECTOR_MAX_Z));
         let tile = match self.vector(source) {
@@ -696,12 +816,13 @@ impl Loader {
 
     /// Replaces the queue, so tiles the view no longer needs are not fetched. Imagery and
     /// terrain come before map data, which can only appear on a tile that is already there,
-    /// and buildings come last.
-    pub fn set_wanted(&self, tiles: &[TileKey], overlays: &[TileKey], buildings: &[TileKey]) {
-        let jobs = buildings
+    /// then buildings, and the aerial pictures of their roofs come last.
+    pub fn set_wanted(&self, tiles: &[TileKey], overlays: &[TileKey], buildings: &[TileKey], roofs: &[(TileKey, u8)]) {
+        let jobs = roofs
             .iter()
             .rev()
-            .map(|k| Job::Buildings(*k))
+            .map(|(k, z)| Job::Roofs(*k, *z))
+            .chain(buildings.iter().rev().map(|k| Job::Buildings(*k)))
             .chain(overlays.iter().rev().map(|k| Job::Overlay(*k)))
             .chain(tiles.iter().rev().map(|k| Job::Tile(*k)));
         let mut q = self.shared.queue.lock().unwrap();
@@ -763,6 +884,7 @@ fn run_job(shared: &Shared, job: Job) -> Option<(Job, Outcome)> {
         Job::Tile(k) => shared.load(k),
         Job::Overlay(k) => shared.load_overlay(k),
         Job::Buildings(k) => shared.load_buildings(k),
+        Job::Roofs(k, z) => shared.load_roofs(k, z),
     };
     if let Outcome::Deferred(wait) = outcome {
         let mut q = shared.queue.lock().unwrap();
@@ -974,6 +1096,53 @@ mod tests {
     }
 
     #[test]
+    fn a_roof_picture_puts_each_imagery_tile_in_its_place() {
+        let cache = crate::fetcher::tests::temp_cache("roofs");
+        let k = TileKey::containing(47.27f64.to_radians(), 11.4f64.to_radians(), 14);
+        let colours = [[200, 30, 30], [30, 200, 30], [30, 30, 200]];
+        let cells = [(0, 0), (1, 0), (0, 1), (1, 1)];
+        for (i, (cx, cy)) in cells.iter().enumerate() {
+            let cell = TileKey::new(15, k.x * 2 + cx, k.y * 2 + cy);
+            let candidates = sources::imagery_for(cell);
+            match colours.get(i) {
+                // The best source has it, with a faint pattern, as one flat colour counts as blank.
+                Some(&c) => {
+                    let pattern = tile_bytes(|x, _| [c[0], c[1], c[2] + (x % 2) as u8 * 8]);
+                    cache.put(&candidates[0].0.cache_name(candidates[0].1), &pattern).unwrap();
+                }
+                // No source has the last one.
+                None => candidates.iter().for_each(|(s, key)| cache.mark_missing(&s.cache_name(*key))),
+            }
+        }
+        let fetcher = Fetcher::new(cache, Peers::default(), true);
+        let loader = Loader::new(Arc::new(fetcher), 1.0, vec!["name".into()]);
+        let picture = loader.shared.roof_picture(k, 15).ok().flatten().expect("a picture");
+        assert_eq!(picture.dimensions(), (2 * ROOF_CELL, 2 * ROOF_CELL));
+        for (i, (cx, cy)) in cells.iter().enumerate() {
+            for (dx, dy) in [(2, 2), (ROOF_CELL / 2, ROOF_CELL / 2), (ROOF_CELL - 3, ROOF_CELL - 3)] {
+                let px = picture.get_pixel(cx * ROOF_CELL + dx, cy * ROOF_CELL + dy).0;
+                match colours.get(i) {
+                    Some(c) => {
+                        assert_eq!(px[..2], c[..2], "cell {i} at {dx},{dy}");
+                        assert!((c[2]..=c[2] + 8).contains(&px[2]) && px[3] == 255, "cell {i} at {dx},{dy}");
+                    }
+                    None => assert_eq!(px[3], 0, "no imagery stays clear"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_part_of_a_coarser_image_is_enlarged_into_place() {
+        // The left half red, the right half blue: a quarter of it is all red or all blue.
+        let img = image::RgbaImage::from_fn(16, 16, |x, _| image::Rgba(if x < 8 { [255, 0, 0, 255] } else { [0, 0, 255, 255] }));
+        let right = image_part(&img, (0.5, 0.5, 0.5));
+        assert_eq!(right.dimensions(), (8, 8));
+        assert!(right.pixels().all(|p| p.0 == [0, 0, 255, 255]));
+        assert!(image_part(&img, (0.0, 0.0, 0.5)).pixels().all(|p| p.0 == [255, 0, 0, 255]));
+    }
+
+    #[test]
     fn detail_imagery_is_preferred_where_it_exists() {
         let (cache, k, base) = detail_setup("prefer");
         let at = sources::by_id("basemap-at").unwrap();
@@ -1083,7 +1252,7 @@ mod tests {
         let mut count = 0;
         let end = Instant::now() + Duration::from_millis(millis);
         while Instant::now() < end {
-            loader.set_wanted(wanted, &[], &[]);
+            loader.set_wanted(wanted, &[], &[], &[]);
             std::thread::sleep(Duration::from_millis(5));
             while loader.try_result().is_some() {
                 count += 1;
@@ -1102,11 +1271,11 @@ mod tests {
         let (loader, root) = offline_loader("dedupe", &[k]);
         // The view keeps asking while nothing collects the result.
         for _ in 0..40 {
-            loader.set_wanted(&[k], &[], &[]);
+            loader.set_wanted(&[k], &[], &[], &[]);
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(!loader.is_idle(), "an uncollected result still counts as work");
-        loader.set_wanted(&[], &[], &[]);
+        loader.set_wanted(&[], &[], &[], &[]);
         std::thread::sleep(Duration::from_millis(20));
         let mut results = 0;
         while loader.try_result().is_some() {
@@ -1123,7 +1292,7 @@ mod tests {
     fn workers_pause_when_results_are_not_collected() {
         let keys: Vec<TileKey> = (0..512).map(|x| TileKey::new(9, x, 3)).collect();
         let (loader, root) = offline_loader("bound", &keys);
-        loader.set_wanted(&keys, &[], &[]);
+        loader.set_wanted(&keys, &[], &[], &[]);
         std::thread::sleep(Duration::from_millis(300));
         let q = loader.shared.queue.lock().unwrap();
         let started = q.in_flight.len();
@@ -1200,7 +1369,7 @@ mod tests {
         wanted.reverse();
 
         let loader = Loader::new(fetcher, 1.0, vec!["name".into()]);
-        loader.set_wanted(&wanted, &[], &[]);
+        loader.set_wanted(&wanted, &[], &[], &[]);
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut got = None;
         while got.is_none() && Instant::now() < deadline {
@@ -1210,7 +1379,7 @@ mod tests {
         let Some(Outcome::Ready(tile)) = got else { panic!("the free job was held up") };
         assert_eq!(tile.key, ready);
         assert!(!loader.is_idle(), "the blocked jobs are still waiting");
-        loader.set_wanted(&[], &[], &[]);
+        loader.set_wanted(&[], &[], &[], &[]);
     }
 
     fn png(n: u32, colour: [u8; 4]) -> Vec<u8> {

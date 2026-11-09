@@ -89,7 +89,7 @@ use nav::{Arrow, Button, Mods, Nav, WHOLE_EARTH};
 use pacing::{FrameLimit, Pacer, RateMeter};
 use render::{hemisphere_label, LabelInstance, Renderer};
 use select::View;
-use settings::{Settings, ViewKind};
+use settings::{BuildingColour, Settings, ViewKind};
 use sky_time::{Clock, ClockKey};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -158,6 +158,7 @@ Usage: orbis [options]
                           over saved options for one run and is not saved; only what you change in the
                           window is. A --screenshot ignores saved options and saves none, unless DIR is given
   --no-buildings          start with 3D buildings hidden (key B)
+  --zone-colours          start with buildings coloured by zone rather than with aerial roofs (view options, V)
   --time ISO8601          set the clock, such as 2026-06-21T12:00:00Z (default now, UTC)
   --time-speed N          clock seconds per real second (default 1)
   --no-shadows            start without shadows cast by terrain and buildings (view options, V)
@@ -481,6 +482,10 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
             }
             "--no-buildings" => {
                 a.settings.buildings = false;
+                continue;
+            }
+            "--zone-colours" => {
+                a.settings.buildings_colour = BuildingColour::Zones;
                 continue;
             }
             "--no-stars" => {
@@ -807,6 +812,9 @@ struct Scene {
     /// Tiles known to have no buildings.
     building_empty: HashSet<TileKey>,
     building_retries: HashMap<TileKey, (Instant, u32)>,
+    /// Building tiles with no aerial imagery at that zoom.
+    roof_empty: HashSet<(TileKey, u8)>,
+    roof_retries: HashMap<TileKey, (Instant, u32)>,
     /// A line about the frame rate for the on-screen display, when drawing to a window.
     frame_status: Option<String>,
     clock: Clock,
@@ -1057,6 +1065,18 @@ fn building_tiles(draw: &[TileKey]) -> Vec<TileKey> {
     keys
 }
 
+/// The imagery zoom each building tile's roofs should come from: that of the finest ground drawn
+/// in it, so that roofs are as sharp as the ground around them, within what the loader makes.
+fn roof_zooms(draw: &[TileKey], buildings: &[TileKey]) -> Vec<(TileKey, u8)> {
+    buildings
+        .iter()
+        .map(|&k| {
+            let finest = draw.iter().filter(|d| d.z >= k.z && d.ancestor(k.z) == k).map(|d| d.z).max();
+            (k, finest.unwrap_or(k.z).clamp(k.z, loader::ROOF_MAX_Z))
+        })
+        .collect()
+}
+
 fn label_id(label: &vector::Label) -> u64 {
     let mut h = DefaultHasher::new();
     label.text.hash(&mut h);
@@ -1207,6 +1227,8 @@ impl Scene {
             labels_shown: 0,
             building_empty: HashSet::new(),
             building_retries: HashMap::new(),
+            roof_empty: HashSet::new(),
+            roof_retries: HashMap::new(),
             frame_status: None,
             energy_start: args.start_area,
             clock: {
@@ -1307,6 +1329,7 @@ impl Scene {
                     self.toggle_mode();
                 }
             }
+            Action::BuildingColour(c) => self.view.buildings_colour = c,
             Action::Projection(p) => self.map.view.set_projection(p),
             Action::Body(id) => {
                 if let Some(b) = body::by_id(id) {
@@ -1335,7 +1358,8 @@ impl Scene {
         for set in [&mut self.missing, &mut self.overlay_empty, &mut self.building_empty] {
             set.clear();
         }
-        for map in [&mut self.retries, &mut self.overlay_retries, &mut self.building_retries] {
+        self.roof_empty.clear();
+        for map in [&mut self.retries, &mut self.overlay_retries, &mut self.building_retries, &mut self.roof_retries] {
             map.clear();
         }
         self.label_sets.clear();
@@ -2158,6 +2182,17 @@ impl Scene {
                     changed = true;
                 }
                 Some(Outcome::BuildingsRetry(k, until)) => next_retry(&mut self.building_retries, k, until),
+                Some(Outcome::Roofs(k, z, roofs)) => {
+                    self.roof_retries.remove(&k);
+                    match roofs {
+                        Some(roofs) => r.insert_roofs(k, z, &roofs),
+                        None => {
+                            self.roof_empty.insert((k, z));
+                        }
+                    }
+                    changed = true;
+                }
+                Some(Outcome::RoofsRetry(k, until)) => next_retry(&mut self.roof_retries, k, until),
                 // The workers keep these themselves.
                 Some(Outcome::Deferred(_)) => {}
                 None => break,
@@ -2621,10 +2656,29 @@ impl Scene {
                 None => building_jobs.push(k),
             }
         }
+        let aerial = self.view.buildings_colour == BuildingColour::Aerial;
+        let mut roof_jobs = Vec::new();
+        if aerial {
+            for (k, z) in roof_zooms(&self.draw, &visible) {
+                if !r.has_buildings(k) || r.roof_z(k) >= z || self.roof_empty.contains(&(k, z)) {
+                    continue;
+                }
+                self.waiting += 1;
+                match self.roof_retries.get(&k) {
+                    Some(e) if e.0 > now => self.retrying += 1,
+                    Some(_) => {
+                        self.retrying += 1;
+                        roof_jobs.push((k, z));
+                    }
+                    None => roof_jobs.push((k, z)),
+                }
+            }
+        }
+        r.set_aerial_roofs(aerial);
         r.set_visible_buildings(visible);
         self.update_energy(r, aspect_height);
         self.update_shadows(r, aspect_height, atlas);
-        self.loader.set_wanted(&wanted, &overlays, &building_jobs);
+        self.loader.set_wanted(&wanted, &overlays, &building_jobs, &roof_jobs);
         // Once everything has arrived, the terrain under the start view is known for good.
         if self.waiting == 0 && self.loader.is_idle() {
             self.nav.finish_start();
@@ -4583,6 +4637,16 @@ mod tests {
         assert!(CREDITS.contains("Copernicus Sentinel data 2024"));
         assert!(CREDITS.contains("Mapterhorn"));
         assert!(CREDITS.contains("OpenMapTiles") && CREDITS.contains("OpenStreetMap"));
+    }
+
+    #[test]
+    fn roofs_are_as_sharp_as_the_ground_drawn_in_their_tile() {
+        let k = TileKey::new(14, 300, 400);
+        let near = TileKey::new(18, 300 * 16 + 3, 400 * 16 + 5);
+        let other = TileKey::new(14, 301, 400);
+        let far = TileKey::new(14, 302, 400);
+        let zooms = roof_zooms(&[near, TileKey::new(15, 602, 800), TileKey::new(13, 150, 200)], &[k, other, far]);
+        assert_eq!(zooms, [(k, loader::ROOF_MAX_Z), (other, 15), (far, 14)]);
     }
 
     #[test]

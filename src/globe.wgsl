@@ -259,33 +259,63 @@ struct BuildingOut {
     @location(0) colour: vec3<f32>,
     // Position relative to the camera.
     @location(1) rel: vec3<f32>,
-    // Opacity, for the see-through parts of the energy bars.
+    // Opacity, for the see-through parts of the energy bars. On buildings, 1 on roofs and the
+    // shading on walls.
     @location(2) alpha: f32,
+    // Where a roof is in its tile's aerial picture.
+    @location(3) roof: vec2<f32>,
+    // The building a wall belongs to.
+    @location(4) @interpolate(flat) wall: u32,
 }
+
+// A building tile's aerial picture, with alpha 0 where it has no imagery, and the wall colour
+// of each of its buildings, 256 to a row. Both are a transparent texel for buildings drawn in
+// their zone colours, and for the energy bars.
+@group(1) @binding(0) var roof_tex: texture_2d<f32>;
+@group(1) @binding(1) var roof_sampler: sampler;
+@group(1) @binding(2) var wall_tex: texture_2d<f32>;
 
 @vertex
 fn vs_building(
     @location(0) pos: vec3<f32>,
     @location(1) colour: vec4<f32>,
     @location(2) origin: vec3<f32>,
+    @location(3) roof: vec2<f32>,
 ) -> BuildingOut {
     var out: BuildingOut;
     out.rel = pos + origin;
     out.clip = frame.view_proj * vec4<f32>(out.rel, 1.0);
     out.colour = srgb_to_linear(colour.rgb);
     out.alpha = colour.a;
+    out.roof = roof;
+    let index = vec2<u32>(round(roof * 65535.0));
+    out.wall = index.x | (index.y << 16u);
     return out;
 }
 
 @fragment
 fn fs_building(in: BuildingOut) -> @location(0) vec4<f32> {
+    // Sampled before anything branches, as mip levels need the neighbouring pixels.
+    let picture = textureSample(roof_tex, roof_sampler, in.roof);
+    let size = textureDimensions(wall_tex);
+    let at = min(vec2<u32>(in.wall % 256u, in.wall / 256u), size - vec2<u32>(1u));
+    let wall = textureLoad(wall_tex, at, 0);
+    var colour = in.colour;
+    if (in.alpha > 0.99) {
+        // The picture is stored as sRGB, so it is sampled linear.
+        if (picture.a > 0.5) {
+            colour = picture.rgb / picture.a;
+        }
+    } else if (wall.a > 0.5) {
+        colour = srgb_to_linear(wall.rgb * in.alpha);
+    }
     var n = normalize(cross(dpdx(in.rel), dpdy(in.rel)));
     // Faces are drawn from the outside, so the normal faces the camera.
     if (dot(n, in.rel) > 0.0) {
         n = -n;
     }
     let g = normalize(in.rel + frame.cam.xyz * frame.sky.y);
-    return vec4<f32>(in.colour * sun_light(n, g, in.rel), 1.0);
+    return vec4<f32>(colour * sun_light(n, g, in.rel), 1.0);
 }
 
 // The see-through parts of the energy bars: lit like buildings, but never darker than half the

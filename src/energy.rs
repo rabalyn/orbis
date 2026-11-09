@@ -1322,7 +1322,7 @@ fn column(
                 let (a, b) = (corners[k], corners[(k + 1) % sides]);
                 let first = out.vertices.len() as u32;
                 for (p, z) in [(a, a0), (b, a0), (b, a1), (a, a1)] {
-                    out.vertices.push(BuildingVertex { pos: (base + p + up * z).as_vec3().to_array(), colour: colour(seg.colour, seg.alpha, shade(z)) });
+                    out.vertices.push(BuildingVertex { pos: (base + p + up * z).as_vec3().to_array(), colour: colour(seg.colour, seg.alpha, shade(z)), roof: [0, 0] });
                 }
                 indices.extend_from_slice(&[first, first + 1, first + 2, first, first + 2, first + 3]);
             }
@@ -1333,7 +1333,7 @@ fn column(
         if next_alpha.is_none() || (seg.alpha == 255 && next_alpha != Some(255)) {
             let first = out.vertices.len() as u32;
             for p in &corners {
-                out.vertices.push(BuildingVertex { pos: (base + *p + up * z1).as_vec3().to_array(), colour: colour(seg.colour, seg.alpha, 1.1) });
+                out.vertices.push(BuildingVertex { pos: (base + *p + up * z1).as_vec3().to_array(), colour: colour(seg.colour, seg.alpha, 1.1), roof: [0, 0] });
             }
             for k in 1..sides as u32 - 1 {
                 indices.extend_from_slice(&[first, first + k, first + k + 1]);

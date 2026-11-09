@@ -128,6 +128,12 @@ The limit on requests per server is unchanged, and coarser imagery stays on scre
 Terrain and map data stay on one server each, since both already vary in detail by zoom.
 Credits on screen follow the sources in view.
 
+The aerial roofs of 3D buildings use the same imagery, found the same way, for each building
+tile (zoom 14) at the zoom of the finest ground drawn in it, at most 17. Where the ground near
+the camera is finer, those zoom-17 images are requests of their own: up to 64 per building tile,
+or 16 from VersaTiles, whose images are four tiles each. They are asked for after everything
+else in view, and they are cached like any other tile, so a second visit costs nothing.
+
 ### Limitations
 
 - Coverage is partial: most of the world stays at 10 m, including Italy, Poland and the UK.

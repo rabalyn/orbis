@@ -3,6 +3,7 @@
   "body": "earth",
   "boundaries": true,
   "buildings_3d": true,
+  "buildings_colour": "aerial",
   "cast_shadows": true,
   "cities": true,
   "energy": true,
