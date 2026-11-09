@@ -33,6 +33,48 @@ pub struct Card {
     pub notes: Vec<String>,
     /// Groups of bars drawn between the summary and the facts.
     pub meters: Vec<Meters>,
+    /// A small line over the years, drawn after the bars.
+    pub trend: Option<Trend>,
+}
+
+/// A small line chart: a heading, points of (year, value), the value at the top of the chart,
+/// a mark at one year and a line of explanation below.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Trend {
+    pub title: String,
+    pub points: Vec<(f32, f32)>,
+    pub max: f32,
+    pub mark: Option<f32>,
+    pub caption: String,
+}
+
+/// The line of a [`Trend`], with its first and last year below and its top value at the left.
+fn trend(ui: &mut egui::Ui, t: &Trend) {
+    let (Some(first), Some(last)) = (t.points.first(), t.points.last()) else { return };
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new(&t.title).color(gui::accent()));
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 56.0), egui::Sense::hover());
+    let v = ui.visuals();
+    let (ink, weak) = (v.text_color(), v.weak_text_color());
+    let p = ui.painter();
+    let font = egui::FontId::proportional(11.0);
+    let plot = egui::Rect::from_min_max(egui::pos2(rect.left() + 30.0, rect.top() + 4.0), egui::pos2(rect.right() - 4.0, rect.bottom() - 14.0));
+    p.rect_filled(plot, 2.0, v.extreme_bg_color);
+    let span = (last.0 - first.0).max(1.0);
+    let at = |(x, y): (f32, f32)| egui::pos2(plot.left() + (x - first.0) / span * plot.width(), plot.bottom() - (y / t.max.max(1e-6)).clamp(0.0, 1.0) * plot.height());
+    if let Some(m) = t.mark.filter(|m| (first.0..=last.0).contains(m)) {
+        let x = at((m, 0.0)).x;
+        p.line_segment([egui::pos2(x, plot.top()), egui::pos2(x, plot.bottom())], egui::Stroke::new(1.0, gui::accent()));
+    }
+    let line: Vec<egui::Pos2> = t.points.iter().map(|&q| at(q)).collect();
+    p.add(egui::Shape::line(line, egui::Stroke::new(1.5, ink)));
+    p.text(egui::pos2(plot.left() - 4.0, plot.top()), egui::Align2::RIGHT_TOP, format!("{:.0}", t.max), font.clone(), weak);
+    p.text(egui::pos2(plot.left() - 4.0, plot.bottom()), egui::Align2::RIGHT_BOTTOM, "0", font.clone(), weak);
+    p.text(egui::pos2(plot.left(), rect.bottom()), egui::Align2::LEFT_BOTTOM, format!("{:.0}", first.0), font.clone(), weak);
+    p.text(egui::pos2(plot.right(), rect.bottom()), egui::Align2::RIGHT_BOTTOM, format!("{:.0}", last.0), font, weak);
+    if !t.caption.is_empty() {
+        gui::note(ui, &t.caption);
+    }
 }
 
 /// Bars on one common scale under a small heading: each a label, a bar of stacked segments and a
@@ -378,6 +420,9 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> (bool, Option<Acti
                     Content::Facts(card) => {
                         ui.add(egui::Label::new(egui::RichText::new(&card.summary).strong()).wrap());
                         meters(ui, &card.meters);
+                        if let Some(t) = &card.trend {
+                            trend(ui, t);
+                        }
                         if !card.facts.is_empty() {
                             ui.add_space(6.0);
                             facts(ui, &card.facts);

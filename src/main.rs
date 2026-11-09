@@ -76,6 +76,7 @@ mod paths;
 #[cfg(target_arch = "wasm32")]
 mod web;
 mod wikilookup;
+mod world_energy;
 
 use anyhow::{anyhow, bail, Context, Result};
 use atlas::{AtlasView, Projection};
@@ -154,7 +155,7 @@ Usage: orbis [options]
   --no-labels             start with all names hidden (key L)
   --no-cities  --no-names start with just place names, or just other names (peaks, water, streets) hidden
   --no-markers            start with event markers hidden
-  --energy                start with the bars of renewable capacity in Germany (W)
+  --energy                start with the energy layer: countries' electricity, Germany's capacity (W)
   --no-info               start with the information box on click off (clicks look nothing up)
   --config-dir DIR        keep the saved options (settings.json) in DIR. Without it they are in ./config
                           if that exists, else in orbis/ in your config folder. The command line wins
@@ -977,6 +978,10 @@ struct EnergyLayer {
     chart: power_chart::Shared,
     /// The look the bars and outlines were built with; a change rebuilds them.
     style: Option<energy::Style>,
+    /// The month the flat map's shade of countries was made for.
+    map_from: Option<(i32, u32)>,
+    /// The countries' scale, following the countries in view, and when it was last stepped.
+    country_scale: Option<(world_energy::Easing, Instant)>,
 }
 
 /// Sets up tile fetching, including sharing on the LAN if asked for.
@@ -2237,10 +2242,43 @@ impl Scene {
         self.view.energy && self.mode == Mode::Globe && body::current().id == body::EARTH.id
     }
 
+    /// Whether the flat map shades the countries by their renewable share.
+    fn energy_map_on(&self) -> bool {
+        self.view.energy && self.mode == Mode::Atlas && body::current().id == body::EARTH.id
+    }
+
+    /// The clock's year and month.
+    fn clock_month(&self) -> (i32, u32) {
+        let (y, m, _) = sky_time::civil_from_days((self.clock.time() / 86_400.0).floor() as i64);
+        (y as i32, m as u32)
+    }
+
+    /// Keeps the flat map's shade of countries up to date with the clock's month.
+    fn update_energy_map(&mut self, r: &mut Renderer) {
+        let month = self.clock_month();
+        if self.energy.map_from == Some(month) {
+            return;
+        }
+        let Some(world) = world_energy::World::bundled() else { return };
+        if self.energy.built_from.is_some() {
+            r.set_energy(None);
+        }
+        let (power, chart, view) = (std::mem::take(&mut self.energy.power), self.energy.chart.clone(), self.energy.view);
+        self.energy = EnergyLayer { view, missing: self.energy.missing, version: self.energy.version + 1, power, chart, ..Default::default() };
+        self.energy.outlines = Some(Arc::new(world.shading(month)));
+        self.energy.map_from = Some(month);
+        self.imports_changed();
+    }
+
     /// Keeps the energy bars and the outlines of their areas up to date with the view, the clock
     /// and the options.
-    fn update_energy(&mut self, r: &mut Renderer, aspect_height: (f64, f64)) {
+    /// Returns whether the bars are still growing or shrinking to a new scale.
+    fn update_energy(&mut self, r: &mut Renderer, aspect_height: (f64, f64)) -> bool {
         self.energy.view = aspect_height;
+        if self.energy_map_on() {
+            self.update_energy_map(r);
+            return false;
+        }
         let data = if self.energy_on() { energy::Energy::bundled() } else { None };
         if self.energy_on() && data.is_none() && !self.energy.missing {
             self.energy.missing = true;
@@ -2250,15 +2288,18 @@ impl Scene {
             if self.gui.is_visible(power_chart::WINDOW) {
                 self.gui.set_visible(power_chart::WINDOW, false);
             }
-            if self.energy.outlines.is_some() || self.energy.built_from.is_some() {
+            if self.energy.outlines.is_some() || self.energy.built_from.is_some() || self.energy.map_from.is_some() {
                 let power = std::mem::take(&mut self.energy.power);
                 let chart = self.energy.chart.clone();
                 self.energy = EnergyLayer { view: aspect_height, missing: self.energy.missing, version: self.energy.version + 1, power, chart, ..Default::default() };
                 r.set_energy(None);
                 self.imports_changed();
             }
-            return;
+            return false;
         };
+        if self.energy.map_from.take().is_some() {
+            self.energy.outlines_from = None;
+        }
         let style = self.view.energy_style();
         if self.energy.style != Some(style) {
             self.energy.style = Some(style);
@@ -2273,8 +2314,13 @@ impl Scene {
         // follow the clock's month.
         let monthly = level >= energy::Level::Towns || self.energy.selected.is_some();
         let wanted = (level, shown, self.energy.selected, monthly.then_some(month));
+        let world = world_energy::World::bundled();
+        let countries = level == energy::Level::Countries;
         if self.energy.outlines_from != Some(wanted) {
-            self.energy.outlines = Some(Arc::new(data.outlines(level, shown, self.energy.selected, month, style.palette)));
+            self.energy.outlines = Some(Arc::new(match world.filter(|_| countries) {
+                Some(w) => w.outlines(self.energy.selected, self.clock_month(), shown, style.palette),
+                None => data.outlines(level, shown, self.energy.selected, month, style.palette),
+            }));
             self.energy.outlines_from = Some(wanted);
             self.energy.version += 1;
             self.imports_changed();
@@ -2282,8 +2328,18 @@ impl Scene {
         self.update_power(data, energy::month_of(self.clock.time()));
         self.sync_power_chart();
         self.open_start_area(data);
+        let easing = match world.filter(|_| countries) {
+            Some(w) => self.ease_country_scale(w, shown, aspect_height),
+            None => {
+                self.energy.country_scale = None;
+                false
+            }
+        };
         let cam = &self.nav.cam;
-        let scale = style.apply(energy::Scale::for_view(data, level, cam.distance, aspect_height.1));
+        let scale = style.apply(match (world.filter(|_| countries), self.energy.country_scale) {
+            (Some(w), Some((e, _))) => w.scale(e.per_kw, cam.distance, aspect_height.1),
+            _ => energy::Scale::for_view(data, level, cam.distance, aspect_height.1),
+        });
         // The centre in steps of a tenth of the bars' reach, so that panning rebuilds only now and then.
         let reach = (self.nav.altitude * 6.0 / geo::radius()).clamp(0.02, std::f64::consts::PI);
         let step = reach / 10.0;
@@ -2291,17 +2347,29 @@ impl Scene {
         // The quarter hour shown, and whether demand stands beside the bars.
         let quarter = self.energy.power.shown.as_ref().map(|m| (m.0.time as i64) * 4 + self.energy.power.own_use as i64 * 2 + self.view.energy_demand as i64);
         let key = (level, month, shown, centre, r.tile_count(), quarter);
-        let rescaled = self.energy.scale.is_none_or(|s| (s.per_kw / scale.per_kw - 1.0).abs() > 0.03);
+        // Easing to a new scale, every step is drawn.
+        let limit = if countries { 0.0 } else { 0.03 };
+        let rescaled = self.energy.scale.is_none_or(|s| (s.per_kw / scale.per_kw - 1.0).abs() > limit);
         let same_but_terrain = self.energy.built_from.is_some_and(|b| (b.0, b.1, b.2, b.3, b.5) == (key.0, key.1, key.2, key.3, key.5));
         let terrain_due = self.energy.built_at.is_none_or(|t| t.elapsed() > Duration::from_millis(500));
         if !rescaled && (self.energy.built_from == Some(key) || (same_but_terrain && !terrain_due)) {
-            return;
+            return easing;
         }
         let near = match level {
-            energy::Level::States | energy::Level::Districts => None,
+            energy::Level::Countries | energy::Level::States | energy::Level::Districts => None,
             _ => Some((cam.lat, cam.lon, reach)),
         };
-        self.energy.bars = data.bars(level, month, shown, near);
+        self.energy.bars = match world.filter(|_| countries) {
+            Some(w) => {
+                // Germany's bar is its states' estimated output summed, where SMARD's is known.
+                let germany = self.energy.power.shown.as_ref().map(|(m, shares)| world_energy::Germany {
+                    kw: world_energy::germany_output(&data.bars(energy::Level::States, month, shown, None), shares),
+                    demand: m.consumption() * 1000.0,
+                });
+                w.bars(self.clock_month(), shown, self.view.energy_demand, germany)
+            }
+            None => data.bars(level, month, shown, near),
+        };
         // Beside the bars of states, districts and municipalities, their estimated demand.
         if let (Some((m, _)), true) = (&self.energy.power.shown, self.view.energy_demand) {
             let consumption = m.consumption();
@@ -2310,12 +2378,48 @@ impl Scene {
             }
         }
         let ground = |lat: f64, lon: f64| r.ground(lat, lon).unwrap_or(0.0);
-        let shares = self.energy.power.shown.as_ref().map(|m| m.1);
+        // Country bars show generation, without a column of unused capacity.
+        let shares = self.energy.power.shown.as_ref().map(|m| m.1).filter(|_| !countries);
         let bars = energy::mesh(&self.energy.bars, scale, geo::geodetic_to_ecef(cam.lat, cam.lon, 0.0), &ground, shares.as_ref(), &style);
         r.set_energy(Some((&bars.mesh, bars.solid)));
         self.energy.scale = Some(scale);
         self.energy.built_from = Some(key);
         self.energy.built_at = Some(Instant::now());
+        easing
+    }
+
+    /// Steps the countries' scale towards what the countries in view need: those whose bar
+    /// stands on screen and on the near side of the globe. Returns whether it is still moving.
+    fn ease_country_scale(&mut self, w: &world_energy::World, shown: [bool; energy::SOURCES], (aspect, height): (f64, f64)) -> bool {
+        let fresh;
+        let bars = if self.energy.bars.first().is_some_and(|b| matches!(b.subject, energy::Subject::Country(_))) {
+            &self.energy.bars
+        } else {
+            fresh = w.bars(self.clock_month(), shown, self.view.energy_demand, None);
+            &fresh
+        };
+        let basis = self.nav.cam.basis();
+        let eye = basis.pos;
+        let screen = Screen { basis, size: DVec2::new(aspect * height, height), reserved: Vec::new() };
+        let visible = |lat: f64, lon: f64| {
+            let p = geo::geodetic_to_ecef(lat, lon, 0.0);
+            (eye - p).dot(p) > 0.0 && screen.project(p).is_some_and(|q| q.x >= 0.0 && q.y >= 0.0 && q.x <= screen.size.x && q.y <= screen.size.y)
+        };
+        let needed = w.needed(bars, &visible);
+        let now = Instant::now();
+        match &mut self.energy.country_scale {
+            Some((e, last)) => {
+                let dt = now.duration_since(*last).as_secs_f64().min(0.1);
+                *last = now;
+                e.step(needed, dt)
+            }
+            None => {
+                // The first view takes its scale at once.
+                let start = needed.or_else(|| w.needed(bars, &|_, _| true));
+                self.energy.country_scale = start.map(|n| (world_energy::Easing::new(n), now));
+                false
+            }
+        }
     }
 
     /// Asks SMARD for the week of the clock when the bars are to show output, and finds the
@@ -2517,6 +2621,18 @@ impl Scene {
         let month = energy::month_of(self.clock.time());
         self.info_id += 1;
         self.info_pending = false;
+        if let (energy::Subject::Country(i), Some(w)) = (subject, world_energy::World::bundled()) {
+            // Germany's bar shows its states' output only while SMARD's is known.
+            let germany = w.is_germany(subject) && self.energy.power.shown.is_some();
+            *self.info.borrow_mut() = info::Model {
+                title: w.title(i),
+                at: w.position(i).map(|(lat, lon)| (lat.to_degrees(), lon.to_degrees())),
+                content: info::Content::Facts(w.describe(i, self.clock_month(), self.view.energy_palette, germany)),
+                note: None,
+            };
+            self.show_info();
+            return;
+        }
         let at = match subject {
             energy::Subject::Unplaced(i) => Some(data.areas[i as usize].label),
             _ => self.energy.bars.iter().find(|b| b.subject == subject).map(|b| (b.lat, b.lon)),
@@ -2543,21 +2659,34 @@ impl Scene {
         }
         let data = energy::Energy::bundled()?;
         let mut notes = Vec::new();
-        if level == energy::Level::Plants {
+        let world = world_energy::World::bundled();
+        if level == energy::Level::Countries {
+            notes.push("Bars: the month's average generation, Ember via Our World in Data; no column of unused capacity, as OWID has no capacity by source for all countries".to_string());
+            notes.push("Height follows the countries in view: the tallest bar is 1.5 times their median width".to_string());
+            if world_energy::World::any_yearly(&self.energy.bars) {
+                notes.push("Lighter bars: the year's average, where Ember has no monthly figures".to_string());
+            }
+            if self.view.energy_demand {
+                notes.push("White column: the country's use (demand)".to_string());
+            }
+            if self.energy.power.shown.is_some() {
+                notes.push("Germany's bar: its states' estimated output summed, as below".to_string());
+            }
+        } else if level == energy::Level::Plants {
             notes.push(format!("Shade: units without a position, full at {}/km²", energy::format_power(data.dense())));
         } else if self.view.energy_demand && self.energy.power.shown.is_some() {
             notes.push("White column: estimated use, Germany's consumption shared out by population".to_string());
         }
-        if let Some(basis) = self.power_basis() {
+        if let Some(basis) = self.power_basis().filter(|_| level != energy::Level::Countries || self.energy.power.shown.is_some()) {
             notes.push(basis);
         }
         let year = (level == energy::Level::States).then(|| self.year_at_a_glance()).flatten();
         Some(energy_panel::Model {
             detail: self.view.energy_detail,
             level,
-            counts: energy::Level::ALL.map(|l| data.count(l)),
+            counts: energy::Level::ALL.map(|l| if l == energy::Level::Countries { world.map_or(0, |w| w.count()) } else { data.count(l) }),
             month: energy::month_name(energy::month_of(self.clock.time())),
-            scale: format_distance(1.0e6 * scale.per_kw),
+            scale: if level == energy::Level::Countries { format!("10 GW = {}", format_distance(1.0e7 * scale.per_kw)) } else { format!("1 GW = {}", format_distance(1.0e6 * scale.per_kw)) },
             output: self.view.energy_output.then(|| self.power_status()),
             year,
             notes,
@@ -2720,7 +2849,7 @@ impl Scene {
             .into_iter()
             .filter(|k| self.retries.get(k).is_none_or(|e| e.0 <= now))
             .collect();
-        let changed = received || selection.draw != self.draw;
+        let mut changed = received || selection.draw != self.draw;
         self.draw = selection.draw;
 
         let mut overlays = Vec::new();
@@ -2778,7 +2907,7 @@ impl Scene {
         }
         r.set_aerial_roofs(aerial);
         r.set_visible_buildings(visible);
-        self.update_energy(r, aspect_height);
+        changed |= self.update_energy(r, aspect_height);
         self.update_shadows(r, aspect_height, atlas);
         self.loader.set_wanted(&wanted, &overlays, &building_jobs, &roof_jobs);
         // Once everything has arrived, the terrain under the start view is known for good.
@@ -3118,6 +3247,10 @@ impl Scene {
             credits.push('\n');
             credits.push_str(c);
         }
+        if self.energy_map_on() {
+            credits.push('\n');
+            credits.push_str(owid::CREDIT);
+        }
         if self.energy_on() {
             credits.push('\n');
             credits.push_str(energy::CREDIT);
@@ -3126,7 +3259,8 @@ impl Scene {
                 credits.push_str(power_feed::CREDIT);
             }
             // Ember's months behind own use and carbon intensity, its years in the year at a glance.
-            if self.energy.power.factors.is_some() || self.energy.level == Some(energy::Level::States) {
+            let levels = [Some(energy::Level::Countries), Some(energy::Level::States)];
+            if self.energy.power.factors.is_some() || levels.contains(&self.energy.level) {
                 credits.push('\n');
                 credits.push_str(owid::CREDIT);
             }
@@ -3189,6 +3323,10 @@ impl Scene {
         }
         if let Some(card) = self.energy_card() {
             done.energy = energy_panel::show(ctx, &mut self.gui, &card);
+        }
+        if self.energy_map_on() && self.energy.map_from.is_some() {
+            let (y, m) = self.clock_month();
+            energy_panel::map_legend(ctx, &mut self.gui, &calibration::month_words((y, m)));
         }
         help::show(ctx, &mut self.gui, self.help_scroll);
         done.options = options::show(ctx, &mut self.gui, &self.options.borrow());

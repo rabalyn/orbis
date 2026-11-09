@@ -267,8 +267,9 @@ require written approval for distribution, so it is not used.
 ### Electricity of the world's countries (`data/owid_energy.bin`, `data/countries.bin`)
 Built offline by `tools/gen_owid.py` (retrieved 2026-11-09) and bundled; the program requests nothing for it. Germany's
 monthly figures scale the output to include own use and calibrate the carbon intensity, and its yearly renewable share is
-the energy card's year at a glance; `owid::CREDIT` shows with them. The countries level of the energy layer and the
-information box will use the rest.
+the energy card's year at a glance; the other countries' figures make the countries level of the energy layer (one bar
+per country, its box) and the flat map's shade by renewable share (`world_energy.rs`). `owid::CREDIT` shows with all of
+them. The information box's country facts (milestone 5) will use the rest.
 
 | Data | Source | Terms | Credit shown |
 |---|---|---|---|

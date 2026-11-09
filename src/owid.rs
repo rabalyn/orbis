@@ -7,7 +7,7 @@
 //! Electricity is in TWh, population in people, carbon intensity in g CO₂-eq per kWh and the
 //! renewable share in percent.
 
-// Nothing draws this yet; the countries level of the energy layer will.
+// Some of this is for the information box of milestone 5 (matching by Wikidata, by outline).
 #![cfg_attr(not(test), allow(dead_code))]
 
 /// The credit while OWID's figures are in view.

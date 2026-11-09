@@ -94,6 +94,8 @@ impl Source {
 /// How finely capacity is summed: the bars at one time all are of one level.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Level {
+    /// The countries of the world, from Our World in Data (`world_energy.rs`).
+    Countries,
     States,
     Districts,
     Towns,
@@ -101,13 +103,14 @@ pub enum Level {
 }
 
 /// Camera altitudes where the level changes, from coarse to fine.
-/// One country filling the screen shows its states; districts and municipalities need a closer view.
-const LEVEL_ALTITUDES: [f64; 3] = [300e3, 80e3, 15e3];
+/// A continent in view shows its countries; one country filling the screen shows its states;
+/// districts and municipalities need a closer view.
+const LEVEL_ALTITUDES: [f64; 4] = [1_600e3, 300e3, 80e3, 15e3];
 /// A level is kept until the altitude is this much past its limit, so that it does not flicker.
 const HYSTERESIS: f64 = 1.2;
 
 impl Level {
-    pub const ALL: [Level; 4] = [Level::States, Level::Districts, Level::Towns, Level::Plants];
+    pub const ALL: [Level; 5] = [Level::Countries, Level::States, Level::Districts, Level::Towns, Level::Plants];
 
     pub fn index(self) -> usize {
         self as usize
@@ -121,7 +124,7 @@ impl Level {
         // Only leave the previous level once well past its limits.
         let i = prev.index();
         let upper = if i == 0 { f64::INFINITY } else { LEVEL_ALTITUDES[i - 1] * HYSTERESIS };
-        let lower = if i == 3 { 0.0 } else { LEVEL_ALTITUDES[i] / HYSTERESIS };
+        let lower = if i == LEVEL_ALTITUDES.len() { 0.0 } else { LEVEL_ALTITUDES[i] / HYSTERESIS };
         if altitude < upper && altitude >= lower {
             prev
         } else {
@@ -141,6 +144,7 @@ impl Detail {
     pub fn key(self) -> &'static str {
         match self {
             Detail::Auto => "auto",
+            Detail::Fixed(Level::Countries) => "countries",
             Detail::Fixed(Level::States) => "states",
             Detail::Fixed(Level::Districts) => "districts",
             Detail::Fixed(Level::Towns) => "municipalities",
@@ -151,6 +155,7 @@ impl Detail {
     pub fn parse(key: &str) -> Option<Detail> {
         Some(match key {
             "auto" => Detail::Auto,
+            "countries" => Detail::Fixed(Level::Countries),
             "states" => Detail::Fixed(Level::States),
             "districts" => Detail::Fixed(Level::Districts),
             "municipalities" => Detail::Fixed(Level::Towns),
@@ -172,10 +177,11 @@ impl Detail {
 pub fn auto_bands() -> String {
     let km = |m: f64| format!("{:.0} km", m / 1000.0);
     format!(
-        "States above {}, districts down to {}, municipalities down to {}, plant sites below.",
+        "Countries above {}, Germany's states down to {}, districts down to {}, municipalities down to {}, plant sites below.",
         km(LEVEL_ALTITUDES[0]),
         km(LEVEL_ALTITUDES[1]),
-        km(LEVEL_ALTITUDES[2])
+        km(LEVEL_ALTITUDES[2]),
+        km(LEVEL_ALTITUDES[3])
     )
 }
 
@@ -183,6 +189,7 @@ impl Level {
     /// The name of the level in the plural, for the detail control.
     pub fn plural(self) -> &'static str {
         match self {
+            Level::Countries => "Countries",
             Level::States => "States",
             Level::Districts => "Districts",
             Level::Towns => "Municipalities",
@@ -283,6 +290,8 @@ pub enum Subject {
     /// The units of a municipality published without a position.
     Unplaced(u32),
     Site(u32),
+    /// A country of `world_energy::World`, by its index there.
+    Country(u16),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -293,6 +302,8 @@ pub struct Bar {
     pub subject: Subject,
     /// The estimated demand in kW, drawn as a slim column beside the others; 0 for none.
     pub demand: f32,
+    /// Drawn lighter: a country's average of the year standing in for the month.
+    pub faint: bool,
 }
 
 impl Bar {
@@ -328,12 +339,12 @@ pub struct Energy {
     unplaced: Vec<[Series; SOURCES]>,
     cells: HashMap<(i32, i32), Vec<u32>>,
     /// The largest bar of each level at the export date, for the scale.
-    largest: [f32; 4],
+    largest: [f32; 5],
     /// The typical width of an area of each level, in metres: the median of the square roots of
     /// their areas. Bars are sized against it, so they keep a fixed size in the landscape.
-    widths: [f64; 4],
+    widths: [f64; 5],
     /// How many bars each level has with all sources at the export date.
-    counts: [usize; 4],
+    counts: [usize; 5],
     /// Each area's size in km² (municipalities only; 0 for others).
     km2: Vec<f64>,
     /// The density of units without a position, in kW per km², that gets the full shade.
@@ -459,7 +470,7 @@ impl Energy {
         let area = match subject {
             Subject::Area(i) => i,
             Subject::Unplaced(i) => i,
-            Subject::Site(_) => return None,
+            Subject::Site(_) | Subject::Country(_) => return None,
         };
         let p = self.people(area)?;
         Some((consumption_mw as f64 * 1000.0 * p as f64 / self.people_total) as f32)
@@ -475,7 +486,8 @@ impl Energy {
         let area_count = r.u32()? as usize;
         let mut areas = Vec::with_capacity(area_count.min(1 << 16));
         for _ in 0..area_count {
-            let level = *Level::ALL.get(r.u8()? as usize)?;
+            // The file counts from the states.
+            let level = *Level::ALL.get(r.u8()? as usize + 1)?;
             let kind = match r.u8()? {
                 0 => AreaKind::Admin,
                 1 => AreaKind::Sea,
@@ -558,7 +570,7 @@ impl Energy {
             cells.entry(cell_of(s.lat, s.lon)).or_default().push(i as u32);
         }
         let km2 = areas.iter().map(|a| if a.level == Level::Towns { area_km2(&a.rings) } else { 0.0 }).collect();
-        let mut energy = Energy { exported, areas, sites, totals, unplaced, cells, largest: [1.0; 4], widths: [PLANT_WIDTH; 4], counts: [0; 4], km2, dense: 1.0, people: Vec::new(), people_total: 0.0 };
+        let mut energy = Energy { exported, areas, sites, totals, unplaced, cells, largest: [1.0; 5], widths: [PLANT_WIDTH; 5], counts: [0; 5], km2, dense: 1.0, people: Vec::new(), people_total: 0.0 };
         for level in [Level::States, Level::Districts, Level::Towns] {
             let mut sides: Vec<f64> = energy
                 .areas
@@ -606,7 +618,7 @@ impl Energy {
         if level != Level::Plants {
             for (i, a) in self.areas.iter().enumerate() {
                 if a.level == level && close(a.label.0, a.label.1) {
-                    bars.push(Bar { lat: a.label.0, lon: a.label.1, kw: pick(&self.totals[i]), subject: Subject::Area(i as u32), demand: 0.0 });
+                    bars.push(Bar { lat: a.label.0, lon: a.label.1, kw: pick(&self.totals[i]), subject: Subject::Area(i as u32), demand: 0.0, faint: false });
                 }
             }
         } else {
@@ -616,7 +628,7 @@ impl Energy {
                 if shown[s.source as usize] && close(s.lat, s.lon) {
                     let mut kw = [0.0; SOURCES];
                     kw[s.source as usize] = s.kw(month);
-                    bars.push(Bar { lat: s.lat, lon: s.lon, kw, subject: Subject::Site(i), demand: 0.0 });
+                    bars.push(Bar { lat: s.lat, lon: s.lon, kw, subject: Subject::Site(i), demand: 0.0, faint: false });
                 }
             };
             match near {
@@ -638,7 +650,7 @@ impl Energy {
         if level >= Level::Towns {
             for (i, a) in self.areas.iter().enumerate() {
                 if a.level == Level::Districts && a.kind == AreaKind::Admin && close(a.label.0, a.label.1) {
-                    bars.push(Bar { lat: a.label.0, lon: a.label.1, kw: pick(&self.unplaced[i]), subject: Subject::Unplaced(i as u32), demand: 0.0 });
+                    bars.push(Bar { lat: a.label.0, lon: a.label.1, kw: pick(&self.unplaced[i]), subject: Subject::Unplaced(i as u32), demand: 0.0, faint: false });
                 }
             }
         }
@@ -773,6 +785,7 @@ impl Energy {
                 let s = &self.sites[i as usize];
                 format!("{} site in {}", s.source.name(), chain(Some(s.area)))
             }
+            Subject::Country(_) => String::new(),
         }
     }
 
@@ -789,6 +802,7 @@ impl Energy {
                     0.0
                 }
             }
+            Subject::Country(_) => 0.0,
         }
     }
 
@@ -881,7 +895,7 @@ impl Energy {
         }
         let area = match subject {
             Subject::Area(i) | Subject::Unplaced(i) => Some(i),
-            Subject::Site(_) => None,
+            Subject::Site(_) | Subject::Country(_) => None,
         };
         if let Some(p) = area.and_then(|i| self.people(i)) {
             card.facts.push(("Population".to_string(), group_thousands(p)));
@@ -915,6 +929,7 @@ impl Energy {
             }
             Subject::Unplaced(_) => "Units without a published position, mostly private rooftop solar. They shade the municipality instead of standing as a bar.".to_string(),
             Subject::Site(_) => "Units of one source at one published position.".to_string(),
+            Subject::Country(_) => String::new(),
         });
         if output.is_some() {
             card.notes.push("Output is estimated: Germany's output of each source (SMARD) shared out by capacity.".to_string());
@@ -961,6 +976,7 @@ fn level_noun(level: Level) -> &'static str {
         Level::Districts => "district",
         Level::Towns => "municipality",
         Level::Plants => "site",
+        Level::Countries => "country",
     }
 }
 
@@ -975,16 +991,16 @@ pub fn format_power(kw: f32) -> String {
     }
 }
 
-const AREA_EDGE: Outline = Outline { edge: [255, 80, 200, 230], fill: [255, 80, 200, 0], width: 1.6, dashed: false };
+pub(crate) const AREA_EDGE: Outline = Outline { edge: [255, 80, 200, 230], fill: [255, 80, 200, 0], width: 1.6, dashed: false };
 const UNPLACED_EDGE: Outline = Outline { edge: [255, 80, 200, 170], fill: [255, 80, 200, 0], width: 1.2, dashed: false };
 /// Dashed where most of the district's own units are fossil or nuclear.
 const DISTRICT_ONLY_EDGE: Outline = Outline { edge: [255, 150, 30, 230], fill: [255, 150, 30, 0], width: 2.0, dashed: false };
 /// The opacity of the densest shade.
 const SHADE_ALPHA: u8 = 110;
 /// The chosen area's edge; it is filled in the colour of its main source, hatched for a fossil one.
-const SELECTED: Outline = Outline { edge: [255, 240, 120, 250], fill: [255, 240, 120, 55], width: 2.4, dashed: false };
+pub(crate) const SELECTED: Outline = Outline { edge: [255, 240, 120, 250], fill: [255, 240, 120, 55], width: 2.4, dashed: false };
 /// The opacity of the chosen area's fill.
-const SELECTED_FILL_ALPHA: u8 = 95;
+pub(crate) const SELECTED_FILL_ALPHA: u8 = 95;
 
 /// The size of an area in km², for rings in radians whose holes run the other way round.
 fn area_km2(rings: &[Vec<(f64, f64)>]) -> f64 {
@@ -1046,9 +1062,14 @@ impl Scale {
     /// only never thinner than [`MIN_WIDTH_PX`] pixels for a camera `distance` from what it looks
     /// at and a view `height_px` tall.
     pub fn for_view(energy: &Energy, level: Level, distance: f64, height_px: f64) -> Scale {
+        Scale::for_side(energy.widths[level.index()], HEIGHT_SHARE, energy.largest(level), distance, height_px)
+    }
+
+    /// The same for areas `side` metres wide whose tall bar of `largest` kW is `share` times
+    /// their width.
+    pub fn for_side(side: f64, share: f64, largest: f32, distance: f64, height_px: f64) -> Scale {
         let metres_per_px = 2.0 * distance * (crate::camera::FOV_Y / 2.0).tan() / height_px.max(1.0);
-        let side = energy.widths[level.index()];
-        Scale { width: (WIDTH_SHARE * side).max(MIN_WIDTH_PX * metres_per_px), per_kw: HEIGHT_SHARE * side / energy.largest(level) as f64 }
+        Scale { width: (WIDTH_SHARE * side).max(MIN_WIDTH_PX * metres_per_px), per_kw: share * side / largest.max(1.0) as f64 }
     }
 }
 
@@ -1225,7 +1246,8 @@ pub fn mesh(bars: &[Bar], scale: Scale, center: DVec3, ground: &dyn Fn(f64, f64)
             for s in range.filter(|&s| bar.kw[s] > 0.0) {
                 let source = Source::ALL[s];
                 let share = shares.map_or(1.0, |sh| (sh[s] as f64).clamp(0.0, 1.0));
-                segments.push(Segment { colour: style.colour(source), alpha: 255, height: bar.kw[s] as f64 * share * scale.per_kw });
+                let colour = if bar.faint { lighter(style.colour(source)) } else { style.colour(source) };
+                segments.push(Segment { colour, alpha: 255, height: bar.kw[s] as f64 * share * scale.per_kw });
                 if let Some((colour, alpha)) = style.idle_colour(source) {
                     idle.push(Segment { colour, alpha, height: bar.kw[s] as f64 * (1.0 - share) * scale.per_kw });
                 }
@@ -1253,6 +1275,11 @@ pub fn mesh(bars: &[Bar], scale: Scale, center: DVec3, ground: &dyn Fn(f64, f64)
     let solid = out.indices.len() as u32;
     out.indices.extend(ghost);
     BarMesh { mesh: out, solid }
+}
+
+/// A colour halfway to white, for bars that stand in with a coarser figure.
+pub fn lighter(c: [u8; 3]) -> [u8; 3] {
+    c.map(|v| (v as u16 + (255 - v as u16) / 2) as u8)
 }
 
 /// The colour of the demand column.
@@ -1592,7 +1619,7 @@ pub(crate) mod tests {
         let mut kw = [0.0; SOURCES];
         kw[Source::Solar as usize] = 100.0;
         kw[Source::Gas as usize] = 100.0;
-        let bar = Bar { lat: 0.8, lon: 0.2, kw, subject: Subject::Area(0), demand: 0.0 };
+        let bar = Bar { lat: 0.8, lon: 0.2, kw, subject: Subject::Area(0), demand: 0.0, faint: false };
         let scale = Scale { width: 10.0, per_kw: 1.0 };
         let m = mesh(&[bar], scale, geodetic_to_ecef(0.8, 0.2, 0.0), &|_, _| 0.0, None, &Style::default()).mesh;
         // Each colour comes in one shade of wall per height; the dark bands give gas a second set.
@@ -1614,7 +1641,7 @@ pub(crate) mod tests {
         let mut kw = [0.0; SOURCES];
         kw[Source::Solar as usize] = 100.0;
         kw[Source::Gas as usize] = 100.0;
-        let bar = Bar { lat: 0.8, lon: 0.2, kw, subject: Subject::Area(0), demand: 300.0 };
+        let bar = Bar { lat: 0.8, lon: 0.2, kw, subject: Subject::Area(0), demand: 300.0, faint: false };
         let scale = Scale { width: 10.0, per_kw: 1.0 };
         let center = geodetic_to_ecef(0.8, 0.2, 0.0);
         let m = mesh(&[bar], scale, center, &|_, _| 0.0, None, &Style::default()).mesh;
@@ -1647,7 +1674,14 @@ pub(crate) mod tests {
 
     #[test]
     fn levels_change_with_altitude_and_hold_near_the_limits() {
-        assert_eq!(Level::for_altitude(5e6, None), Level::States);
+        assert_eq!(Level::for_altitude(5e6, None), Level::Countries, "a continent shows countries");
+        assert_eq!(Level::for_altitude(1.7e6, None), Level::Countries);
+        assert_eq!(Level::for_altitude(1.4e6, None), Level::States);
+        // Countries are kept a little below their limit, and states a little above theirs.
+        assert_eq!(Level::for_altitude(1.4e6, Some(Level::Countries)), Level::Countries);
+        assert_eq!(Level::for_altitude(1.2e6, Some(Level::Countries)), Level::States);
+        assert_eq!(Level::for_altitude(1.8e6, Some(Level::States)), Level::States);
+        assert_eq!(Level::for_altitude(2.0e6, Some(Level::States)), Level::Countries);
         assert_eq!(Level::for_altitude(620e3, None), Level::States, "Germany filling the screen shows states");
         assert_eq!(Level::for_altitude(150e3, None), Level::Districts);
         assert_eq!(Level::for_altitude(30e3, None), Level::Towns);

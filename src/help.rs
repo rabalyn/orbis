@@ -42,7 +42,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("P, Shift-P", "Map: next or previous projection"),
             ("[ and ]", "Map: central meridian west or east (1 degree with Shift)"),
             ("S", "Sunlight or flat, always-lit imagery"),
-            ("O, W", "Stars and planets; energy bars (globe)"),
+            ("O, W", "Stars and planets; energy layer: bars on the globe, renewable share on the map"),
             ("F", "Frame rate limit 120 or 90 fps"),
         ],
     ),

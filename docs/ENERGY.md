@@ -1,6 +1,6 @@
 # Energy layer: design sketch
 
-Phase 1 (plants as bars, build-out over time), fossil plants for comparison, phase 3 (output split nationally, with a day chart of generation against consumption, from SMARD instead of Energy-Charts, whose terms do not allow redistribution) are implemented; [FEATURES.md](FEATURES.md#renewable-energy-in-germany)
+Phase 1 (plants as bars, build-out over time), fossil plants for comparison, phase 3 (output split nationally, with a day chart of generation against consumption, from SMARD instead of Energy-Charts, whose terms do not allow redistribution) are implemented; [FEATURES.md](FEATURES.md#electricity-of-countries-and-germanys-plants)
 describes it. The rest is a proposal. It shows where renewable electricity is produced in Germany, how much is produced at the
 clock's moment, and the transmission grid that has to carry it. Germany comes first because its open data is the best in
 Europe; other countries follow in the last phase.

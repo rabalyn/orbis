@@ -53,6 +53,7 @@ cargo run --release -- --lat 46.5 --lon 11.8 --distance 25000 --tilt 70 --screen
 | Search for a place or coordinates | Ctrl-F |
 | Saved places | Ctrl-S saves, K lists |
 | GeoJSON, GPX, KML, KMZ and IGC files | `--import FILE` or drop on the window; I lists |
+| Electricity of the world's countries by source and month, Germany's plants down to each site, output and use | W; on the flat map, countries shaded by renewable share |
 | Solar and lunar eclipses, computed in the program, and earthquake, eruption, tsunami and fireball feeds | E; `--eclipse 2024-04-08` |
 | Map services (WMS, WMTS or XYZ) as imagery or overlay | G; `--add-service ADDRESS`, `--list-services` |
 | The Moon, Mars, Mercury, Ceres and Vesta | `--body moon` |

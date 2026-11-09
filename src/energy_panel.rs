@@ -16,9 +16,9 @@ pub struct Model {
     /// The level shown now.
     pub level: Level,
     /// Bars per level with all sources.
-    pub counts: [usize; 4],
+    pub counts: [usize; 5],
     pub month: String,
-    /// The height of 1 GW, in words.
+    /// The height of a round figure, in words: "1 GW = 25 km".
     pub scale: String,
     /// The figures at the clock's time, if output is shown.
     pub output: Option<String>,
@@ -45,7 +45,7 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> Option<Action> {
     }
     let mut action = None;
     let screen = ctx.content_rect();
-    let shown = gui::window("Renewable energy, Germany", WINDOW)
+    let shown = gui::window("Electricity", WINDOW)
         .open(&mut open)
         // Beside the day chart at the top left, where there is room for both; else at the top right.
         .default_pos({
@@ -70,6 +70,7 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> Option<Action> {
             }
             let count = m.counts[m.level.index()];
             let what = match m.level {
+                Level::Countries => "One bar per country",
                 Level::States => "One bar per state",
                 Level::Districts => "One bar per district",
                 Level::Towns => "One bar per municipality",
@@ -83,11 +84,11 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> Option<Action> {
             }
             ui.separator();
             egui::Grid::new("energy-figures").num_columns(2).spacing([12.0, 3.0]).show(ui, |ui| {
-                ui.label(egui::RichText::new("Built by").weak());
+                ui.label(egui::RichText::new(if m.level == Level::Countries { "Month" } else { "Built by" }).weak());
                 ui.label(&m.month);
                 ui.end_row();
                 ui.label(egui::RichText::new("Height").weak());
-                ui.label(format!("1 GW = {}", m.scale));
+                ui.label(&m.scale);
                 ui.end_row();
                 if let Some(y) = &m.year {
                     ui.label(egui::RichText::new("Year").weak());
@@ -116,6 +117,39 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> Option<Action> {
     }
     gui.set_visible(WINDOW, open);
     action
+}
+
+/// The flat map's legend while the energy layer is on: the shade of the renewable share, at the
+/// bottom left.
+pub fn map_legend(ctx: &egui::Context, gui: &mut Gui, period: &str) {
+    let screen = ctx.content_rect();
+    // At the bottom right, above the buttons, clear of the credits at the bottom left.
+    let shown = egui::Area::new(egui::Id::unique("energy-map-legend"))
+        .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-12.0, -64.0))
+        .constrain_to(screen)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.label(egui::RichText::new(format!("Renewable share of electricity, {period}")).size(12.5));
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(240.0, 26.0), Sense::hover());
+                let bar = Rect::from_min_max(rect.left_top(), Pos2::new(rect.right(), rect.top() + 11.0));
+                let p = ui.painter();
+                let n = 48;
+                let w = bar.width() / n as f32;
+                for k in 0..n {
+                    let [r, g, b] = crate::world_energy::share_colour(100.0 * (k as f32 + 0.5) / n as f32);
+                    let x = bar.left() + w * k as f32;
+                    p.rect_filled(Rect::from_min_max(Pos2::new(x, bar.top()), Pos2::new(x + w + 0.5, bar.bottom())), 0.0, egui::Color32::from_rgb(r, g, b));
+                }
+                let weak = ui.visuals().weak_text_color();
+                for (t, align) in [(0.0, egui::Align2::LEFT_BOTTOM), (0.5, egui::Align2::CENTER_BOTTOM), (1.0, egui::Align2::RIGHT_BOTTOM)] {
+                    let x = bar.left() + bar.width() * t;
+                    p.text(Pos2::new(x, rect.bottom()), align, format!("{:.0}%", t * 100.0), egui::FontId::proportional(11.5), weak);
+                }
+                gui::note(ui, "Where Ember has no months, the year's share.");
+                gui::note(ui, "Ember via Our World in Data. Bars: on the globe.");
+            });
+        });
+    gui.cover(shown.response.rect);
 }
 
 /// The stops of the detail slider; a click or drag on one holds that level.
@@ -178,10 +212,11 @@ mod tests {
 
     #[test]
     fn details_read_back_and_fixed_levels_ignore_the_altitude() {
-        for d in [Detail::Auto, Detail::Fixed(Level::States), Detail::Fixed(Level::Districts), Detail::Fixed(Level::Towns), Detail::Fixed(Level::Plants)] {
+        for d in [Detail::Auto, Detail::Fixed(Level::Countries), Detail::Fixed(Level::States), Detail::Fixed(Level::Districts), Detail::Fixed(Level::Towns), Detail::Fixed(Level::Plants)] {
             assert_eq!(Detail::parse(d.key()), Some(d));
         }
         assert_eq!(Detail::Fixed(Level::Towns).level(5e6, None), Level::Towns);
-        assert_eq!(Detail::Auto.level(5e6, None), Level::States);
+        assert_eq!(Detail::Auto.level(5e6, None), Level::Countries);
+        assert_eq!(Detail::Auto.level(1e6, None), Level::States);
     }
 }
