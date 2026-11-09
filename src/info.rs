@@ -2,6 +2,7 @@
 //! window with the title, the facts, the article's introduction and the credit for them.
 //! The box shows a [`Model`] that the scene fills when an answer arrives.
 
+use crate::country_facts::{self, Facts};
 use crate::gui::{self, Gui};
 use crate::wiki;
 use crate::wikilookup::{Article, NearItem};
@@ -37,13 +38,15 @@ pub struct Card {
     pub trend: Option<Trend>,
 }
 
-/// A small line chart: a heading, points of (year, value), the value at the top of the chart,
+/// A small line chart: a heading, points of (year, value), the values at the top and bottom of the chart,
 /// a mark at one year and a line of explanation below.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Trend {
     pub title: String,
     pub points: Vec<(f32, f32)>,
     pub max: f32,
+    /// The value at the bottom of the chart: 0, or below for figures that go negative.
+    pub min: f32,
     pub mark: Option<f32>,
     pub caption: String,
 }
@@ -61,20 +64,30 @@ fn trend(ui: &mut egui::Ui, t: &Trend) {
     let plot = egui::Rect::from_min_max(egui::pos2(rect.left() + 30.0, rect.top() + 4.0), egui::pos2(rect.right() - 4.0, rect.bottom() - 14.0));
     p.rect_filled(plot, 2.0, v.extreme_bg_color);
     let span = (last.0 - first.0).max(1.0);
-    let at = |(x, y): (f32, f32)| egui::pos2(plot.left() + (x - first.0) / span * plot.width(), plot.bottom() - (y / t.max.max(1e-6)).clamp(0.0, 1.0) * plot.height());
+    let range = (t.max - t.min).max(1e-6);
+    let at = |(x, y): (f32, f32)| egui::pos2(plot.left() + (x - first.0) / span * plot.width(), plot.bottom() - ((y - t.min) / range).clamp(0.0, 1.0) * plot.height());
+    if t.min < 0.0 {
+        let y = at((first.0, 0.0)).y;
+        p.line_segment([egui::pos2(plot.left(), y), egui::pos2(plot.right(), y)], egui::Stroke::new(1.0, weak));
+    }
     if let Some(m) = t.mark.filter(|m| (first.0..=last.0).contains(m)) {
         let x = at((m, 0.0)).x;
         p.line_segment([egui::pos2(x, plot.top()), egui::pos2(x, plot.bottom())], egui::Stroke::new(1.0, gui::accent()));
     }
     let line: Vec<egui::Pos2> = t.points.iter().map(|&q| at(q)).collect();
     p.add(egui::Shape::line(line, egui::Stroke::new(1.5, ink)));
-    p.text(egui::pos2(plot.left() - 4.0, plot.top()), egui::Align2::RIGHT_TOP, format!("{:.0}", t.max), font.clone(), weak);
-    p.text(egui::pos2(plot.left() - 4.0, plot.bottom()), egui::Align2::RIGHT_BOTTOM, "0", font.clone(), weak);
+    p.text(egui::pos2(plot.left() - 4.0, plot.top()), egui::Align2::RIGHT_TOP, axis_text(t.max), font.clone(), weak);
+    p.text(egui::pos2(plot.left() - 4.0, plot.bottom()), egui::Align2::RIGHT_BOTTOM, axis_text(t.min), font.clone(), weak);
     p.text(egui::pos2(plot.left(), rect.bottom()), egui::Align2::LEFT_BOTTOM, format!("{:.0}", first.0), font.clone(), weak);
     p.text(egui::pos2(plot.right(), rect.bottom()), egui::Align2::RIGHT_BOTTOM, format!("{:.0}", last.0), font, weak);
     if !t.caption.is_empty() {
         gui::note(ui, &t.caption);
     }
+}
+
+/// A value at the side of a [`Trend`]: whole numbers, and one decimal below 10.
+fn axis_text(v: f32) -> String {
+    if v.fract() == 0.0 || v.abs() >= 10.0 { format!("{v:.0}") } else { format!("{v:.1}") }
 }
 
 /// Bars on one common scale under a small heading: each a label, a bar of stacked segments and a
@@ -167,11 +180,13 @@ pub struct Model {
     pub content: Content,
     /// Something to tell about the last button, such as a browser that would not start.
     pub note: Option<String>,
+    /// The figures of the Data tab, when the box is about a country.
+    pub data: Option<Facts>,
 }
 
 impl Default for Model {
     fn default() -> Self {
-        Self { title: String::new(), at: None, content: Content::Looking, note: None }
+        Self { title: String::new(), at: None, content: Content::Looking, note: None, data: None }
     }
 }
 
@@ -242,6 +257,39 @@ impl Model {
             Content::Features(items) if !items.is_empty() => vec![t("Names: IAU / "), l("USGS Gazetteer of Planetary Nomenclature", GAZETTEER), t(".")],
             _ => Vec::new(),
         }
+     }
+
+    /// The sources of the Data tab: Our World in Data and its licence.
+    pub fn data_sources(&self) -> Vec<Piece> {
+        if self.data.is_none() {
+            return Vec::new();
+        }
+        vec![
+            Piece::Text("Figures: ".into()),
+            Piece::Link("Our World in Data".into(), country_facts::OWID_URL.into()),
+            Piece::Text(", from Ember, the Energy Institute and the UN, ".into()),
+            Piece::Link("CC BY 4.0".into(), country_facts::CC_BY.into()),
+            Piece::Text(".".into()),
+        ]
+    }
+}
+
+/// The tab the box shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tab {
+    Main,
+    Infobox,
+    Data,
+}
+
+/// The Data tab: a country's figures, each a small line over the years.
+fn data_tab(ui: &mut egui::Ui, f: &Facts) {
+    ui.add(egui::Label::new(egui::RichText::new(format!("{} in {}", f.name, f.asked)).strong()).wrap());
+    if let Some(n) = &f.note {
+        gui::note(ui, n);
+    }
+    for r in &f.rows {
+        trend(ui, &r.trend);
     }
 }
 
@@ -387,6 +435,13 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> (bool, Option<Acti
     let box_height = height.min(screen.bottom() - 110.0 - top).max(160.0);
     // The text scrolls; the sources and the button below it stay in view.
     let text_height = (box_height - 80.0).max(80.0);
+    // The tab is kept from box to box, where the new one has it.
+    let tab_id = egui::Id::unique("info-tab");
+    let mut tab = ctx.data(|d| d.get_temp::<Tab>(tab_id)).unwrap_or(Tab::Main);
+    let has_infobox = matches!(&m.content, Content::Article(a) if !a.infobox.is_empty());
+    if (tab == Tab::Infobox && !has_infobox) || (tab == Tab::Data && m.data.is_none()) {
+        tab = Tab::Main;
+    }
     let shown = gui::window(&title, WINDOW)
         .open(&mut open)
         .default_pos(egui::pos2(screen.left() + 12.0, top))
@@ -407,7 +462,21 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> (bool, Option<Acti
                         }
                     });
                 };
+                // Boxes other than an article's have tabs only for a country's figures.
+                if m.data.is_some() && !matches!(m.content, Content::Article(_)) {
+                    ui.horizontal(|ui| {
+                        let main = if matches!(m.content, Content::Nearby { .. }) { "Nearby" } else { "Article" };
+                        ui.selectable_value(&mut tab, Tab::Main, main);
+                        ui.selectable_value(&mut tab, Tab::Data, "Data");
+                    });
+                    ui.add_space(2.0);
+                }
                 match &m.content {
+                    _ if tab == Tab::Data && !matches!(m.content, Content::Article(_)) => {
+                        if let Some(f) = &m.data {
+                            data_tab(ui, f);
+                        }
+                    }
                     Content::Looking => {
                         ui.horizontal(|ui| {
                             ui.spinner();
@@ -433,12 +502,15 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> (bool, Option<Acti
                         }
                     }
                     Content::Article(a) => {
-                        let tab_id = egui::Id::unique("info-tab");
-                        let mut tab = ui.ctx().data(|d| d.get_temp::<bool>(tab_id)).unwrap_or(false) && !a.infobox.is_empty();
                         ui.horizontal(|ui| {
-                            if !a.infobox.is_empty() {
-                                ui.selectable_value(&mut tab, false, "Article");
-                                ui.selectable_value(&mut tab, true, "Infobox");
+                            if !a.infobox.is_empty() || m.data.is_some() {
+                                ui.selectable_value(&mut tab, Tab::Main, "Article");
+                                if !a.infobox.is_empty() {
+                                    ui.selectable_value(&mut tab, Tab::Infobox, "Infobox");
+                                }
+                                if m.data.is_some() {
+                                    ui.selectable_value(&mut tab, Tab::Data, "Data");
+                                }
                                 ui.add_space(8.0);
                             }
                             if !a.languages.is_empty() {
@@ -453,9 +525,10 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> (bool, Option<Acti
                                 .on_hover_text(format!("Also in {} other languages", a.languages.len()));
                             }
                         });
-                        ui.ctx().data_mut(|d| d.insert_temp(tab_id, tab));
                         ui.add_space(2.0);
-                        if tab {
+                        if let (Tab::Data, Some(f)) = (tab, &m.data) {
+                            data_tab(ui, f);
+                        } else if tab == Tab::Infobox {
                             infobox(ui, &a.infobox);
                         } else {
                             if !a.description.is_empty() {
@@ -509,7 +582,7 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> (bool, Option<Acti
                     gui::note(ui, c);
                 }
             });
-            let pieces = m.sources();
+            let pieces = if tab == Tab::Data { m.data_sources() } else { m.sources() };
             if !pieces.is_empty() || m.note.is_some() || m.article_url().is_some() {
                 ui.separator();
             }
@@ -523,6 +596,7 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> (bool, Option<Acti
                 action = Some(Action::OpenBrowser);
             }
         });
+    ctx.data_mut(|d| d.insert_temp(tab_id, tab));
     if let Some(r) = shown {
         gui.cover(r.response.rect);
     }
@@ -558,7 +632,7 @@ mod tests {
     }
 
     fn model(content: Content) -> Model {
-        Model { title: "Vienna".into(), at: Some((48.2, 16.4)), content, note: None }
+        Model { title: "Vienna".into(), at: Some((48.2, 16.4)), content, note: None, data: None }
     }
 
     #[test]

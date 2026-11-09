@@ -7,7 +7,7 @@
 //! Electricity is in TWh, population in people, carbon intensity in g CO₂-eq per kWh and the
 //! renewable share in percent.
 
-// Some of this is for the information box of milestone 5 (matching by Wikidata, by outline).
+// A few readers are used by the tests only.
 #![cfg_attr(not(test), allow(dead_code))]
 
 /// The credit while OWID's figures are in view.

@@ -443,6 +443,7 @@ impl World {
             card.trend = Some(Trend {
                 title: "Renewable share over the years, %".to_string(),
                 max: (top / 10.0).ceil().max(1.0) * 10.0,
+                min: 0.0,
                 mark: Some(month.0 as f32),
                 caption: String::new(),
                 points,

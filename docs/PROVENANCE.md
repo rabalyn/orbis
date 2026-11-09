@@ -269,7 +269,8 @@ Built offline by `tools/gen_owid.py` (retrieved 2026-11-09) and bundled; the pro
 monthly figures scale the output to include own use and calibrate the carbon intensity, and its yearly renewable share is
 the energy card's year at a glance; the other countries' figures make the countries level of the energy layer (one bar
 per country, its box) and the flat map's shade by renewable share (`world_energy.rs`). `owid::CREDIT` shows with all of
-them. The information box's country facts (milestone 5) will use the rest.
+them. The Data tab of the information box shows a country's population and yearly electricity figures from them
+(`country_facts.rs`), with links to Our World in Data and CC BY 4.0.
 
 | Data | Source | Terms | Credit shown |
 |---|---|---|---|

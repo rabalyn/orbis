@@ -41,7 +41,7 @@ cargo run --release -- --lat 46.5 --lon 11.8 --distance 25000 --tilt 70 --screen
 |---|---|
 | Move, zoom, tilt, and look up into the sky | Drag, scroll, right-drag or Alt-drag |
 | Fly to a place or label | Double-click |
-| Wikipedia article and Wikidata facts for a place | Click |
+| Wikipedia article and Wikidata facts for a place; population and electricity for a country | Click |
 | Roads, names and 3D buildings | R, L and B; V for each kind |
 | Roofs from the aerial imagery, or buildings coloured by zone | V, Building colours |
 | View options, saved between runs | V, or the second icon |

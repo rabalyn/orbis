@@ -12,6 +12,7 @@ mod cache;
 mod clicks;
 mod compass;
 mod countries;
+mod country_facts;
 mod camera;
 mod capabilities;
 mod fetcher;
@@ -1674,7 +1675,14 @@ impl Scene {
             }
             pick::Target::Ground { .. } => ("Nearby articles".to_string(), wikilookup::Job::Ground { lat, lon, altitude }),
         };
+        // A country's name, or open ground seen from as far as the Countries level of the
+        // energy layer, is about the country under it; the article's item may say so later.
+        let by_outline = match &target {
+            pick::Target::Label { style, .. } => *style == vector::LabelStyle::Country,
+            pick::Target::Ground { .. } => energy::Level::for_altitude(altitude, None) == energy::Level::Countries,
+        };
         self.ask_info(title, Some((lat, lon)), Some(job));
+        self.info.borrow_mut().data = country_facts::for_click(None, Some((lat, lon)), by_outline, self.clock_month().0);
     }
 
     /// The box for a click on another body: a feature's name asks for its article, open
@@ -1709,7 +1717,7 @@ impl Scene {
     /// Opens the box with a title, and asks for its content if there is a job.
     fn ask_info(&mut self, title: String, at: Option<(f64, f64)>, job: Option<wikilookup::Job>) {
         self.info_id += 1;
-        *self.info.borrow_mut() = info::Model { title, at, content: info::Content::Looking, note: None };
+        *self.info.borrow_mut() = info::Model { title, at, content: info::Content::Looking, note: None, data: None };
         self.info_pending = job.is_some();
         if let Some(job) = job {
             self.lookup.submit(self.info_id, job);
@@ -1749,7 +1757,7 @@ impl Scene {
                 }
                 let Some(near) = self.info.borrow().near(i).cloned() else { return };
                 self.info_id += 1;
-                *self.info.borrow_mut() = info::Model { title: near.title.clone(), at: None, content: info::Content::Looking, note: None };
+                *self.info.borrow_mut() = info::Model { title: near.title.clone(), at: None, content: info::Content::Looking, note: None, data: None };
                 self.lookup.submit(self.info_id, wikilookup::Job::Page { lang: near.lang, page_id: near.page_id, item: near.item });
                 self.info_pending = true;
             }
@@ -1759,6 +1767,13 @@ impl Scene {
     /// Takes in the answer to the question the box waits for. True if the box changed.
     fn poll_info(&mut self) -> bool {
         let mut changed = std::mem::take(&mut self.info_changed);
+        // The Data tab follows the clock's year.
+        let year = self.clock_month().0;
+        let old = self.info.borrow().data.as_ref().filter(|f| f.asked != year).cloned();
+        if let Some(f) = old {
+            self.info.borrow_mut().data = country_facts::for_year(&f, year);
+            changed = true;
+        }
         while let Some(reply) = self.lookup.poll() {
             if reply.id != self.info_id {
                 continue;
@@ -1768,6 +1783,10 @@ impl Scene {
             let mut m = self.info.borrow_mut();
             match reply.outcome {
                 wikilookup::Outcome::Article(a) => {
+                    // An article about a country gives the Data tab, if the click did not already.
+                    if let Some(f) = country_facts::for_click(a.item.as_deref(), None, false, year) {
+                        m.data = Some(f);
+                    }
                     m.title = a.title.clone();
                     m.content = info::Content::Article(a);
                 }
@@ -2629,6 +2648,7 @@ impl Scene {
                 at: w.position(i).map(|(lat, lon)| (lat.to_degrees(), lon.to_degrees())),
                 content: info::Content::Facts(w.describe(i, self.clock_month(), self.view.energy_palette, germany)),
                 note: None,
+                data: None,
             };
             self.show_info();
             return;
@@ -2647,6 +2667,7 @@ impl Scene {
                 data.describe(subject, month, self.energy_sources(), self.view.energy_palette, at)
             }),
             note: None,
+            data: None,
         };
         self.show_info();
     }

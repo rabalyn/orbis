@@ -2,7 +2,7 @@
 //! 1:50m (public domain), simplified by `tools/gen_owid.py` into `data/countries.bin` and keyed
 //! by the same codes as `owid.rs`. Positions are in degrees.
 
-// Some of this is for the information box of milestone 5 (matching by Wikidata, by outline).
+// A few readers are used by the tests only.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use crate::owid::Reader;
