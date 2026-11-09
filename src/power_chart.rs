@@ -1,10 +1,15 @@
 //! The day chart of Germany's electricity: generation by source stacked, consumption as a line,
 //! and a marker at the clock, for the clock's day (UTC), from SMARD. It shows while the energy
 //! bars show output; its close button turns it off in the view options.
+//!
+//! While another country is selected (its bar, or an information box about it), the window shows
+//! that country's months instead, from the Ember figures of `owid.rs` built into the program, or
+//! its years where Ember has no months.
 
 use crate::energy::{Palette, Source};
 use crate::power_feed::{Moment, FILTERS};
 use crate::gui::{self, Gui};
+use crate::owid::{Country, Series, CREDIT};
 use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -28,6 +33,13 @@ pub struct Chart {
     pub unit: (String, f32),
     /// A thin line on an axis of its own at the right: the carbon intensity in g per kWh.
     pub intensity: Option<Vec<Option<f32>>>,
+    /// How far apart the lines of the left axis are, in values.
+    pub tick: f32,
+    /// The labels under the plot: where (0 to 1 across it) and what.
+    pub labels: Vec<(f64, String)>,
+    /// Whether each step is a bar of its own with a gap, as months and years are, rather than
+    /// part of an area.
+    pub bars: bool,
 }
 
 /// The colour of the intensity line and its axis.
@@ -75,7 +87,157 @@ pub fn chart(moments: &[Option<Moment>], intensity: Option<Vec<Option<f32>>>, ma
         .filter(|l| l.2.iter().flatten().any(|&v| v > 0.0))
         .collect();
     let intensity = intensity.filter(|v| v.iter().flatten().any(|&g| g > 0.0));
-    Chart { layers, line: ("Consumption".to_string(), values(FILTERS.len() - 1)), marker, unit: ("GW".to_string(), 1000.0), intensity }
+    let labels = (0..=24).step_by(3).map(|h| (h as f64 / 24.0, format!("{h:02}"))).collect();
+    Chart {
+        layers,
+        line: ("Consumption".to_string(), values(FILTERS.len() - 1)),
+        marker,
+        unit: ("GW".to_string(), 1000.0),
+        intensity,
+        // The axis goes up in whole steps of 10 GW.
+        tick: 10_000.0,
+        labels,
+        bars: false,
+    }
+}
+
+/// How many months a country's chart shows, and how many years where Ember has no months.
+pub const MONTHS_SHOWN: i32 = 24;
+pub const YEARS_SHOWN: i32 = 10;
+
+/// What a selected country's chart can show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Span {
+    /// Ember's months, up to and including this one.
+    Months(i32, u32),
+    /// Only years, up to and including this one.
+    Years(i32),
+    /// No figures at all.
+    Nothing,
+}
+
+/// The months up to the clock's month where Ember has them (the latest ones when the clock is
+/// before them), else the years up to the clock's year in the same way.
+pub fn span(c: Option<&Country>, (year, month): (i32, u32)) -> Span {
+    let Some(c) = c else { return Span::Nothing };
+    let g = Series::Generation;
+    if c.has_monthly() {
+        if let Some(((y, m), _)) = c.latest_month(g, year, month).or_else(|| c.latest_month(g, 9999, 12)) {
+            return Span::Months(y, m);
+        }
+    }
+    match c.latest_year(g, year).map(|(y, _)| y).or_else(|| c.years(g).map(|(_, last)| last)) {
+        Some(y) => Span::Years(y),
+        None => Span::Nothing,
+    }
+}
+
+/// A country's sources from the bottom up: the series, the entry of [`layers`] whose colour and
+/// hatching it takes, and its name. What the total has beyond them goes with oil.
+const COUNTRY_LAYERS: [(Series, usize, &str); 9] = [
+    (Series::Nuclear, 0, "Nuclear"),
+    (Series::Coal, 2, "Coal"),
+    (Series::Gas, 3, "Gas"),
+    (Series::Oil, 4, "Oil, other"),
+    (Series::Bioenergy, 5, "Bioenergy"),
+    (Series::Hydro, 6, "Hydro"),
+    (Series::Wind, 8, "Wind"),
+    (Series::Solar, 9, "Solar"),
+    (Series::OtherRenewables, 10, "Other renew."),
+];
+/// Where in [`COUNTRY_LAYERS`] the rest of the total goes.
+const REST_LAYER: usize = 3;
+/// The rest counts once it is this share of the total; below, it is rounding.
+const REST_SHARE: f64 = 0.005;
+
+const MONTH_NAMES: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/// A step from 1, 2 or 5 times a power of ten that puts about four lines under `top`.
+fn nice_tick(top: f32) -> f32 {
+    if top <= 0.0 || !top.is_finite() {
+        return 1.0;
+    }
+    let raw = top / 4.0;
+    let pow = 10f32.powf(raw.log10().floor());
+    [1.0, 2.0, 5.0, 10.0].into_iter().map(|k| k * pow).find(|&t| t >= raw).unwrap_or(10.0 * pow)
+}
+
+/// A country's chart over `span` in TWh: generation stacked by source as bars, demand as the line
+/// and the carbon intensity at the right, with the marker on the clock's month or year.
+/// `None` for [`Span::Nothing`].
+pub fn country_chart(c: &Country, span: Span, (year, month): (i32, u32), palette: Palette) -> Option<Chart> {
+    // The steps as (year, month), month 0 for a whole year.
+    let steps: Vec<(i32, u32)> = match span {
+        Span::Months(y, m) => {
+            let end = y * 12 + m as i32 - 1;
+            (end - MONTHS_SHOWN + 1..=end).map(|t| (t.div_euclid(12), t.rem_euclid(12) as u32 + 1)).collect()
+        }
+        Span::Years(y) => (y - YEARS_SHOWN + 1..=y).map(|y| (y, 0)).collect(),
+        Span::Nothing => return None,
+    };
+    let get = |s: Series, (y, m): (i32, u32)| if m == 0 { c.year(s, y) } else { c.month(s, y, m) };
+    let all = layers(palette);
+    let mut values: Vec<Vec<Option<f32>>> = COUNTRY_LAYERS.iter().map(|&(s, _, _)| steps.iter().map(|&t| get(s, t).map(|v| v.max(0.0) as f32)).collect()).collect();
+    for (k, &t) in steps.iter().enumerate() {
+        let Some(total) = get(Series::Generation, t) else { continue };
+        let sum: f64 = COUNTRY_LAYERS.iter().filter_map(|&(s, _, _)| get(s, t)).map(|v| v.max(0.0)).sum();
+        let rest = total - sum;
+        if rest > REST_SHARE * total {
+            let v = &mut values[REST_LAYER][k];
+            *v = Some(v.unwrap_or(0.0) + rest as f32);
+        }
+    }
+    let layers: Vec<ChartLayer> = COUNTRY_LAYERS
+        .iter()
+        .zip(values)
+        .map(|(&(_, i, name), v)| (all[i].1, name.to_string(), v, all[i].3))
+        .filter(|l| l.2.iter().flatten().any(|&v| v > 0.0))
+        .collect();
+    let line: Vec<Option<f32>> = steps.iter().map(|&t| get(Series::Demand, t).map(|v| v as f32)).collect();
+    let intensity: Vec<Option<f32>> = steps.iter().map(|&t| get(Series::CarbonIntensity, t).map(|v| v as f32)).collect();
+    let n = steps.len() as f64;
+    let centre = |k: usize| (k as f64 + 0.5) / n;
+    let now = if matches!(span, Span::Years(_)) { (year, 0) } else { (year, month) };
+    let marker = steps.iter().position(|&t| t == now).map(centre);
+    let labels = steps
+        .iter()
+        .enumerate()
+        .filter_map(|(k, &(y, m))| match m {
+            0 => ((steps.len() - 1 - k).is_multiple_of(2) || steps.len() <= 6).then(|| (centre(k), y.to_string())),
+            1 => Some((centre(k), y.to_string())),
+            7 => Some((centre(k), MONTH_NAMES[6].to_string())),
+            _ => None,
+        })
+        .collect();
+    let top = (0..steps.len())
+        .map(|k| {
+            let stack: f32 = layers.iter().filter_map(|l| l.2[k]).sum();
+            stack.max(line[k].unwrap_or(0.0))
+        })
+        .fold(0.0f32, f32::max);
+    Some(Chart {
+        layers,
+        line: ("Demand".to_string(), line),
+        marker,
+        unit: ("TWh".to_string(), 1.0),
+        intensity: Some(intensity).filter(|v| v.iter().flatten().any(|&g| g > 0.0)),
+        tick: nice_tick(top),
+        labels,
+        bars: true,
+    })
+}
+
+/// The window's content for a selected country other than Germany: its months, or its years
+/// where Ember has no months, or a word that there is nothing.
+pub fn country_model(c: Option<&Country>, name: &str, clock: (i32, u32), palette: Palette) -> Model {
+    let span = span(c, clock);
+    let chart = c.and_then(|c| country_chart(c, span, clock, palette));
+    let (title, note) = match span {
+        Span::Months(y, m) => (format!("{name}, monthly, TWh"), format!("Each bar a month's generation, to {} {y}. {CREDIT}.", MONTH_NAMES[m as usize - 1])),
+        Span::Years(y) => (format!("{name}, yearly, TWh"), format!("Ember has no monthly figures for {name}: each bar a year's generation, to {y}. {CREDIT}.")),
+        Span::Nothing => (format!("{name}, electricity"), format!("No electricity figures for {name}.")),
+    };
+    Model { title, chart, note }
 }
 
 /// What a click on the chart's buttons asks for.
@@ -144,9 +306,10 @@ fn plot(ui: &mut egui::Ui, c: &Chart, size: Vec2) {
     let steps = c.line.1.len().max(c.layers.iter().map(|l| l.2.len()).max().unwrap_or(0)).max(1);
     let stack = |i: usize| c.layers.iter().map(|l| l.2.get(i).copied().flatten().unwrap_or(0.0)).sum::<f32>();
     let top = (0..steps).map(|i| stack(i).max(c.line.1.get(i).copied().flatten().unwrap_or(0.0))).fold(0.0f32, f32::max);
-    // The axis goes up in whole steps of 10 units.
-    let tick = 10.0 * c.unit.1;
+    let tick = c.tick.max(f32::MIN_POSITIVE);
     let max = (top / tick).ceil().max(1.0) * tick;
+    // As many decimals as the step needs.
+    let decimals = (-(tick / c.unit.1).log10().floor()).clamp(0.0, 3.0) as usize;
     let y_of = |v: f32| plot.bottom() - v / max * plot.height();
     let x_of = |i: f32| plot.left() + i / steps as f32 * plot.width();
     p.rect_filled(plot, 3.0, v.extreme_bg_color.gamma_multiply(0.5));
@@ -154,12 +317,13 @@ fn plot(ui: &mut egui::Ui, c: &Chart, size: Vec2) {
     while t <= max + 1.0 {
         let y = y_of(t);
         p.line_segment([Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)], Stroke::new(1.0, grid));
-        p.text(Pos2::new(plot.left() - 4.0, y), egui::Align2::RIGHT_CENTER, format!("{:.0}", t / c.unit.1), small.clone(), weak);
+        p.text(Pos2::new(plot.left() - 4.0, y), egui::Align2::RIGHT_CENTER, format!("{:.*}", decimals, t / c.unit.1), small.clone(), weak);
         t += tick;
     }
-    // The areas, one step at a time.
+    // The areas, or the bars, one step at a time.
+    let gap = if c.bars { (plot.width() / steps as f32 * 0.12).min(3.0) } else { 0.0 };
     for i in 0..steps {
-        let (x0, x1) = (x_of(i as f32), x_of(i as f32 + 1.0) + 0.5);
+        let (x0, x1) = if c.bars { (x_of(i as f32) + gap, x_of(i as f32 + 1.0) - gap) } else { (x_of(i as f32), x_of(i as f32 + 1.0) + 0.5) };
         let mut base = 0.0f32;
         for (colour, _, values, hatched) in &c.layers {
             let Some(v) = values.get(i).copied().flatten() else { continue };
@@ -218,9 +382,9 @@ fn plot(ui: &mut egui::Ui, c: &Chart, size: Vec2) {
         let x = plot.left() + m.clamp(0.0, 1.0) as f32 * plot.width();
         p.line_segment([Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())], Stroke::new(1.5, Color32::from_rgb(255, 214, 70)));
     }
-    for h in (0..=24).step_by(3) {
-        let x = plot.left() + plot.width() * h as f32 / 24.0;
-        p.text(Pos2::new(x, plot.bottom() + 3.0), egui::Align2::CENTER_TOP, format!("{h:02}"), small.clone(), weak);
+    for (at, text) in &c.labels {
+        let x = plot.left() + plot.width() * *at as f32;
+        p.text(Pos2::new(x, plot.bottom() + 3.0), egui::Align2::CENTER_TOP, text, small.clone(), weak);
     }
 }
 
@@ -271,5 +435,81 @@ mod tests {
         let g: Vec<Option<f32>> = day.iter().map(|m| m.as_ref().and_then(|m| m.intensity())).collect();
         let c = chart(&day, Some(g), Some(0.5), Palette::Standard);
         assert_eq!(c.intensity.as_ref().unwrap()[0], Some(820.0), "lignite alone at midnight");
+    }
+
+    use crate::owid::Owid;
+
+    fn fixture() -> Owid {
+        Owid::parse(include_bytes!("../tests/fixtures/owid/owid_energy.bin")).unwrap()
+    }
+
+    #[test]
+    fn a_country_with_months_gets_months_one_without_years_and_none_nothing() {
+        let o = fixture();
+        let (de, af) = (o.country("DEU").unwrap(), o.country("AFG").unwrap());
+        assert_eq!(span(Some(de), (2025, 6)), Span::Months(2025, 6));
+        // Past the last month, the latest; before the first, the latest too.
+        let Span::Months(y, m) = span(Some(de), (2100, 1)) else { panic!() };
+        assert!(y > 2025 && (1..=12).contains(&m));
+        assert_eq!(span(Some(de), (1900, 1)), Span::Months(y, m));
+        assert_eq!(span(Some(af), (2024, 6)), Span::Years(2024));
+        assert_eq!(span(None, (2024, 6)), Span::Nothing);
+    }
+
+    #[test]
+    fn the_months_of_a_country_stack_its_sources_with_demand_and_intensity() {
+        let o = fixture();
+        let de = o.country("DEU").unwrap();
+        let c = country_chart(de, Span::Months(2025, 12), (2025, 6), Palette::Standard).unwrap();
+        assert!(c.bars);
+        assert_eq!(c.unit.0, "TWh");
+        assert_eq!(c.line.1.len(), MONTHS_SHOWN as usize);
+        assert!(c.layers.iter().all(|l| l.2.len() == MONTHS_SHOWN as usize));
+        let names: Vec<&str> = c.layers.iter().map(|l| l.1.as_str()).collect();
+        assert!(names.contains(&"Solar") && names.contains(&"Coal") && names.contains(&"Wind"));
+        // Germany shut its last reactors in April 2023, before these months.
+        assert!(!names.contains(&"Nuclear"));
+        // The colours are those of the day chart.
+        let solar = c.layers.iter().find(|l| l.1 == "Solar").unwrap();
+        assert_eq!(solar.0, Palette::Standard.colour(Source::Solar));
+        assert!(c.layers.iter().find(|l| l.1 == "Coal").unwrap().3, "fossil hatched");
+        // The last step is December 2025: the sources sum to the month's generation.
+        let stack: f32 = c.layers.iter().filter_map(|l| l.2[23]).sum();
+        let total = de.month(Series::Generation, 2025, 12).unwrap() as f32;
+        assert!((stack - total).abs() < 0.01 * total, "{stack} {total}");
+        assert_eq!(c.line.1[23], de.month(Series::Demand, 2025, 12).map(|v| v as f32));
+        assert!(c.intensity.as_ref().unwrap()[23].unwrap() > 100.0);
+        // June 2025 is the 18th of the 24 months from January 2024.
+        assert_eq!(c.marker, Some(17.5 / 24.0));
+        let labels: Vec<&str> = c.labels.iter().map(|l| l.1.as_str()).collect();
+        assert_eq!(labels, ["2024", "Jul", "2025", "Jul"]);
+        assert!(c.tick > 0.0 && c.tick < 50.0);
+    }
+
+    #[test]
+    fn a_country_with_only_years_gets_ten_years() {
+        let o = fixture();
+        let af = o.country("AFG").unwrap();
+        let m = country_model(Some(af), "Afghanistan", (2024, 6), Palette::Standard);
+        assert_eq!(m.title, "Afghanistan, yearly, TWh");
+        assert!(m.note.contains("no monthly") && m.note.contains(CREDIT));
+        let c = m.chart.unwrap();
+        assert_eq!(c.line.1.len(), YEARS_SHOWN as usize);
+        assert_eq!(c.marker, Some(9.5 / 10.0));
+        assert!(c.layers.iter().any(|l| l.2[9].is_some_and(|v| v > 0.0)));
+        let m = country_model(None, "Atlantis", (2024, 6), Palette::Standard);
+        assert_eq!((m.title.as_str(), m.chart), ("Atlantis, electricity", None));
+        assert!(m.note.starts_with("No electricity"));
+        let m = country_model(o.country("DEU"), "Germany", (2025, 6), Palette::Standard);
+        assert_eq!(m.title, "Germany, monthly, TWh");
+        assert!(m.note.contains("to Jun 2025"));
+    }
+
+    #[test]
+    fn ticks_are_round() {
+        assert_eq!(nice_tick(14.0), 5.0);
+        assert!((nice_tick(0.3) - 0.1).abs() < 1e-6);
+        assert_eq!(nice_tick(40.0), 10.0);
+        assert_eq!(nice_tick(0.0), 1.0);
     }
 }
