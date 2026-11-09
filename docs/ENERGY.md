@@ -73,13 +73,17 @@ Real per-plant output is published only for large units. Everything else is esti
 Beyond Germany (`world_output.rs`), each plant of Global Energy Monitor's list gets a **monthly** estimate of step 1's
 kind, from Ember instead of SMARD: `plant output = plant capacity × capacity factor`, where the factor of a country,
 source and month is Ember's generation of that source in the month (the year's average power where Ember has no months)
-over the capacity GEM lists for that country and source running in that month, held between 0 and 1. Ember's sources set
-the groups (wind not split by land and sea, coal not into lignite and hard coal, bioenergy with the other renewables).
-GEM's list misses rooftop solar, small units and TransitionZero's rows, so where its capacity cannot make Ember's
-figure even at full load, the rest is a per-country **gap**, "not in plant list", shown in the country's box and the
-state's, never spread onto plants; plants and gap add up to Ember's figure. Where the list's capacity suffices, the cap
-does not bind and generation from missing units lifts the listed plants' factor instead (Japan's solar in June 2025:
-about 75%), so the gap is a floor on what the list misses, not an estimate of it.
+over the capacity GEM lists for that country and source running in that month, but never above a plausible monthly
+ceiling for the plant's kind (`world_output::MAX_FACTOR`): solar 0.30, wind on land 0.55, wind at sea 0.65, hydro 0.90,
+pumped storage 0.30, thermal plants and nuclear 0.95. Ember's sources set the groups (wind not split by land and sea,
+coal not into lignite and hard coal, hydro with pumped storage, bioenergy with the other renewables); within a group all
+plants run at one factor, a kind with a lower ceiling stopping at it. GEM's list misses rooftop solar, small units and
+TransitionZero's rows, so Ember's figure beyond what the listed plants can make at their ceilings is a per-country
+**gap**, "not in plant list", shown in the country's box and the state's, never spread onto plants; plants and gap add
+up to Ember's figure. In June 2025 Japan's solar plants reach the ceiling and 60% of its solar generation is in the gap
+(rooftops), the United States' 21%; France's nuclear runs at 55%, with no gap. The ceilings are upper bounds, so where
+the list's capacity suffices (India's and China's solar, at about 0.296), missing units can still lift the listed
+plants' factor up to the ceiling, and the gap is a floor on what the list misses.
 
 The difference between "what the weather allowed" and "what was fed in" is where curtailment shows. Only redispatch data
 from the TSOs is evidence of curtailment. A gap in the estimate alone isn't, so it must be labelled as such.

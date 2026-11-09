@@ -433,7 +433,7 @@ impl World {
         let plants = crate::world_plants::Plants::bundled().filter(|_| c.code != GERMANY);
         let estimate = plants.map(|p| p.estimate(&c.code, crate::world_output::month_index(month)));
         if let Some(estimate) = estimate.clone() {
-            let e = estimate.unwrap_or_else(|| crate::world_output::Estimate::of(&f, [0.0; SOURCES]));
+            let e = estimate.unwrap_or_else(|| crate::world_output::Estimate::of(&f, [0.0; crate::world_output::KINDS]));
             let (made, gap) = (e.plants(), e.gap());
             let sources: Vec<Source> = Source::ALL.into_iter().filter(|s| e.generation[*s as usize] > 0.0).collect();
             let mut split = Meters { title: "In the plant list and not (est.)".to_string(), max: sources.iter().map(|s| e.generation[*s as usize]).fold(0.0, f32::max), rows: Vec::new(), caption: String::new() };
@@ -485,7 +485,7 @@ impl World {
             card.notes.push("The bar on the globe is Germany's states summed: their output estimated from SMARD, as at the finer levels.".to_string());
         }
         if estimate.is_some() {
-            card.notes.push("Plants: each one's output is its capacity times the country's capacity factor for its source in the month, Ember's generation over the capacity Global Energy Monitor lists running then, at most 100%. What that cannot account for is not in the plant list.".to_string());
+            card.notes.push("Plants: each one's output is its capacity times the country's capacity factor for its source in the month, Ember's generation over the capacity Global Energy Monitor lists running then, at most a ceiling per kind (solar 30%, wind 55 to 65%, hydro 90%, thermal and nuclear 95%). What that cannot account for is not in the plant list.".to_string());
         }
         card.notes.push("Generation by source as Ember gives it: wind not split by land and sea, coal not into lignite and hard coal. No capacity: OWID does not have it by source for all countries.".to_string());
         card.notes.push(match f.basis {

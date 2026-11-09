@@ -561,8 +561,8 @@ day chart and their legend swatches hatched, and on the ground hatched fills and
 - The box also sets the month's generation against the world plants below: per Ember source, how much the country's plants
   in GEM's list make (estimated, see below) and the rest, **not in plant list** (rooftop solar, small units), with the
   share of the generation the plants account for. That rest is never put on any plant or state; it is what the plants
-  cannot make even at full capacity, so it is often near nothing (the plants' factors take up the rest). Germany has no
-  world plants and no such lines.
+  cannot make even at their kind's ceiling (solar 30%, see below): Japan's solar in June 2025 is 60% not in the list,
+  the United States' 21%. Germany has no world plants and no such lines. The bar itself stays Ember's total.
 - **Germany's bar** is its state bars summed: their output estimated from SMARD at the clock's quarter hour (with own use,
   where chosen), and Germany's consumption beside it, so that it fits the finer levels. Without SMARD's figures (before 2015,
   in the future, or with output off) it is Ember's month like the others.
@@ -614,8 +614,10 @@ day chart and their legend swatches hatched, and on the ground hatched fills and
   to its **estimated output** and the rest drawn as unused capacity, as Germany's plants are. The estimate is monthly: the
   capacity times its country's **capacity factor** for the source and month, which is Ember's generation of the source
   (the year's average where Ember has no months; the bar is then lighter) over the capacity GEM lists for the country and
-  source running that month, at most 100%. Every plant of a source in a country runs at the same share; wind at sea
-  shares Ember's wind with wind on land, lignite its coal with hard coal. Units count from January of their start year, retired
+  source running that month, at most a plausible ceiling for the kind: solar 30%, wind on land 55%, wind at sea 65%, hydro
+  90%, pumped storage 30%, thermal plants and nuclear 95%. Every plant of a kind in a country runs at the same share; wind
+  at sea shares Ember's wind with wind on land (each up to its own ceiling), lignite its coal with hard coal, pumped
+  storage its hydro. Units count from January of their start year, retired
   ones through December of their retirement year, so moving the clock shows the build-out; units GEM gives no start year
   count from the release (September 2026) on.
 - GEM's types become the program's sources: wind at sea where the technology says offshore, coal as lignite where the fuel

@@ -322,7 +322,7 @@ impl States {
         if gap > 0.0 {
             card.facts.push(("Country, not in plant list".to_string(), format!("{} (est.)", format_power(gap))));
         }
-        card.notes.push("Output estimated: each plant's capacity times its country's capacity factor for its source in the month, Ember's generation over the capacity in the plant list, at most 100%.".to_string());
+        card.notes.push("Output estimated: each plant's capacity times its country's capacity factor for its source in the month, Ember's generation over the capacity in the plant list, at most a plausible ceiling for its kind (solar 30%).".to_string());
         card.notes.push(format!("Use estimated: {country}'s use shared out by population."));
         card.notes.push("Not in plant list: the country's generation that its plants in the list cannot account for, such as rooftop solar and small units; it is not placed in any state.".to_string());
         card.notes.push("Plants: Global Energy Monitor, Global Integrated Power Tracker, September 2026 release (CC BY 4.0); filtered by status and size, so small units and rooftop solar are missing.".to_string());
@@ -458,7 +458,7 @@ mod tests {
             let mut sum = [0.0f32; SOURCES];
             for &p in list {
                 let pl = &plants.plants[p as usize];
-                sum[pl.source as usize] += pl.kw(m) * plants.estimate("FRA", m).unwrap().factor_of(pl.source);
+                sum[pl.source as usize] += pl.kw(m) * plants.estimate("FRA", m).unwrap().factor_of(pl.class());
             }
             for (got, want) in b.kw.iter().zip(sum) {
                 assert!((got - want).abs() <= 1e-3 * want.max(1.0), "{got} against {want}");
