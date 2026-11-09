@@ -19,8 +19,8 @@ use crate::wtime::{Duration, Instant};
 
 /// Wikipedia asks for serial requests; this keeps them from following each other too closely.
 const MIN_GAP: Duration = Duration::from_millis(300);
-/// Articles change slowly; a stored answer is used for a week, and past that when offline or unreachable.
-const MAX_AGE: f64 = 7.0 * 86_400.0;
+/// Articles change slowly; a stored answer is used for 30 days, and past that when offline or unreachable.
+const MAX_AGE: f64 = 30.0 * 86_400.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Job {

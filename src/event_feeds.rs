@@ -16,6 +16,8 @@ const DAY: f64 = 86_400.0;
 const MIN_GAP: Duration = Duration::from_millis(1200);
 /// Where the live earthquake feed is used instead of a dated query: the clock is this recent.
 const LIVE_DAYS: f64 = 20.0;
+/// After this long, publishers have filed late reports and corrections for a period.
+const SETTLED: f64 = 30.0 * DAY;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Feed {
@@ -69,11 +71,27 @@ impl Feed {
         }
     }
 
-    /// How long a stored answer is used without asking again.
-    pub fn max_age(self) -> f64 {
+    /// When the period asked for by `url(time, now)` ends, or `None` for the live feed.
+    fn window_end(self, time: f64, now: f64) -> Option<f64> {
+        let day = (time / DAY).floor() * DAY;
         match self {
-            Feed::Quakes => 10.0 * 60.0,
-            _ => DAY,
+            Feed::Quakes if time > now - LIVE_DAYS * DAY && time < now + DAY => None,
+            Feed::Quakes => Some(day + 16.0 * DAY),
+            Feed::Eruptions | Feed::Tsunamis => {
+                let year: i64 = format_utc(day + 30.0 * DAY, false)[..4].parse().ok()?;
+                Some(days_from_civil(year + 1, 1, 1) as f64 * DAY)
+            }
+            Feed::Fireballs => Some(day + 91.0 * DAY),
+        }
+    }
+
+    /// How long a stored answer for `url(time, now)` is used without asking again. A period that
+    /// ended more than `SETTLED` ago no longer changes, so its answer is kept for good.
+    pub fn max_age(self, time: f64, now: f64) -> f64 {
+        match self.window_end(time, now) {
+            None => 10.0 * 60.0,
+            Some(end) if now - end > SETTLED => f64::INFINITY,
+            Some(_) => DAY,
         }
     }
 
@@ -326,12 +344,12 @@ pub(crate) fn unix_now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
-fn load(fetcher: &Fetcher, feed: Feed, url: &str, wait: &mut Option<Instant>) -> Result<Vec<Event>, FeedError> {
+fn load(fetcher: &Fetcher, feed: Feed, url: &str, max_age: f64, wait: &mut Option<Instant>) -> Result<Vec<Event>, FeedError> {
     let name = cache_name(feed, url);
     let stored = fetcher.cache().get(&name);
     let parsed = stored.as_deref().and_then(unpack).and_then(|(t, b)| feed.parse(b).ok().map(|e| (t, e)));
     if let Some((stamp, events)) = &parsed {
-        if fetcher.is_offline() || unix_now() - stamp < feed.max_age() {
+        if fetcher.is_offline() || unix_now() - stamp < max_age {
             return Ok(events.clone());
         }
     }
@@ -359,21 +377,22 @@ fn load(fetcher: &Fetcher, feed: Feed, url: &str, wait: &mut Option<Instant>) ->
 
 /// Asks the feeds on a thread of its own.
 pub struct Feeds {
-    worker: Worker<(Feed, String), Reply>,
+    worker: Worker<(Feed, String, f64), Reply>,
 }
 
 impl Feeds {
     pub fn new(fetcher: Arc<Fetcher>) -> Self {
         let mut wait = None;
-        let worker = Worker::new(false, MIN_GAP, move |(feed, url): (Feed, String)| {
-            let answer = load(&fetcher, feed, &url, &mut wait);
+        let worker = Worker::new(false, MIN_GAP, move |(feed, url, max_age): (Feed, String, f64)| {
+            let answer = load(&fetcher, feed, &url, max_age, &mut wait);
             Reply { feed, answer }
         });
         Self { worker }
     }
 
     pub fn submit(&self, feed: Feed, time: f64) {
-        self.worker.submit((feed, feed.url(time, unix_now())));
+        let now = unix_now();
+        self.worker.submit((feed, feed.url(time, now), feed.max_age(time, now)));
     }
 
     pub fn poll(&self) -> Option<Reply> {
@@ -478,8 +497,26 @@ mod tests {
         let packed = pack(1234.0, b"{\"a\":1}");
         assert_eq!(unpack(&packed), Some((1234.0, "{\"a\":1}")));
         assert_eq!(unpack(b"{}"), None);
-        assert!(Feed::Quakes.max_age() < Feed::Eruptions.max_age());
         assert_eq!(Feed::from_name("Quakes"), Some(Feed::Quakes));
         assert_eq!(Feed::from_name("x"), None);
+    }
+
+    #[test]
+    fn periods_long_past_are_kept_for_good() {
+        let now = parse_iso8601("2026-11-09T12:00:00Z").unwrap();
+        // The live feed and periods still open are asked for again.
+        assert_eq!(Feed::Quakes.max_age(now - 2.0 * DAY, now), 600.0);
+        assert_eq!(Feed::Quakes.max_age(now - 25.0 * DAY, now), DAY);
+        assert_eq!(Feed::Fireballs.max_age(now - 100.0 * DAY, now), DAY);
+        assert_eq!(Feed::Eruptions.max_age(now - 60.0 * DAY, now), DAY);
+        // A year's eruptions settle a month after the year ends; days near New Year ask about the next year.
+        let jan = parse_iso8601("2026-01-20T00:00:00Z").unwrap();
+        assert_eq!(Feed::Tsunamis.max_age(parse_iso8601("2025-06-01T00:00:00Z").unwrap(), jan), DAY);
+        assert_eq!(Feed::Tsunamis.max_age(parse_iso8601("2025-06-01T00:00:00Z").unwrap(), jan + 15.0 * DAY), f64::INFINITY);
+        // History is not asked for again.
+        let old = parse_iso8601("2010-03-01T00:00:00Z").unwrap();
+        for feed in Feed::ALL {
+            assert_eq!(feed.max_age(old, now), f64::INFINITY, "{feed:?}");
+        }
     }
 }

@@ -46,9 +46,22 @@ Every public server, identified by its host name, is tracked separately.
 - Nothing is pre-fetched: only what a view needs is loaded, and queued tiles that leave the view are dropped.
 - `--offline` sends no requests at all. `--cache-status` prints the cache size and server timeouts.
 
-Answers of Wikipedia and Wikidata for the information box (`wikipedia/` in the cache) carry the time they were fetched and are used for a week; when offline or when the service cannot be reached, older ones are used too. Only answers that parse are kept. A click makes at most five such requests, one after another.
-
 Map data does not refresh by itself: a cached tile is used until it is evicted.
+
+## Answers of other services
+
+Answers that are not tiles carry the time they were fetched. Past their age they are asked
+for again, but an older answer is still used with `--offline` or when the service cannot be
+reached. Only answers that parse are kept. "For good" still means until the size limit evicts them.
+
+| Service | Cache folder | Used for | Why |
+|---|---|---|---|
+| Wikipedia and Wikidata (information box) | `wikipedia/` | 30 days | Articles about places change slowly; a click makes at most five requests, one after another |
+| Nominatim (place search) | `nominatim/` | 90 days | Place names hardly change; its policy asks for caching. Answers from before they carried a time count as old |
+| USGS live earthquake feed | `events/` | 10 minutes | A live feed |
+| Earthquakes, eruptions, tsunamis, fireballs for a period | `events/` | 1 day; for good once the period ended more than 30 days ago | Late reports and corrections arrive within weeks; history does not change |
+| SMARD (Germany's generation) | `power/` | 10 minutes for the current week and the index; for good once a week or year is complete (a day for the current year's months) | Published every 15 minutes |
+| Our World in Data / Ember | none | built into the program | Refreshed with `tools/gen_owid.py` when building a release |
 
 ## LAN cache server
 
