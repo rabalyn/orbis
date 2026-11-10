@@ -413,11 +413,10 @@ mod tests {
         let all = [true; SOURCES];
         let bars = s.bars((2024, 6), all, false);
         assert!(bars.iter().all(|b| matches!(b.subject, Subject::State(_))));
-        if let Some(e) = Energy::bundled() {
-            let german = e.bars(Level::States, 124 * 12 + 5, all, None);
-            assert!(!german.is_empty() && german.iter().all(|b| matches!(b.subject, Subject::Area(_))));
-            assert_eq!(german, e.bars(Level::States, 124 * 12 + 5, all, None));
-        }
+        let e = Energy::bundled().expect("data/energy_de.bin reads");
+        let german = e.bars(Level::States, 124 * 12 + 5, all, None);
+        assert!(!german.is_empty() && german.iter().all(|b| matches!(b.subject, Subject::Area(_))));
+        assert_eq!(german, e.bars(Level::States, 124 * 12 + 5, all, None));
     }
 
     #[test]

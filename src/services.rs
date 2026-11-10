@@ -414,7 +414,15 @@ fn wmts_layer_service(d: &Wmts, l: &WmtsLayer, url: &str) -> Result<Service, Str
     let follows = padded || levels.iter().all(|(z, m)| m.id == format!("{prefix}{z}"));
     let level_token = if padded && levels.iter().any(|(z, _)| *z < 10) { "{z02}" } else { "{z}" };
     if !follows {
-        return Err(format!("layer {} uses matrix names ({}) that do not follow the zoom levels", l.id, levels[0].1.id));
+        // Name the first matrix that breaks the pattern, which is the one to look at.
+        let (z, odd) = levels
+            .iter()
+            .find(|(z, m)| m.id != format!("{prefix}{z}") && m.id != format!("{prefix}{z:02}"))
+            .unwrap_or(&levels[0]);
+        return Err(format!(
+            "layer {} uses matrix names that do not follow the zoom levels: level {z} is called {}",
+            l.id, odd.id
+        ));
     }
     let (min_z, max_z) = (levels.iter().map(|x| x.0).min().unwrap_or(0), levels.iter().map(|x| x.0).max().unwrap_or(0));
     let style = l.styles.first().map_or("default", String::as_str);
@@ -644,7 +652,7 @@ mod tests {
         let xml = xml.replace("<TileMatrix>1</TileMatrix>", "<TileMatrix>one</TileMatrix>");
         let doc = parse(&xml).unwrap();
         let e = from_capabilities(&doc, "https://t.example/cap", Some("relief")).unwrap_err();
-        assert!(e.contains("do not follow") || e.contains("not web mercator"), "{e}");
+        assert!(e.ends_with("do not follow the zoom levels: level 1 is called one"), "{e}");
     }
 
     #[test]

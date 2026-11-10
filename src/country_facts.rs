@@ -194,8 +194,11 @@ mod tests {
     fn a_country_without_figures_has_no_tab() {
         let (c, o) = data();
         assert!(facts(o, "XXX", 2025).is_none());
-        if let Some(none) = c.all().iter().find(|x| o.country(&x.code).is_none()) {
-            assert!(facts(o, &none.code, 2025).is_none(), "{}", none.code);
+        // Outlines exist for some places OWID has no figures for: none of them gets a tab.
+        let without: Vec<&str> = c.all().iter().filter(|x| o.country(&x.code).is_none()).map(|x| x.code.as_str()).collect();
+        assert!(!without.is_empty(), "the bundled outlines should include places without figures");
+        for code in without {
+            assert!(facts(o, code, 2025).is_none(), "{code}");
         }
         assert!(facts(o, "FRA", 1700).is_none(), "before the first figure");
         assert!(facts(o, "FRA", 2020).is_some());

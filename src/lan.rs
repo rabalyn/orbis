@@ -51,6 +51,19 @@ enum Route {
     NotFound,
 }
 
+/// Sources that tests serve from a local server, so that requests can go through the real
+/// route. Only test builds have it; a release build reaches the known sources alone.
+#[cfg(test)]
+pub(crate) static TEST_SOURCES: Mutex<Vec<&'static TileSource>> = Mutex::new(Vec::new());
+
+fn source_by_id(id: &str) -> Option<&'static TileSource> {
+    #[cfg(test)]
+    if let Some(s) = TEST_SOURCES.lock().unwrap().iter().find(|s| s.id == id) {
+        return Some(*s);
+    }
+    sources::by_id(id)
+}
+
 /// Parses a path into a known source and numbers. Nothing from it ever reaches a file path.
 fn route(path: &str) -> Route {
     let path = path.split('?').next().unwrap_or(path);
@@ -61,7 +74,7 @@ fn route(path: &str) -> Route {
     let ["", "tiles", id, z, x, y] = parts[..] else {
         return Route::NotFound;
     };
-    let Some(source) = sources::by_id(id) else {
+    let Some(source) = source_by_id(id) else {
         return Route::NotFound;
     };
     let number = |s: &str| -> Option<u32> {
@@ -362,15 +375,22 @@ mod tests {
 
     #[test]
     fn a_dedicated_server_makes_one_download_for_the_whole_lan() {
-        // The public server is only reachable through a test source, which clients request
-        // by its identifier; here the real route is exercised with a known source id.
+        // The public server is a local test server, made reachable through the daemon's route.
         let server = TestServer::start(vec![(200, "")], Duration::ZERO);
-        let (daemon, _) = start(Mode::Dedicated, Peers::default(), "daemon");
         let source = server.source();
-        // Two machines asking the same server: the second is answered from its cache.
-        assert_eq!(daemon.fetch(source, K).unwrap(), b"tile-bytes");
-        assert_eq!(daemon.fetch(source, K).unwrap(), b"tile-bytes");
+        TEST_SOURCES.lock().unwrap().push(source);
+        let (daemon, port) = start(Mode::Dedicated, Peers::default(), "daemon");
+        // Two machines on the LAN, each with an empty cache of its own, ask the daemon.
+        for tag in ["lan-a", "lan-b"] {
+            let client = Fetcher::new(temp_cache(tag), Peers::new(vec![format!("127.0.0.1:{port}")]), false);
+            assert_eq!(client.fetch(source, K).unwrap(), b"tile-bytes", "{tag}");
+            let t = client.traffic();
+            assert_eq!((t.lan_hits, t.downloads), (1, 0), "{tag} got it from the LAN, not the server");
+        }
+        // The daemon downloaded it once and answered the second machine from its cache.
         assert_eq!(server.count(), 1);
+        assert_eq!(daemon.traffic().downloads, 1);
+        assert_eq!(daemon.cache().get(&source.cache_name(K)).as_deref(), Some(&b"tile-bytes"[..]));
     }
 
     /// Puts a tile into a machine's cache under a real source.

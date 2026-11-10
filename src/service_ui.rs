@@ -423,8 +423,13 @@ mod tests {
         let text = c.panel_text();
         assert!(text.starts_with("Map services\n"));
         assert!(text.contains("> Ui 0 [xyz]") && text.contains("  Ui 1 [xyz]"), "{text}");
-        for d in service_lib::directory() {
-            assert!(text.contains(&format!("+ {}", d.name)) || service_lib::directory().len() > 10, "{text}");
+        // Every directory entry is listed, after the library's own services.
+        let library_end = text.find("  Ui 1 [xyz]").unwrap();
+        let directory = service_lib::directory();
+        assert!(!directory.is_empty());
+        for d in directory {
+            let at = text.find(&format!("+ {} [", d.name)).unwrap_or_else(|| panic!("{} is not listed: {text}", d.name));
+            assert!(at > library_end, "{} is listed before the library: {text}", d.name);
         }
     }
 
@@ -464,22 +469,24 @@ mod tests {
         c.key(Cmd::List(Key::Delete));
         let t = c.panel_text();
         assert!(!t.contains("Ui 0") && !t.contains("(base)"), "{t}");
-        // A directory entry cannot be deleted.
-        if !service_lib::directory().is_empty() {
-            c.key(Cmd::List(Key::Delete));
-            assert!(c.panel_text().contains("cannot be removed"));
-        }
+        // A directory entry cannot be deleted, and stays listed.
+        let first = &service_lib::directory()[0];
+        c.key(Cmd::List(Key::Delete));
+        let t = c.panel_text();
+        assert!(t.contains("cannot be removed") && t.contains(&format!("> + {} [", first.name)), "{t}");
     }
 
     #[test]
     fn using_a_directory_entry_keeps_it_in_the_library() {
-        if service_lib::directory().is_empty() {
-            return;
-        }
+        let first = &service_lib::directory()[0];
         let mut c = control_with(0);
+        assert!(c.library.services().is_empty());
         c.key(Cmd::List(Key::Enter));
-        assert!(!c.library.services().is_empty());
-        assert!(c.panel_text().contains("(base)"));
+        let saved = c.library.services();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].id, first.id, "the chosen entry is the one saved");
+        let t = c.panel_text();
+        assert!(t.contains(&format!("{} [", first.name)) && t.contains("(base)") && !t.contains(&format!("+ {} [", first.name)), "{t}");
     }
 
     #[test]

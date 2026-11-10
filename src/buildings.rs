@@ -181,6 +181,20 @@ fn on_cut(a: [f32; 2], b: [f32; 2]) -> bool {
 
 /// Builds one tile's mesh. `ground` gives the terrain height at a tile position. Returns
 /// `None` when there is nothing to draw.
+/// The smallest footprint drawn, in tile units squared: far below a garden shed even at the
+/// finest building zoom, so it only drops rings that enclose nothing.
+const MIN_FOOTPRINT_AREA: f64 = 1e-12;
+
+/// The area a ring of corners encloses, by the shoelace formula, whichever way it winds.
+fn footprint_area(corners: &[[f32; 2]]) -> f64 {
+    let twice: f64 = corners
+        .iter()
+        .zip(corners.iter().cycle().skip(1))
+        .map(|(a, b)| a[0] as f64 * b[1] as f64 - b[0] as f64 * a[1] as f64)
+        .sum();
+    twice.abs() / 2.0
+}
+
 pub fn build_mesh(
     key: TileKey,
     buildings: &[Building],
@@ -202,7 +216,8 @@ pub fn build_mesh(
         let Some(outer) = building.rings.first() else { continue };
         // Rings are closed, so the repeated last point does not count.
         let corners = &outer[..outer.len().saturating_sub(1)];
-        if corners.len() < 3 {
+        if corners.len() < 3 || footprint_area(corners) < MIN_FOOTPRINT_AREA {
+            // Repeated or collinear points enclose nothing: no roof, and walls of no width.
             continue;
         }
         // The roof height comes from the middle, so that buildings on slopes stay level.
@@ -504,9 +519,20 @@ mod tests {
         let repeated = vec![[0.3, 0.3], [0.3, 0.3], [0.3, 0.3], [0.3, 0.3], [0.3, 0.3]];
         let line = vec![[0.5, 0.5], [0.6, 0.5], [0.7, 0.5], [0.5, 0.5]];
         let huge = vec![[-1e9, -1e9], [1e9, -1e9], [1e9, 1e9], [-1e9, 1e9], [-1e9, -1e9]];
-        for ring in [bowtie, repeated, line, huge] {
-            let _ = build_mesh(KEY, &[building(vec![ring])], FLAT);
+        // Rings that enclose no area (the bowtie's two halves cancel) give nothing to draw.
+        for (name, ring) in [("bowtie", bowtie), ("repeated", repeated), ("line", line)] {
+            assert!(build_mesh(KEY, &[building(vec![ring])], FLAT).is_none(), "{name}");
         }
+        // A footprint far beyond the tile still gives a sound mesh: a roof, and no walls at the cut edges.
+        let mesh = build_mesh(KEY, &[building(vec![huge])], FLAT).expect("a roof");
+        assert_eq!((mesh.vertices.len(), mesh.indices.len()), (4, 6));
+        assert!(mesh.indices.iter().all(|i| (*i as usize) < mesh.vertices.len()));
+        assert!(mesh.vertices.iter().all(|v| v.pos.iter().all(|c| c.is_finite())));
+        // A degenerate ring among good ones does not disturb them.
+        let good = build_mesh(KEY, &[building(vec![square(0.4, 0.4, 0.1)])], FLAT).unwrap();
+        let mixed = build_mesh(KEY, &[building(vec![vec![[0.3, 0.3]; 5]]), building(vec![square(0.4, 0.4, 0.1)])], FLAT).unwrap();
+        assert_eq!((mixed.vertices.len(), mixed.indices.len()), (good.vertices.len(), good.indices.len()));
+        assert!(footprint_area(&square(0.4, 0.4, 0.1)[..4]) > 0.0099 && footprint_area(&square(0.4, 0.4, 0.1)[..4]) < 0.0101);
     }
 
     #[test]

@@ -644,7 +644,7 @@ mod tests {
     #[test]
     fn equal_capacity_stands_equally_tall_in_germany_and_beyond() {
         use crate::energy::{Energy, Level, Scale};
-        let Some(e) = Energy::bundled() else { return };
+        let e = Energy::bundled().expect("data/energy_de.bin reads");
         let now = month(2026, 1);
         let all = [true; SOURCES];
         let p = Plants::bundled().unwrap();

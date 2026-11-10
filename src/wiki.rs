@@ -1377,8 +1377,8 @@ mod tests {
         for body in ["", "<html>", "[]", "{\"query\":{\"pages\":3}}", "{\"query\":{\"pages\":[1,\"a\",null]}}", "{\"query\":{\"pages\":[{\"pageid\":\"x\"}]}}"] {
             let r = parse_candidates(body);
             assert!(r.is_err() || r.unwrap().is_empty(), "{body}");
-            let _ = parse_extract(body);
-            let _ = parse_facts(body);
+            assert!(parse_extract(body).is_err(), "extract of {body}");
+            assert!(parse_facts(body).is_err(), "facts of {body}");
         }
         assert_eq!(parse_candidates("{\"batchcomplete\":true}"), Ok(vec![]));
         assert_eq!(parse_candidates(r#"{"error":{"code":"maxlag","info":"waiting"}}"#), Err(WikiError::Busy));

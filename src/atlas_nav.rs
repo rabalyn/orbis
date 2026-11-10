@@ -255,10 +255,18 @@ mod tests {
         assert!((n.view.scale / scale - 2.0).abs() < 1e-9);
         let c = n.view.centre_lat_lon();
         assert!((c.0 - target.0).abs() < 1e-3 && (c.1 - target.1).abs() < 1e-3);
-        let before = n.view.centre;
+        // Zooming out at the window's corner, which is off the map, halves the scale back to the
+        // whole map, and the whole map is shown centred.
+        assert!(n.view.lat_lon_at(1.0, 1.0).is_none(), "the corner is off the map");
         n.double_click(DVec2::new(1.0, 1.0), true);
+        assert!(n.is_animating());
         run(&mut n);
-        assert!(n.view.centre.0.is_finite() && before.0.is_finite());
+        assert!(!n.is_animating());
+        assert!((n.view.scale - scale).abs() < 1e-9 && (n.view.scale - n.view.fit_scale()).abs() < 1e-9, "{}", n.view.scale);
+        assert_eq!(n.view.centre, (0.0, 0.0));
+        // At the whole map already, zooming out has nowhere to go and starts no flight.
+        n.double_click(DVec2::new(1.0, 1.0), true);
+        assert!(!n.is_animating());
     }
 
     #[test]

@@ -727,7 +727,8 @@ pub mod tests {
             let url = format!("http://127.0.0.1:{}/{{z}}/{{x}}/{{y}}", self.port);
             let cache = format!("test-{}/{{z}}/{{x}}/{{y}}.bin", self.port);
             Box::leak(Box::new(TileSource {
-                id: "test",
+                // One identifier per server, so that a LAN daemon can tell the test sources apart.
+                id: Box::leak(format!("test-{}", self.port).into_boxed_str()),
                 kind: Kind::Imagery,
                 url: Box::leak(url.into_boxed_str()),
                 cache: Box::leak(cache.into_boxed_str()),
