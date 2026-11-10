@@ -1476,10 +1476,11 @@ fn column(
 const DASH_SHADE: f32 = 0.42;
 
 /// The bar under a screen position: the nearest one whose drawn box holds it.
-pub fn hit(bars: &[Bar], scale: Scale, eye: DVec3, ground: &dyn Fn(f64, f64) -> f64, project: &dyn Fn(DVec3) -> Option<glam::DVec2>, at: glam::DVec2) -> Option<Subject> {
+pub fn hit(bars: &[Bar], scale: Scale, screen: &crate::labels::Screen, ground: &dyn Fn(f64, f64) -> f64, at: glam::DVec2) -> Option<Subject> {
+    let eye = screen.basis.pos;
     let mut best: Option<(f64, Subject)> = None;
     for bar in bars {
-        let up = enu(bar.lat, bar.lon).2;
+        let (east, _, up) = enu(bar.lat, bar.lon);
         let base = geodetic_to_ecef(bar.lat, bar.lon, ground(bar.lat, bar.lon));
         let top = base + up * (bar.height().max(bar.demand) as f64 * scale.per_kw);
         // A bar on the far side of the globe lands on screen among the near ones; only one
@@ -1487,10 +1488,13 @@ pub fn hit(bars: &[Bar], scale: Scale, eye: DVec3, ground: &dyn Fn(f64, f64) -> 
         if behind_globe(eye, base) && behind_globe(eye, top) {
             continue;
         }
-        let (Some(b), Some(t)) = (project(base), project(top)) else { continue };
+        // Only the part of the bar in view (with room for its width at the edges) is measured
+        // against: one just outside it would otherwise project across the whole screen.
+        let Some((base, top)) = screen.clip(base, top, 1.1) else { continue };
+        let (Some(b), Some(t)) = (screen.project(base), screen.project(top)) else { continue };
         // A bar with demand beside it is wider: the demand column stands west of the others.
         let reach = if bar.demand > 0.0 { 1.8 } else { 0.5 };
-        let half = project(base + enu(bar.lat, bar.lon).0 * scale.width * reach).map_or(4.0, |e| (e - b).length()).max(4.0) + 2.0;
+        let half = screen.project(base + east * scale.width * reach).map_or(4.0, |e| (e - b).length()).max(4.0) + 2.0;
         // Distance from the point to the bar's axis on screen, and how far along it lies.
         let axis = t - b;
         let len = axis.length().max(1e-6);
@@ -1827,12 +1831,40 @@ pub(crate) mod tests {
         let scale = Scale { width: 1e4, per_kw: 1.0 };
         let far = bar(-0.85, 0.5 - std::f64::consts::PI, 1);
         let at = screen.project(geodetic_to_ecef(far.lat, far.lon, 0.0)).unwrap();
-        let eye = screen.basis.pos;
-        let project = |p| screen.project(p);
-        assert_eq!(hit(std::slice::from_ref(&far), scale, eye, &|_, _| 0.0, &project, at), None);
+        assert_eq!(hit(std::slice::from_ref(&far), scale, &screen, &|_, _| 0.0, at), None);
         // A bar in view at the same spot is still taken.
         let near = bar(0.85, 0.5, 0);
-        assert_eq!(hit(&[far, near], scale, eye, &|_, _| 0.0, &project, at), Some(Subject::Area(0)));
+        assert_eq!(hit(&[far, near], scale, &screen, &|_, _| 0.0, at), Some(Subject::Area(0)));
+    }
+
+    #[test]
+    fn a_bar_just_outside_the_view_does_not_sweep_across_it() {
+        use crate::camera::Camera;
+        use crate::labels::Screen;
+        let mut kw = [0.0; SOURCES];
+        kw[Source::Hydro as usize] = 5e5;
+        // Looking north over Germany from high up: a state in Portugal stands below the view, barely in
+        // front of the camera, where projecting throws it hundreds of thousands of pixels away.
+        let cam = Camera { lat: 50.89f64.to_radians(), lon: 9.19f64.to_radians(), target_h: 0.0, distance: 8e5, heading: 0.0, tilt: 75f64.to_radians(), sky: 0.0 };
+        let screen = Screen { basis: cam.basis(), size: glam::DVec2::new(1542.0, 1040.0), reserved: Vec::new() };
+        let scale = Scale { width: 1e4, per_kw: 0.003 };
+        // With its demand beside it, as world states have.
+        let portugal = Bar { lat: 41.528f64.to_radians(), lon: -7.644f64.to_radians(), kw, subject: Subject::Area(1), demand: 5e4, faint: false, running: None, running_by_source: None };
+        assert!(screen.project(geodetic_to_ecef(portugal.lat, portugal.lon, 0.0)).is_some_and(|p| p.length() > 1e5));
+        for at in [(100.0, 0.0), (770.0, 93.0), (771.0, 520.0)] {
+            assert_eq!(hit(std::slice::from_ref(&portugal), scale, &screen, &|_, _| 0.0, glam::DVec2::from(at)), None, "{at:?}");
+        }
+        // A tall bar whose foot is below the view but whose top rises into it is still hit there.
+        let ground = cam.pick(glam::DVec2::new(0.0, -1.2), 1542.0 / 1040.0).unwrap();
+        let (lat, lon, _) = crate::geo::ecef_to_geodetic(ground);
+        let tall = Bar { lat, lon, kw, subject: Subject::Area(2), demand: 0.0, faint: false, running: None, running_by_source: None };
+        let tall_scale = Scale { width: 1e4, per_kw: 2.0 };
+        let foot = geodetic_to_ecef(lat, lon, 0.0);
+        assert!(screen.project(foot).unwrap().y > 1040.0, "the foot is below the view");
+        let top = foot + enu(lat, lon).2 * (tall.height() as f64 * tall_scale.per_kw);
+        let (a, b) = screen.clip(foot, top, 1.0).expect("the top rises into the view");
+        let at = screen.project(a.lerp(b, 0.5)).unwrap();
+        assert_eq!(hit(&[portugal, tall], tall_scale, &screen, &|_, _| 0.0, at), Some(Subject::Area(2)));
     }
 
     #[test]
@@ -1922,4 +1954,5 @@ pub(crate) mod tests {
         assert_eq!(format_power(2_340_000.0), "2.34 GW");
     }
 }
+
 

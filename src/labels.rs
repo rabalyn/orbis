@@ -325,6 +325,37 @@ impl Screen {
         Some(DVec2::new((ndc.x + 1.0) / 2.0 * self.size.x, (1.0 - ndc.y) / 2.0 * self.size.y))
     }
 
+    /// The part of the segment from `a` to `b` that lies inside the view, widened by `margin`
+    /// (1.0 is the view's own edges); `None` when none of it does. Projecting a point barely in
+    /// front of the camera but far to the side throws it far off screen, so a segment seen there
+    /// would sweep across the whole view; clipped first, it lands where it is seen.
+    pub fn clip(&self, a: DVec3, b: DVec3, margin: f64) -> Option<(DVec3, DVec3)> {
+        let bs = &self.basis;
+        let t = (FOV_Y / 2.0).tan() * margin;
+        let aspect = self.size.x / self.size.y;
+        // Inside where the point's offset from the eye has a dot product of at least 0 with each normal.
+        let planes = [
+            bs.look * (t * aspect) - bs.right,
+            bs.look * (t * aspect) + bs.right,
+            bs.look * t - bs.up,
+            bs.look * t + bs.up,
+        ];
+        let (mut s0, mut s1) = (0.0f64, 1.0f64);
+        let (ra, rb) = (a - bs.pos, b - bs.pos);
+        // In front of the camera by at least a metre, as `project` asks.
+        for (da, db) in planes.iter().map(|n| (ra.dot(*n), rb.dot(*n))).chain([(ra.dot(bs.look) - 1.0, rb.dot(bs.look) - 1.0)]) {
+            if da < 0.0 && db < 0.0 {
+                return None;
+            }
+            if da < 0.0 {
+                s0 = s0.max(da / (da - db));
+            } else if db < 0.0 {
+                s1 = s1.min(da / (da - db));
+            }
+        }
+        (s0 <= s1).then(|| (a.lerp(b, s0), a.lerp(b, s1)))
+    }
+
     fn on_screen(&self, p: DVec2) -> bool {
         p.x >= 0.0 && p.y >= 0.0 && p.x <= self.size.x && p.y <= self.size.y
     }
