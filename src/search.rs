@@ -99,7 +99,17 @@ pub struct Search {
 impl Search {
     /// `can_name` is false on bodies the service knows nothing about.
     pub fn new(can_name: bool) -> Self {
-        Self { open: false, text: String::new(), state: State::Editing, selected: 0, used_service: false, local: false, can_name, saving: false, adding: false }
+        Self {
+            open: false,
+            text: String::new(),
+            state: State::Editing,
+            selected: 0,
+            used_service: false,
+            local: false,
+            can_name,
+            saving: false,
+            adding: false,
+        }
     }
 
     /// Whether names can be looked up, for the body now in view.
@@ -146,9 +156,15 @@ impl Search {
 
     /// Where the chosen result is, while results are listed.
     pub fn selected_target(&self) -> Option<Target> {
-        let State::Results(places) = &self.state else { return None };
+        let State::Results(places) = &self.state else {
+            return None;
+        };
         let p = places.get(self.selected)?;
-        Some(Target { lat: p.lat, lon: p.lon, distance: distance_for(p) })
+        Some(Target {
+            lat: p.lat,
+            lon: p.lon,
+            distance: distance_for(p),
+        })
     }
 
     fn edited(&mut self) {
@@ -163,7 +179,13 @@ impl Search {
         match key {
             Key::Text(s) => {
                 for c in s.chars().filter(|c| !c.is_control()) {
-                    if self.text.chars().count() < if self.adding { MAX_ADDRESS_CHARS } else { MAX_QUERY_CHARS } {
+                    if self.text.chars().count()
+                        < if self.adding {
+                            MAX_ADDRESS_CHARS
+                        } else {
+                            MAX_QUERY_CHARS
+                        }
+                    {
                         self.text.push(c);
                     }
                 }
@@ -184,7 +206,11 @@ impl Search {
             Key::Up | Key::Down => {
                 if let State::Results(places) = &self.state {
                     let n = places.len();
-                    self.selected = if key == Key::Up { (self.selected + n - 1) % n } else { (self.selected + 1) % n };
+                    self.selected = if key == Key::Up {
+                        (self.selected + n - 1) % n
+                    } else {
+                        (self.selected + 1) % n
+                    };
                 }
                 Action::None
             }
@@ -215,7 +241,11 @@ impl Search {
         }
         if let Some((lat, lon)) = parse_coordinates(&query) {
             self.open = false;
-            return Action::Fly(Target { lat, lon, distance: crate::body::scaled(COORDINATE_DISTANCE) });
+            return Action::Fly(Target {
+                lat,
+                lon,
+                distance: crate::body::scaled(COORDINATE_DISTANCE),
+            });
         }
         if !self.can_name {
             let body = crate::body::current().id;
@@ -224,7 +254,11 @@ impl Search {
             places.truncate(MAX_RESULTS);
             self.selected = 0;
             self.local = true;
-            self.state = if places.is_empty() { State::Message(NO_NAMED_SEARCH) } else { State::Results(places) };
+            self.state = if places.is_empty() {
+                State::Message(NO_NAMED_SEARCH)
+            } else {
+                State::Results(places)
+            };
             return Action::None;
         }
         self.local = false;
@@ -261,7 +295,10 @@ impl Search {
             return format!("Map service address (then a layer name, if it has layers): {}_\nEnter: add   Esc: cancel", self.text);
         }
         if self.saving {
-            return format!("Save place as: {}_\nEnter: save (empty: name it by position)   Esc: cancel", self.text);
+            return format!(
+                "Save place as: {}_\nEnter: save (empty: name it by position)   Esc: cancel",
+                self.text
+            );
         }
         let mut s = format!("Search: {}_", self.text);
         let mut hint = "Enter: search   Esc: close";
@@ -269,9 +306,15 @@ impl Search {
             State::Editing => {}
             State::Searching(_) => s.push_str("\nSearching..."),
             State::NoResult => s.push_str("\nNo place found."),
-            State::Failed(Failure::Offline) => s.push_str("\nOffline: only earlier searches can be repeated."),
-            State::Failed(Failure::Unreachable) => s.push_str("\nThe search server cannot be reached. Try again later."),
-            State::Failed(Failure::Garbled) => s.push_str("\nThe search server gave an answer that could not be read."),
+            State::Failed(Failure::Offline) => {
+                s.push_str("\nOffline: only earlier searches can be repeated.")
+            }
+            State::Failed(Failure::Unreachable) => {
+                s.push_str("\nThe search server cannot be reached. Try again later.")
+            }
+            State::Failed(Failure::Garbled) => {
+                s.push_str("\nThe search server gave an answer that could not be read.")
+            }
             State::Message(m) => {
                 s.push('\n');
                 s.push_str(m);
@@ -323,14 +366,19 @@ pub fn distance_for(p: &Place) -> f64 {
 pub fn parse_coordinates(text: &str) -> Option<(f64, f64)> {
     let tokens = tokenize(text)?;
     let hems = tokens.iter().filter(|t| matches!(t, Tok::Hem(_))).count();
-    let (a, b) = if hems == 0 { split_plain(&tokens)? } else { split_lettered(&tokens, hems)? };
+    let (a, b) = if hems == 0 {
+        split_plain(&tokens)?
+    } else {
+        split_lettered(&tokens, hems)?
+    };
     let (lat, lon) = match (a.hem, b.hem) {
         (None, None) => (a.value()?, b.value()?),
         (Some(x), Some(y)) if "NS".contains(x) && "EW".contains(y) => (a.signed()?, b.signed()?),
         (Some(x), Some(y)) if "EW".contains(x) && "NS".contains(y) => (b.signed()?, a.signed()?),
         _ => return None,
     };
-    ((-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon)).then(|| (lat.to_radians(), lon.to_radians()))
+    ((-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon))
+        .then(|| (lat.to_radians(), lon.to_radians()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -366,7 +414,10 @@ fn tokenize(text: &str) -> Option<Vec<Tok>> {
                 while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
                     i += 1;
                 }
-                let s: String = chars[start..i].iter().map(|&c| if c == '−' { '-' } else { c }).collect();
+                let s: String = chars[start..i]
+                    .iter()
+                    .map(|&c| if c == '−' { '-' } else { c })
+                    .collect();
                 let value: f64 = s.parse().ok()?;
                 let unit = match chars.get(i) {
                     Some('°' | 'º') => Unit::Deg,
@@ -408,14 +459,25 @@ struct Part {
 
 impl Part {
     fn value(&self) -> Option<f64> {
-        let (d, m, s) = (*self.nums.first()?, self.nums.get(1).copied().unwrap_or(0.0), self.nums.get(2).copied().unwrap_or(0.0));
-        if self.nums.len() > 3 || (self.nums.len() > 1 && (d.fract() != 0.0 || !(0.0..60.0).contains(&m))) || !(0.0..60.0).contains(&s) {
+        let (d, m, s) = (
+            *self.nums.first()?,
+            self.nums.get(1).copied().unwrap_or(0.0),
+            self.nums.get(2).copied().unwrap_or(0.0),
+        );
+        if self.nums.len() > 3
+            || (self.nums.len() > 1 && (d.fract() != 0.0 || !(0.0..60.0).contains(&m)))
+            || !(0.0..60.0).contains(&s)
+        {
             return None;
         }
         if self.nums.len() == 3 && m.fract() != 0.0 {
             return None;
         }
-        let sign = if d < 0.0 || (d == 0.0 && d.is_sign_negative()) { -1.0 } else { 1.0 };
+        let sign = if d < 0.0 || (d == 0.0 && d.is_sign_negative()) {
+            -1.0
+        } else {
+            1.0
+        };
         Some(sign * (d.abs() + m / 60.0 + s / 3600.0))
     }
 
@@ -439,7 +501,8 @@ fn split_plain(tokens: &[Tok]) -> Option<(Part, Part)> {
                 any_unit |= unit != Unit::None;
                 let cur = parts.last_mut()?;
                 // A new degree mark, or a plain number after a plain number, starts the other half.
-                let starts_new = !cur.nums.is_empty() && (unit == Unit::Deg || (!any_unit && unit == Unit::None));
+                let starts_new = !cur.nums.is_empty()
+                    && (unit == Unit::Deg || (!any_unit && unit == Unit::None));
                 if starts_new {
                     parts.push(Part::default());
                 }
@@ -518,13 +581,32 @@ fn place_from(v: &serde_json::Value) -> Option<Place> {
         .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
         .filter(|s| !s.is_empty())?;
     // The service lists south, north, west, east.
-    let bbox = v.get("boundingbox").and_then(|b| b.as_array()).and_then(|b| {
-        let n: Vec<f64> = b.iter().filter_map(number).collect();
-        let [s, nth, w, e] = <[f64; 4]>::try_from(n).ok()?;
-        let ok = (-90.0..=90.0).contains(&s) && (-90.0..=90.0).contains(&nth) && s <= nth && (-180.0..=180.0).contains(&w) && (-180.0..=180.0).contains(&e);
-        ok.then(|| [s.to_radians(), w.to_radians(), nth.to_radians(), e.to_radians()])
-    });
-    Some(Place { name, lat: lat.to_radians(), lon: lon.to_radians(), bbox })
+    let bbox = v
+        .get("boundingbox")
+        .and_then(|b| b.as_array())
+        .and_then(|b| {
+            let n: Vec<f64> = b.iter().filter_map(number).collect();
+            let [s, nth, w, e] = <[f64; 4]>::try_from(n).ok()?;
+            let ok = (-90.0..=90.0).contains(&s)
+                && (-90.0..=90.0).contains(&nth)
+                && s <= nth
+                && (-180.0..=180.0).contains(&w)
+                && (-180.0..=180.0).contains(&e);
+            ok.then(|| {
+                [
+                    s.to_radians(),
+                    w.to_radians(),
+                    nth.to_radians(),
+                    e.to_radians(),
+                ]
+            })
+        });
+    Some(Place {
+        name,
+        lat: lat.to_radians(),
+        lon: lon.to_radians(),
+        bbox,
+    })
 }
 
 #[cfg(test)]
@@ -532,38 +614,79 @@ mod tests {
     use super::*;
 
     fn deg(c: Option<(f64, f64)>) -> Option<(f64, f64)> {
-        c.map(|(a, b)| ((a.to_degrees() * 1e6).round() / 1e6, (b.to_degrees() * 1e6).round() / 1e6))
+        c.map(|(a, b)| {
+            (
+                (a.to_degrees() * 1e6).round() / 1e6,
+                (b.to_degrees() * 1e6).round() / 1e6,
+            )
+        })
     }
 
     #[test]
     fn plain_coordinates() {
         assert_eq!(deg(parse_coordinates("46.5, 11.8")), Some((46.5, 11.8)));
         assert_eq!(deg(parse_coordinates("46.5 11.8")), Some((46.5, 11.8)));
-        assert_eq!(deg(parse_coordinates(" -33.86,151.21 ")), Some((-33.86, 151.21)));
+        assert_eq!(
+            deg(parse_coordinates(" -33.86,151.21 ")),
+            Some((-33.86, 151.21))
+        );
         assert_eq!(deg(parse_coordinates("46.5;-11.8")), Some((46.5, -11.8)));
     }
 
     #[test]
     fn lettered_coordinates() {
         assert_eq!(deg(parse_coordinates("46.5N 11.8E")), Some((46.5, 11.8)));
-        assert_eq!(deg(parse_coordinates("46.5 S, 11.8 w")), Some((-46.5, -11.8)));
+        assert_eq!(
+            deg(parse_coordinates("46.5 S, 11.8 w")),
+            Some((-46.5, -11.8))
+        );
         assert_eq!(deg(parse_coordinates("N46.5 E11.8")), Some((46.5, 11.8)));
         assert_eq!(deg(parse_coordinates("11.8E 46.5N")), Some((46.5, 11.8)));
     }
 
     #[test]
     fn degrees_minutes_seconds() {
-        assert_eq!(deg(parse_coordinates("46°30'N 11°48'E")), Some((46.5, 11.8)));
-        assert_eq!(deg(parse_coordinates("46°30′00″N, 11°48′36″E")), Some((46.5, 11.81)));
-        assert_eq!(deg(parse_coordinates("46°30'00\"S 11°48'W")), Some((-46.5, -11.8)));
-        assert_eq!(deg(parse_coordinates("N 46 30 E 11 48")), Some((46.5, 11.8)));
+        assert_eq!(
+            deg(parse_coordinates("46°30'N 11°48'E")),
+            Some((46.5, 11.8))
+        );
+        assert_eq!(
+            deg(parse_coordinates("46°30′00″N, 11°48′36″E")),
+            Some((46.5, 11.81))
+        );
+        assert_eq!(
+            deg(parse_coordinates("46°30'00\"S 11°48'W")),
+            Some((-46.5, -11.8))
+        );
+        assert_eq!(
+            deg(parse_coordinates("N 46 30 E 11 48")),
+            Some((46.5, 11.8))
+        );
         assert_eq!(deg(parse_coordinates("46°30' 11°48'")), Some((46.5, 11.8)));
-        assert_eq!(deg(parse_coordinates("46°30'N 11°48'E")), deg(parse_coordinates("46 30 N 11 48 E")));
+        assert_eq!(
+            deg(parse_coordinates("46°30'N 11°48'E")),
+            deg(parse_coordinates("46 30 N 11 48 E"))
+        );
     }
 
     #[test]
     fn not_coordinates() {
-        for t in ["", "Paris", "80331", "46.5", "91, 10", "10, 181", "46.5N 11.8N", "46.5E 11.8E", "1 2 3", "N 46 30 61 E 11", "Paris 12, 14", "46.5N 11.8", "1,2,3", "46°75'N 11E"] {
+        for t in [
+            "",
+            "Paris",
+            "80331",
+            "46.5",
+            "91, 10",
+            "10, 181",
+            "46.5N 11.8N",
+            "46.5E 11.8E",
+            "1 2 3",
+            "N 46 30 61 E 11",
+            "Paris 12, 14",
+            "46.5N 11.8",
+            "1,2,3",
+            "46°75'N 11E",
+        ] {
             assert_eq!(parse_coordinates(t), None, "{t}");
         }
     }
@@ -571,7 +694,11 @@ mod tests {
     #[test]
     fn typing_and_searching() {
         let mut s = Search::new(true);
-        assert_eq!(s.key(Key::Text("x".into())), Action::None, "closed box ignores keys");
+        assert_eq!(
+            s.key(Key::Text("x".into())),
+            Action::None,
+            "closed box ignores keys"
+        );
         s.open();
         s.key(Key::Text("Zürich".into()));
         s.key(Key::Text("\u{1b}\n".into()));
@@ -582,14 +709,28 @@ mod tests {
         assert!(s.panel_text().contains("Zürich _"));
         assert_eq!(s.key(Key::Enter), Action::Request("Zürich".into()));
         assert!(s.is_searching());
-        assert_eq!(s.key(Key::Enter), Action::None, "no second request while one is out");
+        assert_eq!(
+            s.key(Key::Enter),
+            Action::None,
+            "no second request while one is out"
+        );
         assert!(s.panel_text().contains("Searching"));
     }
 
     fn two_places() -> Vec<Place> {
         vec![
-            Place { name: "A".into(), lat: 0.1, lon: 0.2, bbox: None },
-            Place { name: "B".into(), lat: 0.3, lon: 0.4, bbox: Some([0.29, 0.39, 0.31, 0.41]) },
+            Place {
+                name: "A".into(),
+                lat: 0.1,
+                lon: 0.2,
+                bbox: None,
+            },
+            Place {
+                name: "B".into(),
+                lat: 0.3,
+                lon: 0.4,
+                bbox: Some([0.29, 0.39, 0.31, 0.41]),
+            },
         ]
     }
 
@@ -612,7 +753,9 @@ mod tests {
         s.key(Key::Down);
         assert!(s.panel_text().contains("> A"), "wraps around");
         s.key(Key::Up);
-        let Action::Fly(t) = s.key(Key::Enter) else { panic!("should fly") };
+        let Action::Fly(t) = s.key(Key::Enter) else {
+            panic!("should fly")
+        };
         assert_eq!((t.lat, t.lon), (0.3, 0.4));
         assert!(!s.is_open());
         assert_eq!(s.panel_text(), "");
@@ -646,7 +789,11 @@ mod tests {
 
     #[test]
     fn failures_have_words() {
-        for (f, word) in [(Failure::Offline, "Offline"), (Failure::Unreachable, "cannot be reached"), (Failure::Garbled, "could not be read")] {
+        for (f, word) in [
+            (Failure::Offline, "Offline"),
+            (Failure::Unreachable, "cannot be reached"),
+            (Failure::Garbled, "could not be read"),
+        ] {
             let mut s = Search::new(true);
             s.open();
             s.key(Key::Text("q".into()));
@@ -693,10 +840,28 @@ mod tests {
 
     #[test]
     fn distance_follows_the_box() {
-        let small = Place { name: "s".into(), lat: 0.8, lon: 0.2, bbox: Some([0.79999, 0.19999, 0.80001, 0.20001]) };
-        let town = Place { name: "t".into(), lat: 0.8, lon: 0.2, bbox: Some([0.7984, 0.1984, 0.8016, 0.2016]) };
-        let country = Place { name: "c".into(), lat: 0.8, lon: 0.2, bbox: Some([0.6, 0.0, 1.0, 0.4]) };
-        let point = Place { bbox: None, ..small.clone() };
+        let small = Place {
+            name: "s".into(),
+            lat: 0.8,
+            lon: 0.2,
+            bbox: Some([0.79999, 0.19999, 0.80001, 0.20001]),
+        };
+        let town = Place {
+            name: "t".into(),
+            lat: 0.8,
+            lon: 0.2,
+            bbox: Some([0.7984, 0.1984, 0.8016, 0.2016]),
+        };
+        let country = Place {
+            name: "c".into(),
+            lat: 0.8,
+            lon: 0.2,
+            bbox: Some([0.6, 0.0, 1.0, 0.4]),
+        };
+        let point = Place {
+            bbox: None,
+            ..small.clone()
+        };
         assert!(distance_for(&small) < distance_for(&town));
         assert!(distance_for(&town) < distance_for(&country));
         assert!(distance_for(&country) <= crate::nav::whole_body());
@@ -709,7 +874,12 @@ mod tests {
 
     #[test]
     fn a_box_across_the_antimeridian_is_narrow() {
-        let p = Place { name: "f".into(), lat: 0.0, lon: PI, bbox: Some([-0.01, 3.13, 0.01, -3.13]) };
+        let p = Place {
+            name: "f".into(),
+            lat: 0.0,
+            lon: PI,
+            bbox: Some([-0.01, 3.13, 0.01, -3.13]),
+        };
         assert!(distance_for(&p) < 1.0e6);
     }
 
@@ -727,8 +897,18 @@ mod tests {
     fn nominatim_answers_are_read_defensively() {
         let places = parse_nominatim(FIXTURE).unwrap();
         let names: Vec<_> = places.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["Bolzano - Bozen, South Tyrol, Italy", "Bolzano Hill", "Numbers"]);
-        assert_eq!(places[0].bbox, None, "a short box is ignored, the place kept");
+        assert_eq!(
+            names,
+            [
+                "Bolzano - Bozen, South Tyrol, Italy",
+                "Bolzano Hill",
+                "Numbers"
+            ]
+        );
+        assert_eq!(
+            places[0].bbox, None,
+            "a short box is ignored, the place kept"
+        );
         let b = places[1].bbox.unwrap();
         assert!((b[0].to_degrees() - 46.4).abs() < 1e-9 && (b[3].to_degrees() - 11.5).abs() < 1e-9);
         assert!((places[1].lat.to_degrees() - 46.5).abs() < 1e-9);
@@ -757,11 +937,18 @@ mod tests {
         assert_eq!(s.key(Key::Enter), Action::Save("My hut".into()));
         assert!(!s.is_open());
         s.open_save();
-        assert_eq!(s.key(Key::Enter), Action::Save(String::new()), "an empty name asks for the default");
+        assert_eq!(
+            s.key(Key::Enter),
+            Action::Save(String::new()),
+            "an empty name asks for the default"
+        );
         s.open_save();
         s.key(Key::Escape);
         s.open();
         s.key(Key::Text("46.5, 11.8".into()));
-        assert!(matches!(s.key(Key::Enter), Action::Fly(_)), "search works again after saving");
+        assert!(
+            matches!(s.key(Key::Enter), Action::Fly(_)),
+            "search works again after saving"
+        );
     }
 }

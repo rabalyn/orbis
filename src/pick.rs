@@ -22,7 +22,16 @@ pub struct PlacedLabel {
 
 impl PlacedLabel {
     pub fn new(label: &Label, center: DVec2, half: DVec2, angle: f64) -> Self {
-        Self { center, half, angle, name: label.text.clone(), style: label.style, priority: label.priority, lat: label.lat, lon: label.lon }
+        Self {
+            center,
+            half,
+            angle,
+            name: label.text.clone(),
+            style: label.style,
+            priority: label.priority,
+            lat: label.lat,
+            lon: label.lon,
+        }
     }
 
     /// Half the size of the text itself, from the size of its raster, which has `pad` pixels
@@ -45,8 +54,17 @@ impl PlacedLabel {
 /// The thing a screen position points at.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Target {
-    Label { name: String, style: LabelStyle, priority: i32, lat: f64, lon: f64 },
-    Ground { lat: f64, lon: f64 },
+    Label {
+        name: String,
+        style: LabelStyle,
+        priority: i32,
+        lat: f64,
+        lon: f64,
+    },
+    Ground {
+        lat: f64,
+        lon: f64,
+    },
 }
 
 impl Target {
@@ -60,9 +78,18 @@ impl Target {
 /// A placed label under `pos` wins, the topmost (most important) one if they overlap;
 /// otherwise the ground point `ground` found for the same position. `None` over the sky.
 pub fn pick(pos: DVec2, labels: &[PlacedLabel], ground: Option<(f64, f64)>) -> Option<Target> {
-    let hit = labels.iter().filter(|l| l.contains(pos)).min_by_key(|l| l.priority);
+    let hit = labels
+        .iter()
+        .filter(|l| l.contains(pos))
+        .min_by_key(|l| l.priority);
     match hit {
-        Some(l) => Some(Target::Label { name: l.name.clone(), style: l.style, priority: l.priority, lat: l.lat, lon: l.lon }),
+        Some(l) => Some(Target::Label {
+            name: l.name.clone(),
+            style: l.style,
+            priority: l.priority,
+            lat: l.lat,
+            lon: l.lon,
+        }),
         None => ground.map(|(lat, lon)| Target::Ground { lat, lon }),
     }
 }
@@ -84,7 +111,9 @@ fn label_distance(style: LabelStyle, priority: i32) -> f64 {
         LabelStyle::Road => 2.0e4,
         // On other bodies the priority holds the diameter in hundreds of metres; the view
         // ends where the feature fills about two thirds of it.
-        LabelStyle::Region | LabelStyle::Feature => -(priority as f64) * 150.0 * crate::body::EARTH.a / crate::body::current().a,
+        LabelStyle::Region | LabelStyle::Feature => {
+            -(priority as f64) * 150.0 * crate::body::EARTH.a / crate::body::current().a
+        }
     }
 }
 
@@ -94,7 +123,9 @@ fn label_distance(style: LabelStyle, priority: i32) -> f64 {
 pub fn end_distance(target: &Target, current: f64, farther: bool) -> f64 {
     match target {
         Target::Ground { .. } => current * if farther { 2.0 } else { 0.5 },
-        Target::Label { style, priority, .. } => {
+        Target::Label {
+            style, priority, ..
+        } => {
             let fit = crate::body::scaled(label_distance(*style, *priority));
             if farther {
                 current * 2.0
@@ -127,17 +158,27 @@ mod tests {
         // A raster 68 x 28 with 4 px of padding holds text 60 x 20.
         let half = PlacedLabel::text_half(DVec2::new(68.0, 28.0), 4.0);
         assert_eq!(half, DVec2::new(30.0, 10.0));
-        let l = PlacedLabel { half, ..label("Nigeria", 100, 631.0, 495.0) };
+        let l = PlacedLabel {
+            half,
+            ..label("Nigeria", 100, 631.0, 495.0)
+        };
         assert!(l.contains(DVec2::new(602.0, 495.0)));
         assert!(l.contains(DVec2::new(631.0, 486.0)));
         assert!(!l.contains(DVec2::new(631.0, 495.0 + 14.0)));
         assert!(!l.contains(DVec2::new(631.0 - 36.0, 495.0)));
-        assert_eq!(PlacedLabel::text_half(DVec2::new(6.0, 6.0), 4.0), DVec2::ZERO);
+        assert_eq!(
+            PlacedLabel::text_half(DVec2::new(6.0, 6.0), 4.0),
+            DVec2::ZERO
+        );
     }
 
     #[test]
     fn a_turned_label_is_hit_along_its_own_axis() {
-        let l = PlacedLabel { angle: std::f64::consts::FRAC_PI_2, half: DVec2::new(30.0, 5.0), ..label("Rhine", 100, 100.0, 100.0) };
+        let l = PlacedLabel {
+            angle: std::f64::consts::FRAC_PI_2,
+            half: DVec2::new(30.0, 5.0),
+            ..label("Rhine", 100, 100.0, 100.0)
+        };
         assert!(l.contains(DVec2::new(100.0, 125.0)));
         assert!(!l.contains(DVec2::new(125.0, 100.0)));
     }
@@ -153,13 +194,21 @@ mod tests {
 
     #[test]
     fn empty_space_and_sky_give_nothing() {
-        assert_eq!(pick(DVec2::new(5.0, 5.0), &[label("A", 300, 300.0, 200.0)], None), None);
+        assert_eq!(
+            pick(DVec2::new(5.0, 5.0), &[label("A", 300, 300.0, 200.0)], None),
+            None
+        );
     }
 
     #[test]
     fn the_more_important_of_two_overlapping_labels_is_taken() {
-        let ls = [label("Small", 700, 300.0, 200.0), label("Big", 301, 310.0, 200.0)];
-        let Some(Target::Label { name, .. }) = pick(DVec2::new(305.0, 200.0), &ls, None) else { panic!() };
+        let ls = [
+            label("Small", 700, 300.0, 200.0),
+            label("Big", 301, 310.0, 200.0),
+        ];
+        let Some(Target::Label { name, .. }) = pick(DVec2::new(305.0, 200.0), &ls, None) else {
+            panic!()
+        };
         assert_eq!(name, "Big");
     }
 
@@ -180,7 +229,13 @@ mod tests {
     }
 
     fn named(style: LabelStyle, priority: i32) -> Target {
-        Target::Label { name: "x".into(), style, priority, lat: 0.0, lon: 0.0 }
+        Target::Label {
+            name: "x".into(),
+            style,
+            priority,
+            lat: 0.0,
+            lon: 0.0,
+        }
     }
 
     #[test]
@@ -198,15 +253,24 @@ mod tests {
     #[test]
     fn a_place_never_pushes_the_view_further_out() {
         // Already closer than a country's fit: it is only centred.
-        assert_eq!(end_distance(&named(LabelStyle::Country, 100), 3.0e5, false), 3.0e5);
+        assert_eq!(
+            end_distance(&named(LabelStyle::Country, 100), 3.0e5, false),
+            3.0e5
+        );
         // Too near for a village: it does not back away to the fit.
         assert!(end_distance(&named(LabelStyle::Village, 650), 1.0e3, false) <= 1.0e3);
         // From far out, it comes in to the fit.
-        assert_eq!(end_distance(&named(LabelStyle::Town, 500), 2.0e7, false), 1.5e4);
+        assert_eq!(
+            end_distance(&named(LabelStyle::Town, 500), 2.0e7, false),
+            1.5e4
+        );
     }
 
     #[test]
     fn shift_goes_a_level_out_also_on_a_place() {
-        assert_eq!(end_distance(&named(LabelStyle::Town, 500), 1.0e4, true), 2.0e4);
+        assert_eq!(
+            end_distance(&named(LabelStyle::Town, 500), 1.0e4, true),
+            2.0e4
+        );
     }
 }

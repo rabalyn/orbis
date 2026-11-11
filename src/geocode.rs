@@ -9,8 +9,8 @@ use crate::event_feeds::{pack, unix_now, unpack};
 use crate::fetcher::{FetchError, Fetcher};
 use crate::search::{self, Failure, Place};
 use crate::worker::Worker;
-use std::sync::Arc;
 use crate::wtime::{Duration, Instant};
+use std::sync::Arc;
 
 pub const DEFAULT_SERVICE: &str = "https://nominatim.openstreetmap.org/search";
 /// The policy says one request per second; this leaves a margin.
@@ -62,7 +62,9 @@ impl MinGap {
 
     /// How long to wait before a request at `now`.
     pub(crate) fn wait(&self, now: Instant) -> Duration {
-        self.last.map_or(Duration::ZERO, |l| (l + self.gap).saturating_duration_since(now))
+        self.last.map_or(Duration::ZERO, |l| {
+            (l + self.gap).saturating_duration_since(now)
+        })
     }
 
     pub(crate) fn sent(&mut self, now: Instant) {
@@ -70,7 +72,13 @@ impl MinGap {
     }
 }
 
-fn lookup(fetcher: &Fetcher, service: &str, lang: &str, query: &str, gap: &mut MinGap) -> Result<Vec<Place>, Failure> {
+fn lookup(
+    fetcher: &Fetcher,
+    service: &str,
+    lang: &str,
+    query: &str,
+    gap: &mut MinGap,
+) -> Result<Vec<Place>, Failure> {
     let name = cache_name(service, lang, query);
     let stored = fetcher.cache().get(&name);
     let parsed = stored.as_deref().and_then(read_stored);
@@ -88,9 +96,12 @@ fn lookup(fetcher: &Fetcher, service: &str, lang: &str, query: &str, gap: &mut M
     let stale = |f: Failure| parsed.clone().map(|(_, p)| p).ok_or(f);
     let data = match fetcher.fetch_service(&request_url(service, lang, query)) {
         Ok(data) => data,
-        Err(FetchError::Missing | FetchError::Transient | FetchError::Paused(_) | FetchError::Busy(_)) => {
-            return stale(Failure::Unreachable)
-        }
+        Err(
+            FetchError::Missing
+            | FetchError::Transient
+            | FetchError::Paused(_)
+            | FetchError::Busy(_),
+        ) => return stale(Failure::Unreachable),
     };
     // Only answers that make sense are kept, so that a bad day is not remembered.
     let places = match parse(&data) {
@@ -117,7 +128,11 @@ fn parse(data: &[u8]) -> Result<Vec<Place>, Failure> {
 
 /// The same question in other spellings has one answer: case and spacing do not count.
 fn normalize(query: &str) -> String {
-    query.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    query
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 fn cache_name(service: &str, lang: &str, query: &str) -> String {
@@ -130,7 +145,10 @@ fn cache_name(service: &str, lang: &str, query: &str) -> String {
 }
 
 fn request_url(service: &str, lang: &str, query: &str) -> String {
-    let mut url = format!("{service}?format=jsonv2&limit={RESULT_LIMIT}&q={}", percent_encode(query.trim()));
+    let mut url = format!(
+        "{service}?format=jsonv2&limit={RESULT_LIMIT}&q={}",
+        percent_encode(query.trim())
+    );
     if !lang.is_empty() {
         url.push_str("&accept-language=");
         url.push_str(&percent_encode(lang));
@@ -164,8 +182,14 @@ mod tests {
     #[test]
     fn cache_names_ignore_case_and_spacing_only() {
         let s = DEFAULT_SERVICE;
-        assert_eq!(cache_name(s, "en", "Bad  Ischl"), cache_name(s, "en", " bad ischl "));
-        assert_ne!(cache_name(s, "en", "bad ischl"), cache_name(s, "de", "bad ischl"));
+        assert_eq!(
+            cache_name(s, "en", "Bad  Ischl"),
+            cache_name(s, "en", " bad ischl ")
+        );
+        assert_ne!(
+            cache_name(s, "en", "bad ischl"),
+            cache_name(s, "de", "bad ischl")
+        );
         assert_ne!(cache_name(s, "en", "bad ischl"), cache_name(s, "en", "bad"));
         assert!(cache_name(s, "en", "x").starts_with("nominatim/"));
     }
@@ -177,14 +201,21 @@ mod tests {
         assert_eq!(gap.wait(t), Duration::ZERO);
         gap.sent(t);
         assert_eq!(gap.wait(t), Duration::from_millis(1100));
-        assert_eq!(gap.wait(t + Duration::from_millis(400)), Duration::from_millis(700));
+        assert_eq!(
+            gap.wait(t + Duration::from_millis(400)),
+            Duration::from_millis(700)
+        );
         assert_eq!(gap.wait(t + Duration::from_secs(2)), Duration::ZERO);
     }
 
     fn fetcher(tag: &str, offline: bool) -> Arc<Fetcher> {
         let dir = std::env::temp_dir().join(format!("orbis-geocode-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        Arc::new(Fetcher::new(crate::cache::DiskCache::new(dir), crate::fetcher::Peers::default(), offline))
+        Arc::new(Fetcher::new(
+            crate::cache::DiskCache::new(dir),
+            crate::fetcher::Peers::default(),
+            offline,
+        ))
     }
 
     fn wait_reply(g: &Geocoder) -> Reply {
@@ -205,7 +236,9 @@ mod tests {
         g.submit("Nowhere");
         assert_eq!(wait_reply(&g).answer, Err(Failure::Offline));
         let body = r#"[{"lat":"1","lon":"2","display_name":"Somewhere"}]"#;
-        f.cache().put(&cache_name(&service, "en", "somewhere"), body.as_bytes()).unwrap();
+        f.cache()
+            .put(&cache_name(&service, "en", "somewhere"), body.as_bytes())
+            .unwrap();
         g.submit("Somewhere");
         let r = wait_reply(&g);
         assert_eq!(r.query, "Somewhere");
@@ -217,7 +250,9 @@ mod tests {
     fn garbled_cache_entries_are_not_trusted() {
         let f = fetcher("garbled", true);
         let service = "http://127.0.0.1:9/search".to_string();
-        f.cache().put(&cache_name(&service, "", "x"), b"<html>").unwrap();
+        f.cache()
+            .put(&cache_name(&service, "", "x"), b"<html>")
+            .unwrap();
         let g = Geocoder::new(f, service, String::new());
         g.submit("x");
         assert_eq!(wait_reply(&g).answer, Err(Failure::Offline));
@@ -229,10 +264,21 @@ mod tests {
         let service = "http://127.0.0.1:9/search".to_string();
         let body = br#"[{"lat":"1","lon":"2","display_name":"Somewhere"}]"#;
         let fresh = unix_now() - 10.0 * 86_400.0;
-        f.cache().put(&cache_name(&service, "en", "fresh"), &pack(fresh, body)).unwrap();
-        f.cache().put(&cache_name(&service, "en", "old"), &pack(unix_now() - MAX_AGE - 1.0, body)).unwrap();
+        f.cache()
+            .put(&cache_name(&service, "en", "fresh"), &pack(fresh, body))
+            .unwrap();
+        f.cache()
+            .put(
+                &cache_name(&service, "en", "old"),
+                &pack(unix_now() - MAX_AGE - 1.0, body),
+            )
+            .unwrap();
         assert_eq!(read_stored(&pack(5.0, body)).unwrap().0, 5.0);
-        assert_eq!(read_stored(body).unwrap().0, 0.0, "answers without a time count as old");
+        assert_eq!(
+            read_stored(body).unwrap().0,
+            0.0,
+            "answers without a time count as old"
+        );
         let g = Geocoder::new(f.clone(), service, "en".into());
         g.submit("fresh");
         assert_eq!(wait_reply(&g).answer.unwrap()[0].name, "Somewhere");

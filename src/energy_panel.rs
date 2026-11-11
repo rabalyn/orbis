@@ -53,8 +53,13 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> Option<Action> {
         .default_pos({
             let m = crate::power_chart::MARGIN;
             // The chart's content, its frame and a gap.
-            let beside = screen.left() + m + crate::power_chart::default_width(screen.width()) + 3.0 * m;
-            if beside + 290.0 + 120.0 < screen.right() { egui::pos2(beside, screen.top() + m) } else { egui::pos2(screen.right() - 330.0, screen.top() + 50.0) }
+            let beside =
+                screen.left() + m + crate::power_chart::default_width(screen.width()) + 3.0 * m;
+            if beside + 290.0 + 120.0 < screen.right() {
+                egui::pos2(beside, screen.top() + m)
+            } else {
+                egui::pos2(screen.right() - 330.0, screen.top() + 50.0)
+            }
         })
         .default_width(290.0)
         .show(ctx, |ui| {
@@ -62,8 +67,16 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> Option<Action> {
                 ui.label("Detail");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let mut auto = m.detail == Detail::Auto;
-                    if ui.checkbox(&mut auto, "Follow zoom").on_hover_text(crate::energy::auto_bands()).changed() {
-                        action = Some(Action::Detail(if auto { Detail::Auto } else { Detail::Fixed(m.level) }));
+                    if ui
+                        .checkbox(&mut auto, "Follow zoom")
+                        .on_hover_text(crate::energy::auto_bands())
+                        .changed()
+                    {
+                        action = Some(Action::Detail(if auto {
+                            Detail::Auto
+                        } else {
+                            Detail::Fixed(m.level)
+                        }));
                     }
                 });
             });
@@ -85,19 +98,29 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> Option<Action> {
                 gui::note(ui, "Held at this level while you zoom.");
             }
             ui.separator();
-            egui::Grid::new("energy-figures").num_columns(2).spacing([12.0, 3.0]).show(ui, |ui| {
-                ui.label(egui::RichText::new(if m.level == Level::Countries { "Month" } else { "Built by" }).weak());
-                ui.label(&m.month);
-                ui.end_row();
-                ui.label(egui::RichText::new("Height").weak());
-                ui.label(&m.scale);
-                ui.end_row();
-                if let Some(y) = &m.year {
-                    ui.label(egui::RichText::new("Year").weak());
-                    ui.add(egui::Label::new(y).wrap());
+            egui::Grid::new("energy-figures")
+                .num_columns(2)
+                .spacing([12.0, 3.0])
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(if m.level == Level::Countries {
+                            "Month"
+                        } else {
+                            "Built by"
+                        })
+                        .weak(),
+                    );
+                    ui.label(&m.month);
                     ui.end_row();
-                }
-            });
+                    ui.label(egui::RichText::new("Height").weak());
+                    ui.label(&m.scale);
+                    ui.end_row();
+                    if let Some(y) = &m.year {
+                        ui.label(egui::RichText::new("Year").weak());
+                        ui.add(egui::Label::new(y).wrap());
+                        ui.end_row();
+                    }
+                });
             if m.year.is_some() {
                 gui::note(ui, "Year: Ember via Our World in Data (CC BY 4.0)");
             }
@@ -125,7 +148,12 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> Option<Action> {
 }
 
 /// The flat map's legend while the energy layer is on: renewable share or carbon intensity.
-pub fn map_legend(ctx: &egui::Context, gui: &mut Gui, period: &str, signal: crate::world_energy::MapSignal) {
+pub fn map_legend(
+    ctx: &egui::Context,
+    gui: &mut Gui,
+    period: &str,
+    signal: crate::world_energy::MapSignal,
+) {
     let screen = ctx.content_rect();
     // At the bottom right, above the buttons, clear of the credits at the bottom left.
     let shown = egui::Area::new(egui::Id::unique("energy-map-legend"))
@@ -134,32 +162,62 @@ pub fn map_legend(ctx: &egui::Context, gui: &mut Gui, period: &str, signal: crat
         .show(ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 let title = match signal {
-                    crate::world_energy::MapSignal::RenewableShare => format!("Renewable share of electricity, {period}"),
-                    crate::world_energy::MapSignal::CarbonIntensity => format!("Carbon intensity, {period}"),
+                    crate::world_energy::MapSignal::RenewableShare => {
+                        format!("Renewable share of electricity, {period}")
+                    }
+                    crate::world_energy::MapSignal::CarbonIntensity => {
+                        format!("Carbon intensity, {period}")
+                    }
                 };
                 ui.label(egui::RichText::new(title).size(12.5));
                 let (rect, _) = ui.allocate_exact_size(Vec2::new(240.0, 26.0), Sense::hover());
-                let bar = Rect::from_min_max(rect.left_top(), Pos2::new(rect.right(), rect.top() + 11.0));
+                let bar =
+                    Rect::from_min_max(rect.left_top(), Pos2::new(rect.right(), rect.top() + 11.0));
                 let p = ui.painter();
                 let n = 48;
                 let w = bar.width() / n as f32;
                 for k in 0..n {
                     let t = (k as f32 + 0.5) / n as f32;
                     let [r, g, b] = match signal {
-                        crate::world_energy::MapSignal::RenewableShare => crate::world_energy::share_colour(100.0 * t),
-                        crate::world_energy::MapSignal::CarbonIntensity => crate::world_energy::intensity_colour(800.0 * t),
+                        crate::world_energy::MapSignal::RenewableShare => {
+                            crate::world_energy::share_colour(100.0 * t)
+                        }
+                        crate::world_energy::MapSignal::CarbonIntensity => {
+                            crate::world_energy::intensity_colour(800.0 * t)
+                        }
                     };
                     let x = bar.left() + w * k as f32;
-                    p.rect_filled(Rect::from_min_max(Pos2::new(x, bar.top()), Pos2::new(x + w + 0.5, bar.bottom())), 0.0, egui::Color32::from_rgb(r, g, b));
+                    p.rect_filled(
+                        Rect::from_min_max(
+                            Pos2::new(x, bar.top()),
+                            Pos2::new(x + w + 0.5, bar.bottom()),
+                        ),
+                        0.0,
+                        egui::Color32::from_rgb(r, g, b),
+                    );
                 }
                 let weak = ui.visuals().weak_text_color();
-                for (t, align) in [(0.0, egui::Align2::LEFT_BOTTOM), (0.5, egui::Align2::CENTER_BOTTOM), (1.0, egui::Align2::RIGHT_BOTTOM)] {
+                for (t, align) in [
+                    (0.0, egui::Align2::LEFT_BOTTOM),
+                    (0.5, egui::Align2::CENTER_BOTTOM),
+                    (1.0, egui::Align2::RIGHT_BOTTOM),
+                ] {
                     let x = bar.left() + bar.width() * t;
                     let label = match signal {
-                        crate::world_energy::MapSignal::RenewableShare => format!("{:.0}%", t * 100.0),
-                        crate::world_energy::MapSignal::CarbonIntensity => format!("{:.0} g/kWh", t * 800.0),
+                        crate::world_energy::MapSignal::RenewableShare => {
+                            format!("{:.0}%", t * 100.0)
+                        }
+                        crate::world_energy::MapSignal::CarbonIntensity => {
+                            format!("{:.0} g/kWh", t * 800.0)
+                        }
                     };
-                    p.text(Pos2::new(x, rect.bottom()), align, label, egui::FontId::proportional(11.5), weak);
+                    p.text(
+                        Pos2::new(x, rect.bottom()),
+                        align,
+                        label,
+                        egui::FontId::proportional(11.5),
+                        weak,
+                    );
                 }
                 gui::note(ui, "Where Ember has no months, the year's value.");
                 gui::note(ui, "Ember via Our World in Data. Bars: on the globe.");
@@ -174,31 +232,66 @@ fn stops(ui: &mut egui::Ui, m: &Model) -> Option<Level> {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 44.0), Sense::click_and_drag());
     let n = Level::ALL.len();
     let inset = 22.0;
-    let x_of = |i: usize| rect.left() + inset + (rect.width() - 2.0 * inset) * i as f32 / (n - 1) as f32;
+    let x_of =
+        |i: usize| rect.left() + inset + (rect.width() - 2.0 * inset) * i as f32 / (n - 1) as f32;
     let y = rect.top() + 10.0;
     let v = ui.visuals();
     let p = ui.painter();
     let current = m.level.index();
-    p.line_segment([Pos2::new(x_of(0), y), Pos2::new(x_of(n - 1), y)], Stroke::new(3.0, v.widgets.inactive.bg_fill.gamma_multiply(1.6)));
-    p.line_segment([Pos2::new(x_of(0), y), Pos2::new(x_of(current), y)], Stroke::new(3.0, gui::accent()));
+    p.line_segment(
+        [Pos2::new(x_of(0), y), Pos2::new(x_of(n - 1), y)],
+        Stroke::new(3.0, v.widgets.inactive.bg_fill.gamma_multiply(1.6)),
+    );
+    p.line_segment(
+        [Pos2::new(x_of(0), y), Pos2::new(x_of(current), y)],
+        Stroke::new(3.0, gui::accent()),
+    );
     for (i, level) in Level::ALL.iter().enumerate() {
         let at = Pos2::new(x_of(i), y);
         let on = i == current;
         if on {
             p.circle(at, 7.0, gui::accent(), Stroke::new(2.0, v.window_fill));
         } else {
-            p.circle(at, 4.0, if i < current { gui::accent() } else { v.widgets.inactive.bg_fill.gamma_multiply(1.8) }, Stroke::NONE);
+            p.circle(
+                at,
+                4.0,
+                if i < current {
+                    gui::accent()
+                } else {
+                    v.widgets.inactive.bg_fill.gamma_multiply(1.8)
+                },
+                Stroke::NONE,
+            );
         }
-        let label = Rect::from_center_size(Pos2::new(at.x, rect.bottom() - 12.0), Vec2::new(80.0, 20.0));
-        let colour = if on { v.text_color() } else { v.weak_text_color() };
-        let name = if *level == Level::Towns { "Municip." } else { level.plural().split(' ').next().unwrap_or("") };
-        p.text(label.center(), egui::Align2::CENTER_CENTER, name, egui::FontId::proportional(11.5), colour);
+        let label =
+            Rect::from_center_size(Pos2::new(at.x, rect.bottom() - 12.0), Vec2::new(80.0, 20.0));
+        let colour = if on {
+            v.text_color()
+        } else {
+            v.weak_text_color()
+        };
+        let name = if *level == Level::Towns {
+            "Municip."
+        } else {
+            level.plural().split(' ').next().unwrap_or("")
+        };
+        p.text(
+            label.center(),
+            egui::Align2::CENTER_CENTER,
+            name,
+            egui::FontId::proportional(11.5),
+            colour,
+        );
     }
     let pointer = response.interact_pointer_pos()?;
     if !(response.clicked() || response.dragged()) {
         return None;
     }
-    let nearest = (0..n).min_by(|a, b| (x_of(*a) - pointer.x).abs().total_cmp(&(x_of(*b) - pointer.x).abs()))?;
+    let nearest = (0..n).min_by(|a, b| {
+        (x_of(*a) - pointer.x)
+            .abs()
+            .total_cmp(&(x_of(*b) - pointer.x).abs())
+    })?;
     (nearest != current || m.detail == Detail::Auto).then_some(Level::ALL[nearest])
 }
 
@@ -228,7 +321,14 @@ mod tests {
 
     #[test]
     fn details_read_back_and_fixed_levels_ignore_the_altitude() {
-        for d in [Detail::Auto, Detail::Fixed(Level::Countries), Detail::Fixed(Level::States), Detail::Fixed(Level::Districts), Detail::Fixed(Level::Towns), Detail::Fixed(Level::Plants)] {
+        for d in [
+            Detail::Auto,
+            Detail::Fixed(Level::Countries),
+            Detail::Fixed(Level::States),
+            Detail::Fixed(Level::Districts),
+            Detail::Fixed(Level::Towns),
+            Detail::Fixed(Level::Plants),
+        ] {
             assert_eq!(Detail::parse(d.key()), Some(d));
         }
         assert_eq!(Detail::Fixed(Level::Towns).level(5e6, None), Level::Towns);

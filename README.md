@@ -10,6 +10,7 @@ This is an independent program with a similar purpose to Kugelblitz, not a port 
 - [docs/FEATURES.md](docs/FEATURES.md): everything the program does, all controls, and its limitations
 - [docs/CACHING.md](docs/CACHING.md): how it treats public servers, the disk and LAN caches, and imagery sources
 - [docs/PROVENANCE.md](docs/PROVENANCE.md): where data and methods come from, their terms and credits
+- [docs/RELEASING.md](docs/RELEASING.md): SemVer, release notes, tags and web publishing workflow
 
 ## Run
 
@@ -53,6 +54,7 @@ cargo run --release -- --lat 46.5 --lon 11.8 --distance 25000 --tilt 70 --screen
 | Search for a place or coordinates | Ctrl-F |
 | Saved places | Ctrl-S saves, K lists |
 | GeoJSON, GPX, KML, KMZ and IGC files | `--import FILE` or drop on the window; I lists |
+| Altitude-aware measurement trails | U opens the library; create with New ruler, click points, then finish; GPX tracks import and export |
 | Electricity of the world's countries by source and month, Germany's plants down to each site, output and use | W; on the flat map, countries shaded by renewable share |
 | Solar and lunar eclipses, computed in the program, and earthquake, eruption, tsunami and fireball feeds | E; `--eclipse 2024-04-08` |
 | Map services (WMS, WMTS or XYZ) as imagery or overlay | G; `--add-service ADDRESS`, `--list-services` |
@@ -91,7 +93,9 @@ cargo install wasm-bindgen-cli --version 0.2.130   # must match wasm-bindgen in 
 ./web/build.sh                                      # writes dist/index.html
 ```
 
-To publish it on GitHub Pages ([rabalyn/orbis](https://github.com/rabalyn/orbis), served at https://rabalyn.github.io/orbis/), commit, then run:
+The technical panel (F12) shows the app version, the source commit used as the build ID, and its release tag. Web publishing
+requires a clean commit, a matching annotated `v<version>` tag and release notes at `docs/releases/v<version>.md`.
+Follow [the release workflow](docs/RELEASING.md) before publishing to GitHub Pages:
 
 ```bash
 ./web/publish.sh            # --dry-run to push nothing; --help for all options

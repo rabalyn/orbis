@@ -167,7 +167,11 @@ impl Elements {
         let zeta = p.dot(self.axis);
         let q = p - self.foot;
         let m = (q - self.axis * q.dot(self.axis)).length();
-        ((m), (self.penumbra_apex - zeta) * self.tan_penumbra, (self.umbra_apex - zeta) * self.tan_umbra)
+        (
+            (m),
+            (self.penumbra_apex - zeta) * self.tan_penumbra,
+            (self.umbra_apex - zeta) * self.tan_umbra,
+        )
     }
 
     /// The fraction of the Sun's diameter covered at a point on the Earth.
@@ -195,7 +199,11 @@ fn silhouette_radius(declination: f64, angle: f64) -> f64 {
 /// Used to find the direction in which the axis lies from the Earth's centre.
 fn plane_angle(e: &Elements) -> f64 {
     let east = DVec3::Z.cross(e.axis);
-    let east = if east.length() < 1e-9 { DVec3::X } else { east.normalize() };
+    let east = if east.length() < 1e-9 {
+        DVec3::X
+    } else {
+        east.normalize()
+    };
     let north = e.axis.cross(east);
     e.foot.dot(north).atan2(e.foot.dot(east))
 }
@@ -237,7 +245,9 @@ fn syzygy(guess: f64, target: f64) -> f64 {
     let mut t = guess;
     for _ in 0..8 {
         let c = ephemeris::centuries_tt(t);
-        let f = wrap_pi(ephemeris::moon_mean_of_date(c).lon - ephemeris::sun_mean_of_date(c).lon - target);
+        let f = wrap_pi(
+            ephemeris::moon_mean_of_date(c).lon - ephemeris::sun_mean_of_date(c).lon - target,
+        );
         t -= f / RATE;
     }
     t
@@ -271,7 +281,9 @@ pub fn between(start: f64, end: f64) -> Vec<Eclipse> {
 /// The eclipse nearest in time to `unix`.
 pub fn nearest(unix: f64) -> Option<Eclipse> {
     let year = 365.25 * 86_400.0;
-    between(unix - 0.6 * year, unix + 0.6 * year).into_iter().min_by(|a, b| (a.time() - unix).abs().total_cmp(&(b.time() - unix).abs()))
+    between(unix - 0.6 * year, unix + 0.6 * year)
+        .into_iter()
+        .min_by(|a, b| (a.time() - unix).abs().total_cmp(&(b.time() - unix).abs()))
 }
 
 fn solar_near(new_moon: f64) -> Option<Solar> {
@@ -294,7 +306,11 @@ fn solar_near(new_moon: f64) -> Option<Solar> {
     let (_, l1, l2) = e.local(point);
     // On the axis the magnitude is the ratio of the Moon's and the Sun's diameters, as the catalogs
     // give it for central eclipses; elsewhere it is the fraction of the Sun's diameter covered.
-    let magnitude = if hit.is_some() { (l1 - l2) / (l1 + l2) } else { e.magnitude_at(point) };
+    let magnitude = if hit.is_some() {
+        (l1 - l2) / (l1 + l2)
+    } else {
+        e.magnitude_at(point)
+    };
     let (lat, lon, _) = geo::ecef_to_geodetic(point * A);
     let mut kind = SolarKind::Partial;
     let mut duration = None;
@@ -311,9 +327,22 @@ fn solar_near(new_moon: f64) -> Option<Solar> {
         duration = Some(after - before).filter(|d| *d > 0.0 && *d < 1500.0);
     } else if gamma < reach + l2.abs() {
         // The umbra touches the limb without the axis reaching the Earth.
-        kind = if l2 < 0.0 { SolarKind::Total } else { SolarKind::Annular };
+        kind = if l2 < 0.0 {
+            SolarKind::Total
+        } else {
+            SolarKind::Annular
+        };
     }
-    Some(Solar { kind, time, magnitude, gamma: signed_gamma, lat, lon, central: hit.is_some(), duration })
+    Some(Solar {
+        kind,
+        time,
+        magnitude,
+        gamma: signed_gamma,
+        lat,
+        lon,
+        central: hit.is_some(),
+        duration,
+    })
 }
 
 /// Whether the central line has total and annular stretches: (total somewhere, annular somewhere).
@@ -346,7 +375,11 @@ pub fn central_line(time: f64, step: f64) -> Vec<PathPoint> {
         e.axis_hit().map(|p| {
             let (lat, lon, _) = geo::ecef_to_geodetic(p * A);
             let (_, _, l2) = e.local(p);
-            PathPoint { lat, lon, total: l2 < 0.0 }
+            PathPoint {
+                lat,
+                lon,
+                total: l2 < 0.0,
+            }
         })
     };
     let hits = |t: f64| if point_at(t).is_some() { 1.0 } else { -1.0 };
@@ -398,19 +431,31 @@ fn lunar_shadow(time: f64) -> LunarShadow {
     let toward_sun = sm.sun / sun_distance;
     let behind = -sm.moon.dot(toward_sun);
     // A Moon on the Sun's side of the Earth is in no shadow of the Earth.
-    let off_axis = if behind > 0.0 { (sm.moon + toward_sun * behind).length() } else { f64::MAX / 4.0 };
+    let off_axis = if behind > 0.0 {
+        (sm.moon + toward_sun * behind).length()
+    } else {
+        f64::MAX / 4.0
+    };
     let tan = |s: f64| s / (1.0 - s * s).sqrt();
     let earth = RE * (1.0 + ATMOSPHERE);
     let umbra = earth - behind * tan((SUN_RADIUS - RE) / sun_distance);
     let penumbra = earth + behind * tan((SUN_RADIUS + RE) / sun_distance);
-    LunarShadow { distance: off_axis, umbra, penumbra, moon: K_PENUMBRA * RE }
+    LunarShadow {
+        distance: off_axis,
+        umbra,
+        penumbra,
+        moon: K_PENUMBRA * RE,
+    }
 }
 
 /// Umbral and penumbral magnitudes at an instant: how far the Moon's disc is inside each shadow,
 /// in Moon diameters. Positive means some of the disc is in the shadow.
 pub fn lunar_magnitudes(time: f64) -> (f64, f64) {
     let s = lunar_shadow(time);
-    ((s.umbra + s.moon - s.distance) / (2.0 * s.moon), (s.penumbra + s.moon - s.distance) / (2.0 * s.moon))
+    (
+        (s.umbra + s.moon - s.distance) / (2.0 * s.moon),
+        (s.penumbra + s.moon - s.distance) / (2.0 * s.moon),
+    )
 }
 
 fn lunar_near(full_moon: f64) -> Option<Lunar> {
@@ -467,13 +512,16 @@ pub fn moon_tint(time: f64) -> Option<[f32; 3]> {
     let pen = (penumbral as f32).clamp(0.0, 1.0);
     let um = (umbral as f32).clamp(0.0, 1.0);
     const COPPER: [f32; 3] = [0.30, 0.075, 0.03];
-    Some(std::array::from_fn(|i| (1.0 - 0.25 * pen) * (1.0 + (COPPER[i] - 1.0) * um)))
+    Some(std::array::from_fn(|i| {
+        (1.0 - 0.25 * pen) * (1.0 + (COPPER[i] - 1.0) * um)
+    }))
 }
 
 impl Elements {
     /// Whether the penumbra reaches the Earth: any part of it can be eclipsed.
     pub fn touches_earth(&self) -> bool {
-        self.gamma() < silhouette_radius(self.declination, plane_angle(self)) + self.penumbra_radius()
+        self.gamma()
+            < silhouette_radius(self.declination, plane_angle(self)) + self.penumbra_radius()
     }
 }
 
@@ -510,7 +558,8 @@ mod tests {
     /// Great-circle distance in km.
     fn km(a: (f64, f64), b: (f64, f64)) -> f64 {
         let (la, lb) = (a.0.to_radians(), b.0.to_radians());
-        let d = (la.sin() * lb.sin() + la.cos() * lb.cos() * (a.1 - b.1).to_radians().cos()).clamp(-1.0, 1.0);
+        let d = (la.sin() * lb.sin() + la.cos() * lb.cos() * (a.1 - b.1).to_radians().cos())
+            .clamp(-1.0, 1.0);
         d.acos() * 6371.0
     }
 
@@ -524,39 +573,67 @@ mod tests {
     fn total_eclipse_of_2017() {
         let s = solar("2017-08-21T00:00:00Z");
         assert_eq!(s.kind, SolarKind::Total);
-        assert!((s.time - at("2017-08-21T18:25:32Z")).abs() < 60.0, "{}", s.time - at("2017-08-21T18:25:32Z"));
+        assert!(
+            (s.time - at("2017-08-21T18:25:32Z")).abs() < 60.0,
+            "{}",
+            s.time - at("2017-08-21T18:25:32Z")
+        );
         assert!((s.gamma - 0.4367).abs() < 0.003, "{}", s.gamma);
         assert!((s.magnitude - 1.0306).abs() < 0.003, "{}", s.magnitude);
         assert!(km((s.lat.to_degrees(), s.lon.to_degrees()), (37.0, -87.7)) < 150.0);
-        assert!((s.duration.unwrap() - 160.0).abs() < 10.0, "{:?}", s.duration);
+        assert!(
+            (s.duration.unwrap() - 160.0).abs() < 10.0,
+            "{:?}",
+            s.duration
+        );
     }
 
     #[test]
     fn total_eclipse_of_2024() {
         let s = solar("2024-04-08T00:00:00Z");
         assert_eq!(s.kind, SolarKind::Total);
-        assert!((s.time - at("2024-04-08T18:17:16Z")).abs() < 60.0, "{}", s.time - at("2024-04-08T18:17:16Z"));
+        assert!(
+            (s.time - at("2024-04-08T18:17:16Z")).abs() < 60.0,
+            "{}",
+            s.time - at("2024-04-08T18:17:16Z")
+        );
         assert!((s.gamma - 0.3431).abs() < 0.003, "{}", s.gamma);
         assert!((s.magnitude - 1.0566).abs() < 0.003, "{}", s.magnitude);
         assert!(km((s.lat.to_degrees(), s.lon.to_degrees()), (25.3, -104.1)) < 150.0);
-        assert!((s.duration.unwrap() - 268.0).abs() < 10.0, "{:?}", s.duration);
+        assert!(
+            (s.duration.unwrap() - 268.0).abs() < 10.0,
+            "{:?}",
+            s.duration
+        );
     }
 
     #[test]
     fn annular_eclipse_of_2023() {
         let s = solar("2023-10-14T00:00:00Z");
         assert_eq!(s.kind, SolarKind::Annular);
-        assert!((s.time - at("2023-10-14T17:59:32Z")).abs() < 120.0, "{}", s.time - at("2023-10-14T17:59:32Z"));
+        assert!(
+            (s.time - at("2023-10-14T17:59:32Z")).abs() < 120.0,
+            "{}",
+            s.time - at("2023-10-14T17:59:32Z")
+        );
         assert!((s.gamma - 0.3753).abs() < 0.003, "{}", s.gamma);
         assert!((s.magnitude - 0.952).abs() < 0.003, "{}", s.magnitude);
-        assert!((s.duration.unwrap() - 317.0).abs() < 15.0, "{:?}", s.duration);
+        assert!(
+            (s.duration.unwrap() - 317.0).abs() < 15.0,
+            "{:?}",
+            s.duration
+        );
     }
 
     #[test]
     fn hybrid_eclipse_of_april_2023() {
         let s = solar("2023-04-20T00:00:00Z");
         assert_eq!(s.kind, SolarKind::Hybrid);
-        assert!((s.time - at("2023-04-20T04:16:44Z")).abs() < 60.0, "{}", s.time - at("2023-04-20T04:16:44Z"));
+        assert!(
+            (s.time - at("2023-04-20T04:16:44Z")).abs() < 60.0,
+            "{}",
+            s.time - at("2023-04-20T04:16:44Z")
+        );
         assert!((s.magnitude - 1.0132).abs() < 0.003, "{}", s.magnitude);
     }
 
@@ -564,7 +641,11 @@ mod tests {
     fn total_eclipse_of_2026() {
         let s = solar("2026-08-12T00:00:00Z");
         assert_eq!(s.kind, SolarKind::Total);
-        assert!((s.time - at("2026-08-12T17:46:06Z")).abs() < 60.0, "{}", s.time - at("2026-08-12T17:46:06Z"));
+        assert!(
+            (s.time - at("2026-08-12T17:46:06Z")).abs() < 60.0,
+            "{}",
+            s.time - at("2026-08-12T17:46:06Z")
+        );
         assert!((s.gamma - 0.8977).abs() < 0.003, "{}", s.gamma);
         assert!((s.magnitude - 1.0386).abs() < 0.003, "{}", s.magnitude);
         assert!(km((s.lat.to_degrees(), s.lon.to_degrees()), (65.2, -25.2)) < 150.0);
@@ -574,7 +655,11 @@ mod tests {
     fn partial_eclipse_of_2025() {
         let s = solar("2025-03-29T00:00:00Z");
         assert_eq!(s.kind, SolarKind::Partial);
-        assert!((s.time - at("2025-03-29T10:47:30Z")).abs() < 120.0, "{}", s.time - at("2025-03-29T10:47:30Z"));
+        assert!(
+            (s.time - at("2025-03-29T10:47:30Z")).abs() < 120.0,
+            "{}",
+            s.time - at("2025-03-29T10:47:30Z")
+        );
         assert!((s.magnitude - 0.9376).abs() < 0.005, "{}", s.magnitude);
         assert!(!s.central);
     }
@@ -583,24 +668,56 @@ mod tests {
     fn lunar_eclipses_of_2022_and_2025() {
         let l = lunar("2022-11-08T00:00:00Z");
         assert_eq!(l.kind, LunarKind::Total);
-        assert!((l.time - at("2022-11-08T11:00:22Z")).abs() < 120.0, "{}", l.time - at("2022-11-08T11:00:22Z"));
-        assert!((l.umbral_magnitude - 1.3589).abs() < 0.02, "{}", l.umbral_magnitude);
-        assert!((l.total_duration.unwrap() - 85.0 * 60.0).abs() < 180.0, "{:?}", l.total_duration);
+        assert!(
+            (l.time - at("2022-11-08T11:00:22Z")).abs() < 120.0,
+            "{}",
+            l.time - at("2022-11-08T11:00:22Z")
+        );
+        assert!(
+            (l.umbral_magnitude - 1.3589).abs() < 0.02,
+            "{}",
+            l.umbral_magnitude
+        );
+        assert!(
+            (l.total_duration.unwrap() - 85.0 * 60.0).abs() < 180.0,
+            "{:?}",
+            l.total_duration
+        );
         let l = lunar("2025-03-14T00:00:00Z");
         assert_eq!(l.kind, LunarKind::Total);
-        assert!((l.time - at("2025-03-14T06:58:46Z")).abs() < 120.0, "{}", l.time - at("2025-03-14T06:58:46Z"));
-        assert!((l.umbral_magnitude - 1.1804).abs() < 0.02, "{}", l.umbral_magnitude);
-        assert!((l.total_duration.unwrap() - 65.0 * 60.0).abs() < 180.0, "{:?}", l.total_duration);
+        assert!(
+            (l.time - at("2025-03-14T06:58:46Z")).abs() < 120.0,
+            "{}",
+            l.time - at("2025-03-14T06:58:46Z")
+        );
+        assert!(
+            (l.umbral_magnitude - 1.1804).abs() < 0.02,
+            "{}",
+            l.umbral_magnitude
+        );
+        assert!(
+            (l.total_duration.unwrap() - 65.0 * 60.0).abs() < 180.0,
+            "{:?}",
+            l.total_duration
+        );
     }
 
     #[test]
     fn partial_and_penumbral_lunar_eclipses_of_2024() {
         let l = lunar("2024-03-25T00:00:00Z");
         assert_eq!(l.kind, LunarKind::Penumbral);
-        assert!((l.penumbral_magnitude - 0.9576).abs() < 0.02, "{}", l.penumbral_magnitude);
+        assert!(
+            (l.penumbral_magnitude - 0.9576).abs() < 0.02,
+            "{}",
+            l.penumbral_magnitude
+        );
         let l = lunar("2024-09-18T00:00:00Z");
         assert_eq!(l.kind, LunarKind::Partial);
-        assert!((l.umbral_magnitude - 0.0869).abs() < 0.02, "{}", l.umbral_magnitude);
+        assert!(
+            (l.umbral_magnitude - 0.0869).abs() < 0.02,
+            "{}",
+            l.umbral_magnitude
+        );
     }
 
     /// The eclipses of the year, as the NASA catalogs list them: no more, no fewer.
@@ -617,19 +734,34 @@ mod tests {
     #[test]
     fn the_scan_finds_exactly_the_eclipses_of_2024() {
         // Mar 25 penumbral, Apr 8 total, Sep 18 partial, Oct 2 annular.
-        assert_eq!(kinds("2024-01-01T00:00:00Z", "2025-01-01T00:00:00Z"), ["L Penumbral", "S Total", "L Partial", "S Annular"]);
+        assert_eq!(
+            kinds("2024-01-01T00:00:00Z", "2025-01-01T00:00:00Z"),
+            ["L Penumbral", "S Total", "L Partial", "S Annular"]
+        );
     }
 
     #[test]
     fn the_scan_finds_exactly_the_eclipses_of_other_years() {
         // 2023: Apr 20 hybrid, May 5 penumbral, Oct 14 annular, Oct 28 partial.
-        assert_eq!(kinds("2023-01-01T00:00:00Z", "2024-01-01T00:00:00Z"), ["S Hybrid", "L Penumbral", "S Annular", "L Partial"]);
+        assert_eq!(
+            kinds("2023-01-01T00:00:00Z", "2024-01-01T00:00:00Z"),
+            ["S Hybrid", "L Penumbral", "S Annular", "L Partial"]
+        );
         // 2025: Mar 14 total, Mar 29 partial, Sep 7 total, Sep 21 partial.
-        assert_eq!(kinds("2025-01-01T00:00:00Z", "2026-01-01T00:00:00Z"), ["L Total", "S Partial", "L Total", "S Partial"]);
+        assert_eq!(
+            kinds("2025-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
+            ["L Total", "S Partial", "L Total", "S Partial"]
+        );
         // 2026: Feb 17 annular, Mar 3 total, Aug 12 total, Aug 28 partial.
-        assert_eq!(kinds("2026-01-01T00:00:00Z", "2027-01-01T00:00:00Z"), ["S Annular", "L Total", "S Total", "L Partial"]);
+        assert_eq!(
+            kinds("2026-01-01T00:00:00Z", "2027-01-01T00:00:00Z"),
+            ["S Annular", "L Total", "S Total", "L Partial"]
+        );
         // 2018: three partial solar eclipses and two lunar ones (Jan 31 and Jul 27 total), five in all.
-        assert_eq!(kinds("2018-01-01T00:00:00Z", "2019-01-01T00:00:00Z").len(), 5);
+        assert_eq!(
+            kinds("2018-01-01T00:00:00Z", "2019-01-01T00:00:00Z").len(),
+            5
+        );
     }
 
     // Rows of the central line table of the 2024 April 8 eclipse in the NASA/GSFC eclipse bulletin
@@ -654,7 +786,10 @@ mod tests {
         let mut worst: f64 = 0.0;
         for (time, lat, lon, _seconds) in NASA_2024_LINE {
             // How far the table's point is from the computed line.
-            let nearest = line.iter().map(|p| km((lat, lon), (p.lat.to_degrees(), p.lon.to_degrees()))).fold(f64::MAX, f64::min);
+            let nearest = line
+                .iter()
+                .map(|p| km((lat, lon), (p.lat.to_degrees(), p.lon.to_degrees())))
+                .fold(f64::MAX, f64::min);
             eprintln!("{time}: {nearest:.1} km from the line");
             worst = worst.max(nearest);
             assert!(nearest < 8.0, "{time}: {nearest} km from the line");

@@ -27,7 +27,13 @@ fn sample(img: &RgbaImage, rect: Rect, fx: f64, fy: f64) -> [f32; 4] {
 /// The tile's area of `over` laid on that of `base`, `opacity` times the overlay's own
 /// transparency. The result covers exactly the tile and has the finer of the two resolutions,
 /// at most 512 pixels, so that a detailed overlay is not blurred by a coarse base.
-pub fn composite(base: &RgbaImage, base_rect: Rect, over: &RgbaImage, over_rect: Rect, opacity: f32) -> RgbaImage {
+pub fn composite(
+    base: &RgbaImage,
+    base_rect: Rect,
+    over: &RgbaImage,
+    over_rect: Rect,
+    opacity: f32,
+) -> RgbaImage {
     let finest = (base.width() as f64 * base_rect.2).max(over.width() as f64 * over_rect.2);
     let n: u32 = if finest > 256.0 { 512 } else { 256 };
     let opacity = opacity.clamp(0.0, 1.0);
@@ -68,10 +74,16 @@ pub fn under(top: &RgbaImage, top_rect: Rect, base: &RgbaImage, base_rect: Rect)
                 if a <= 0.0 {
                     0
                 } else {
-                    ((t[i] * ta + b[i] * ba * (1.0 - ta)) / a).round().clamp(0.0, 255.0) as u8
+                    ((t[i] * ta + b[i] * ba * (1.0 - ta)) / a)
+                        .round()
+                        .clamp(0.0, 255.0) as u8
                 }
             };
-            out.put_pixel(px, py, image::Rgba([mix(0), mix(1), mix(2), (a * 255.0).round() as u8]));
+            out.put_pixel(
+                px,
+                py,
+                image::Rgba([mix(0), mix(1), mix(2), (a * 255.0).round() as u8]),
+            );
         }
     }
     out
@@ -109,15 +121,27 @@ mod tests {
     #[test]
     fn zero_opacity_keeps_the_base_and_full_opacity_takes_the_overlay() {
         let (b, o) = (flat(256, [10, 20, 30, 255]), flat(256, [200, 100, 50, 255]));
-        assert_eq!(composite(&b, WHOLE, &o, WHOLE, 0.0).get_pixel(5, 5).0, [10, 20, 30, 255]);
-        assert_eq!(composite(&b, WHOLE, &o, WHOLE, 1.0).get_pixel(5, 5).0, [200, 100, 50, 255]);
-        assert_eq!(composite(&b, WHOLE, &o, WHOLE, 0.5).get_pixel(5, 5).0, [105, 60, 40, 255]);
+        assert_eq!(
+            composite(&b, WHOLE, &o, WHOLE, 0.0).get_pixel(5, 5).0,
+            [10, 20, 30, 255]
+        );
+        assert_eq!(
+            composite(&b, WHOLE, &o, WHOLE, 1.0).get_pixel(5, 5).0,
+            [200, 100, 50, 255]
+        );
+        assert_eq!(
+            composite(&b, WHOLE, &o, WHOLE, 0.5).get_pixel(5, 5).0,
+            [105, 60, 40, 255]
+        );
     }
 
     #[test]
     fn the_overlays_own_transparency_counts() {
         let (b, o) = (flat(256, [0, 0, 0, 255]), flat(256, [200, 200, 200, 0]));
-        assert_eq!(composite(&b, WHOLE, &o, WHOLE, 1.0).get_pixel(9, 9).0, [0, 0, 0, 255]);
+        assert_eq!(
+            composite(&b, WHOLE, &o, WHOLE, 1.0).get_pixel(9, 9).0,
+            [0, 0, 0, 255]
+        );
         let half = flat(256, [200, 200, 200, 128]);
         let v = composite(&b, WHOLE, &half, WHOLE, 1.0).get_pixel(9, 9).0[0];
         assert!((99..=101).contains(&v), "{v}");
@@ -142,8 +166,17 @@ mod tests {
     #[test]
     fn detail_in_either_picture_raises_the_resolution() {
         let (small, big) = (flat(256, [1, 1, 1, 255]), flat(512, [1, 1, 1, 255]));
-        assert_eq!(composite(&small, WHOLE, &small, WHOLE, 0.5).dimensions(), (256, 256));
-        assert_eq!(composite(&small, WHOLE, &big, WHOLE, 0.5).dimensions(), (512, 512));
-        assert_eq!(composite(&small, (0.0, 0.0, 0.25), &small, WHOLE, 0.5).dimensions(), (256, 256));
+        assert_eq!(
+            composite(&small, WHOLE, &small, WHOLE, 0.5).dimensions(),
+            (256, 256)
+        );
+        assert_eq!(
+            composite(&small, WHOLE, &big, WHOLE, 0.5).dimensions(),
+            (512, 512)
+        );
+        assert_eq!(
+            composite(&small, (0.0, 0.0, 0.25), &small, WHOLE, 0.5).dimensions(),
+            (256, 256)
+        );
     }
 }

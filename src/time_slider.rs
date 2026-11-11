@@ -116,13 +116,16 @@ pub fn step(track: Track, unix: f64, units: i64) -> f64 {
             (days_from_civil(y, 1, 1) + index) as f64 * 86_400.0 + secs
         }
         Track::Time => {
-            let minute = ((secs / 60.0).floor() as i64 + units * WHEEL_MINUTES).clamp(0, LAST_MINUTE as i64);
+            let minute =
+                ((secs / 60.0).floor() as i64 + units * WHEEL_MINUTES).clamp(0, LAST_MINUTE as i64);
             join(y, m, d, minute as f64 * 60.0)
         }
     }
 }
 
-const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 /// What a track's thumb stands for, as shown beside it.
 pub fn value_label(track: Track, unix: f64) -> String {
@@ -130,7 +133,11 @@ pub fn value_label(track: Track, unix: f64) -> String {
     match track {
         Track::Year => format!("{y}"),
         Track::Day => format!("{d} {}", MONTHS[(m - 1).clamp(0, 11) as usize]),
-        Track::Time => format!("{:02}:{:02}", (secs / 3600.0) as i64, (secs / 60.0) as i64 % 60),
+        Track::Time => format!(
+            "{:02}:{:02}",
+            (secs / 3600.0) as i64,
+            (secs / 60.0) as i64 % 60
+        ),
     }
 }
 
@@ -145,7 +152,10 @@ pub fn end_labels(track: Track) -> (&'static str, &'static str) {
 
 /// The start of the range the planet formulae are stated for, and the end of its last year.
 pub fn range() -> (f64, f64) {
-    (days_from_civil(FIRST_YEAR, 1, 1) as f64 * 86_400.0, days_from_civil(LAST_YEAR + 1, 1, 1) as f64 * 86_400.0)
+    (
+        days_from_civil(FIRST_YEAR, 1, 1) as f64 * 86_400.0,
+        days_from_civil(LAST_YEAR + 1, 1, 1) as f64 * 86_400.0,
+    )
 }
 
 /// True for a time the planet formulae (JPL's elements, valid 1800 to 2050) do not cover.
@@ -167,10 +177,19 @@ pub enum Level {
 pub fn notices(unix: f64) -> Vec<(Level, &'static str)> {
     let mut out = Vec::new();
     if outside_range(unix) {
-        out.push((Level::Warning, "Outside 1800-2050: planet positions are approximate."));
-        out.push((Level::Note, "The Sun, the Moon and the Earth's turn are less exact there too."));
+        out.push((
+            Level::Warning,
+            "Outside 1800-2050: planet positions are approximate.",
+        ));
+        out.push((
+            Level::Note,
+            "The Sun, the Moon and the Earth's turn are less exact there too.",
+        ));
     } else if unix < days_from_civil(1950, 1, 1) as f64 * 86_400.0 {
-        out.push((Level::Note, "Before 1950 the Sun is less exact: its formula is stated for 1950-2050."));
+        out.push((
+            Level::Note,
+            "Before 1950 the Sun is less exact: its formula is stated for 1950-2050.",
+        ));
     }
     out
 }
@@ -183,13 +202,21 @@ pub fn clock_mark(unix: f64) -> Option<&'static str> {
 /// The greatest moment of the first eclipse after `time`, searching up to a few years ahead.
 pub fn next_eclipse(time: f64) -> Option<f64> {
     let from = time + 30.0;
-    [200.0, 400.0, 800.0].iter().find_map(|days| eclipse::between(from, from + days * 86_400.0).first().map(Eclipse::time))
+    [200.0, 400.0, 800.0].iter().find_map(|days| {
+        eclipse::between(from, from + days * 86_400.0)
+            .first()
+            .map(Eclipse::time)
+    })
 }
 
 /// The greatest moment of the last eclipse before `time`.
 pub fn previous_eclipse(time: f64) -> Option<f64> {
     let to = time - 30.0;
-    [200.0, 400.0, 800.0].iter().find_map(|days| eclipse::between(to - days * 86_400.0, to).last().map(Eclipse::time))
+    [200.0, 400.0, 800.0].iter().find_map(|days| {
+        eclipse::between(to - days * 86_400.0, to)
+            .last()
+            .map(Eclipse::time)
+    })
 }
 
 /// Half a day: longer than any eclipse lasts from its first to its last contact.
@@ -206,49 +233,59 @@ pub struct EclipseWatch {
 
 fn clock(unix: f64) -> String {
     let (_, _, _, secs) = split(unix);
-    format!("{:02}:{:02}", (secs / 3600.0) as i64, (secs / 60.0) as i64 % 60)
+    format!(
+        "{:02}:{:02}",
+        (secs / 3600.0) as i64,
+        (secs / 60.0) as i64 % 60
+    )
 }
 
 impl EclipseWatch {
     /// A line naming the eclipse in progress, or none. An eclipse is in progress from the first
     /// to the last contact of the shadow with the Earth, or of the Moon with the Earth's shadow.
     pub fn status(&mut self, time: f64) -> Option<String> {
-        if !self.covered.is_some_and(|(a, b)| a <= time - HALF_DAY && time + HALF_DAY <= b) {
+        if !self
+            .covered
+            .is_some_and(|(a, b)| a <= time - HALF_DAY && time + HALF_DAY <= b)
+        {
             let (a, b) = (time - 3.0 * 86_400.0, time + 3.0 * 86_400.0);
             self.known = eclipse::between(a, b);
             self.covered = Some((a, b));
         }
-        self.known.iter().filter(|e| (e.time() - time).abs() < HALF_DAY).find_map(|e| match e {
-            Eclipse::Solar(s) if eclipse::shadow_at(time).is_some() => {
-                let kind = match s.kind {
-                    SolarKind::Total => "Total",
-                    SolarKind::Annular => "Annular",
-                    SolarKind::Hybrid => "Hybrid",
-                    SolarKind::Partial => "Partial",
-                };
-                Some(format!("{kind} solar eclipse, greatest {}", clock(s.time)))
-            }
-            Eclipse::Lunar(l) => {
-                let (umbral, penumbral) = eclipse::lunar_magnitudes(time);
-                if penumbral <= 0.0 {
-                    return None;
+        self.known
+            .iter()
+            .filter(|e| (e.time() - time).abs() < HALF_DAY)
+            .find_map(|e| match e {
+                Eclipse::Solar(s) if eclipse::shadow_at(time).is_some() => {
+                    let kind = match s.kind {
+                        SolarKind::Total => "Total",
+                        SolarKind::Annular => "Annular",
+                        SolarKind::Hybrid => "Hybrid",
+                        SolarKind::Partial => "Partial",
+                    };
+                    Some(format!("{kind} solar eclipse, greatest {}", clock(s.time)))
                 }
-                let kind = match l.kind {
-                    LunarKind::Total => "Total",
-                    LunarKind::Partial => "Partial",
-                    LunarKind::Penumbral => "Penumbral",
-                };
-                let phase = if umbral >= 1.0 {
-                    "total phase"
-                } else if umbral > 0.0 {
-                    "partial phase"
-                } else {
-                    "penumbral phase"
-                };
-                Some(format!("{kind} lunar eclipse, now in its {phase}"))
-            }
-            _ => None,
-        })
+                Eclipse::Lunar(l) => {
+                    let (umbral, penumbral) = eclipse::lunar_magnitudes(time);
+                    if penumbral <= 0.0 {
+                        return None;
+                    }
+                    let kind = match l.kind {
+                        LunarKind::Total => "Total",
+                        LunarKind::Partial => "Partial",
+                        LunarKind::Penumbral => "Penumbral",
+                    };
+                    let phase = if umbral >= 1.0 {
+                        "total phase"
+                    } else if umbral > 0.0 {
+                        "partial phase"
+                    } else {
+                        "penumbral phase"
+                    };
+                    Some(format!("{kind} lunar eclipse, now in its {phase}"))
+                }
+                _ => None,
+            })
     }
 }
 
@@ -267,7 +304,14 @@ mod tests {
 
     #[test]
     fn every_track_round_trips_at_both_ends_and_inside() {
-        for text in ["1800-01-01T00:00:00Z", "2050-12-31T23:59:00Z", "1850-03-21T12:00:00Z", "1969-12-31T23:59:00Z", "2026-06-21T16:00:00Z", "2024-02-29T05:30:00Z"] {
+        for text in [
+            "1800-01-01T00:00:00Z",
+            "2050-12-31T23:59:00Z",
+            "1850-03-21T12:00:00Z",
+            "1969-12-31T23:59:00Z",
+            "2026-06-21T16:00:00Z",
+            "2024-02-29T05:30:00Z",
+        ] {
             let t = at(text);
             for track in [Track::Year, Track::Day, Track::Time] {
                 let p = position(track, t);
@@ -282,26 +326,57 @@ mod tests {
     #[test]
     fn the_ends_of_the_tracks_are_the_ends_of_the_range() {
         let t = at("2026-06-21T16:00:00Z");
-        assert_eq!(show(set_position(Track::Year, t, 0.0)), "1800-06-21 16:00:00 UTC");
-        assert_eq!(show(set_position(Track::Year, t, 1.0)), "2050-06-21 16:00:00 UTC");
-        assert_eq!(show(set_position(Track::Day, t, 0.0)), "2026-01-01 16:00:00 UTC");
-        assert_eq!(show(set_position(Track::Day, t, 1.0)), "2026-12-31 16:00:00 UTC");
-        assert_eq!(show(set_position(Track::Time, t, 0.0)), "2026-06-21 00:00:00 UTC");
-        assert_eq!(show(set_position(Track::Time, t, 1.0)), "2026-06-21 23:59:00 UTC");
+        assert_eq!(
+            show(set_position(Track::Year, t, 0.0)),
+            "1800-06-21 16:00:00 UTC"
+        );
+        assert_eq!(
+            show(set_position(Track::Year, t, 1.0)),
+            "2050-06-21 16:00:00 UTC"
+        );
+        assert_eq!(
+            show(set_position(Track::Day, t, 0.0)),
+            "2026-01-01 16:00:00 UTC"
+        );
+        assert_eq!(
+            show(set_position(Track::Day, t, 1.0)),
+            "2026-12-31 16:00:00 UTC"
+        );
+        assert_eq!(
+            show(set_position(Track::Time, t, 0.0)),
+            "2026-06-21 00:00:00 UTC"
+        );
+        assert_eq!(
+            show(set_position(Track::Time, t, 1.0)),
+            "2026-06-21 23:59:00 UTC"
+        );
         assert_eq!(position(Track::Year, at("1800-01-01T00:00:00Z")), 0.0);
         assert_eq!(position(Track::Year, at("2050-12-31T23:59:59Z")), 1.0);
         assert_eq!(position(Track::Day, at("2026-12-31T00:00:00Z")), 1.0);
-        assert_eq!(position(Track::Day, at("2024-12-31T00:00:00Z")), 1.0, "a leap year has one more day");
+        assert_eq!(
+            position(Track::Day, at("2024-12-31T00:00:00Z")),
+            1.0,
+            "a leap year has one more day"
+        );
         assert_eq!(position(Track::Time, at("2026-06-21T23:59:30Z")), 1.0);
     }
 
     #[test]
     fn a_track_moves_only_its_own_part() {
         let t = at("2026-06-21T16:45:30Z");
-        assert_eq!(show(set_position(Track::Year, t, 0.5)), "1925-06-21 16:45:30 UTC");
+        assert_eq!(
+            show(set_position(Track::Year, t, 0.5)),
+            "1925-06-21 16:45:30 UTC"
+        );
         // The seconds survive a year or day change; the time track works in whole minutes.
-        assert_eq!(show(set_position(Track::Day, t, 0.5)), "2026-07-02 16:45:30 UTC");
-        assert_eq!(show(set_position(Track::Time, t, 720.0 / 1439.0)), "2026-06-21 12:00:00 UTC");
+        assert_eq!(
+            show(set_position(Track::Day, t, 0.5)),
+            "2026-07-02 16:45:30 UTC"
+        );
+        assert_eq!(
+            show(set_position(Track::Time, t, 720.0 / 1439.0)),
+            "2026-06-21 12:00:00 UTC"
+        );
     }
 
     #[test]
@@ -311,12 +386,22 @@ mod tests {
         let to = |year: i64| set_position(Track::Year, leap, (year - FIRST_YEAR) as f64 / 250.0);
         assert_eq!(show(to(2025)), "2025-02-28 10:00:00 UTC");
         assert_eq!(show(to(2028)), "2028-02-29 10:00:00 UTC");
-        assert_eq!(show(to(1900)), "1900-02-28 10:00:00 UTC", "1900 was not a leap year");
+        assert_eq!(
+            show(to(1900)),
+            "1900-02-28 10:00:00 UTC",
+            "1900 was not a leap year"
+        );
         assert_eq!(show(to(2000)), "2000-02-29 10:00:00 UTC", "2000 was");
         assert!(is_leap(2000) && !is_leap(1900) && !is_leap(2100) && is_leap(1904));
         // 31 December in a year of 366 days is the last day of the day track.
-        assert_eq!(show(set_position(Track::Day, at("2028-05-05T00:00:00Z"), 1.0)), "2028-12-31 00:00:00 UTC");
-        assert_eq!(show(set_position(Track::Day, at("2027-05-05T00:00:00Z"), 1.0)), "2027-12-31 00:00:00 UTC");
+        assert_eq!(
+            show(set_position(Track::Day, at("2028-05-05T00:00:00Z"), 1.0)),
+            "2028-12-31 00:00:00 UTC"
+        );
+        assert_eq!(
+            show(set_position(Track::Day, at("2027-05-05T00:00:00Z"), 1.0)),
+            "2027-12-31 00:00:00 UTC"
+        );
     }
 
     #[test]
@@ -325,8 +410,14 @@ mod tests {
         for track in [Track::Year, Track::Day, Track::Time] {
             assert_eq!(set_position(track, t, -3.0), set_position(track, t, 0.0));
             assert_eq!(set_position(track, t, 7.0), set_position(track, t, 1.0));
-            assert_eq!(set_position(track, t, f64::NAN), set_position(track, t, 0.0));
-            assert_eq!(set_position(track, t, f64::INFINITY), set_position(track, t, 0.0));
+            assert_eq!(
+                set_position(track, t, f64::NAN),
+                set_position(track, t, 0.0)
+            );
+            assert_eq!(
+                set_position(track, t, f64::INFINITY),
+                set_position(track, t, 0.0)
+            );
         }
     }
 
@@ -342,13 +433,21 @@ mod tests {
         assert_eq!(value_label(Track::Year, t), "1850");
         // Half a minute before the epoch is still the last minute of 1969.
         assert_eq!(value_label(Track::Time, -30.0), "23:59");
-        assert_eq!(show(set_position(Track::Time, t + 17.5, 0.0)), "1850-03-21 00:00:00 UTC");
-        assert_eq!(show(set_position(Track::Year, t, 0.0)), "1800-03-21 12:00:00 UTC");
+        assert_eq!(
+            show(set_position(Track::Time, t + 17.5, 0.0)),
+            "1850-03-21 00:00:00 UTC"
+        );
+        assert_eq!(
+            show(set_position(Track::Year, t, 0.0)),
+            "1800-03-21 12:00:00 UTC"
+        );
         assert!((position(Track::Year, t) - 0.2).abs() < 1e-12);
         // The first day of 1800 is before the planets' earliest instant by nothing.
         assert!(!outside_range(at("1800-01-01T00:00:00Z")));
         assert!(outside_range(at("1799-12-31T23:59:59Z")));
-        assert!(outside_range(at("1700-01-01T12:00:00Z")) && outside_range(at("2051-01-01T00:00:00Z")));
+        assert!(
+            outside_range(at("1700-01-01T12:00:00Z")) && outside_range(at("2051-01-01T00:00:00Z"))
+        );
         assert!(!outside_range(at("2050-12-31T23:59:59Z")));
     }
 
@@ -358,13 +457,36 @@ mod tests {
         assert_eq!(show(step(Track::Year, t, 1)), "2027-06-21 16:05:00 UTC");
         assert_eq!(show(step(Track::Day, t, -1)), "2026-06-20 16:05:00 UTC");
         assert_eq!(show(step(Track::Time, t, 1)), "2026-06-21 16:15:00 UTC");
-        assert_eq!(show(step(Track::Year, at("2050-02-01T00:00:00Z"), 1)), "2050-02-01 00:00:00 UTC");
-        assert_eq!(show(step(Track::Year, at("1700-02-01T00:00:00Z"), 1)), "1800-02-01 00:00:00 UTC", "back into the range");
-        assert_eq!(show(step(Track::Day, at("2026-12-31T08:00:00Z"), 1)), "2026-12-31 08:00:00 UTC", "a day step stays in the year");
-        assert_eq!(show(step(Track::Day, at("2026-01-01T08:00:00Z"), -1)), "2026-01-01 08:00:00 UTC");
-        assert_eq!(show(step(Track::Time, at("2026-06-21T23:55:00Z"), 1)), "2026-06-21 23:59:00 UTC");
-        assert_eq!(show(step(Track::Time, at("2026-06-21T00:03:00Z"), -1)), "2026-06-21 00:00:00 UTC");
-        assert_eq!(show(step(Track::Year, at("2024-02-29T00:00:00Z"), 1)), "2025-02-28 00:00:00 UTC");
+        assert_eq!(
+            show(step(Track::Year, at("2050-02-01T00:00:00Z"), 1)),
+            "2050-02-01 00:00:00 UTC"
+        );
+        assert_eq!(
+            show(step(Track::Year, at("1700-02-01T00:00:00Z"), 1)),
+            "1800-02-01 00:00:00 UTC",
+            "back into the range"
+        );
+        assert_eq!(
+            show(step(Track::Day, at("2026-12-31T08:00:00Z"), 1)),
+            "2026-12-31 08:00:00 UTC",
+            "a day step stays in the year"
+        );
+        assert_eq!(
+            show(step(Track::Day, at("2026-01-01T08:00:00Z"), -1)),
+            "2026-01-01 08:00:00 UTC"
+        );
+        assert_eq!(
+            show(step(Track::Time, at("2026-06-21T23:55:00Z"), 1)),
+            "2026-06-21 23:59:00 UTC"
+        );
+        assert_eq!(
+            show(step(Track::Time, at("2026-06-21T00:03:00Z"), -1)),
+            "2026-06-21 00:00:00 UTC"
+        );
+        assert_eq!(
+            show(step(Track::Year, at("2024-02-29T00:00:00Z"), 1)),
+            "2025-02-28 00:00:00 UTC"
+        );
     }
 
     #[test]
@@ -397,7 +519,11 @@ mod tests {
         let back = previous_eclipse(total + 3600.0).unwrap();
         assert!((back - next).abs() < 1.0);
         // The one before 2024-04-08 is the penumbral lunar eclipse of 2024-03-25, greatest at 07:12 UTC.
-        assert!((before - at("2024-03-25T07:12:00Z")).abs() < 1800.0, "{}", show(before));
+        assert!(
+            (before - at("2024-03-25T07:12:00Z")).abs() < 1800.0,
+            "{}",
+            show(before)
+        );
         // Each is strictly in the direction asked, from many starting points.
         for k in 0..12 {
             let t = at("1850-01-01T00:00:00Z") + k as f64 * 61.0 * 86_400.0;
@@ -411,12 +537,18 @@ mod tests {
         let greatest = next_eclipse(at("2024-04-07T00:00:00Z")).unwrap();
         let line = watch.status(greatest).unwrap();
         assert!(line.starts_with("Total solar eclipse"), "{line}");
-        assert!(watch.status(greatest - 2.0 * 3600.0).is_some(), "the shadow touches the Earth two hours before");
+        assert!(
+            watch.status(greatest - 2.0 * 3600.0).is_some(),
+            "the shadow touches the Earth two hours before"
+        );
         assert!(watch.status(greatest + 12.0 * 3600.0 - 1.0).is_none());
         assert!(watch.status(at("2024-05-20T12:00:00Z")).is_none());
         // Total lunar eclipse of 2022-11-08, greatest about 11:00 UTC.
         let line = watch.status(at("2022-11-08T10:59:00Z")).unwrap();
-        assert!(line.starts_with("Total lunar eclipse") && line.contains("total phase"), "{line}");
+        assert!(
+            line.starts_with("Total lunar eclipse") && line.contains("total phase"),
+            "{line}"
+        );
         let line = watch.status(at("2022-11-08T08:50:00Z")).unwrap();
         assert!(line.contains("penumbral phase"), "{line}");
     }
@@ -427,8 +559,16 @@ mod tests {
         // give or take the equation of time, about -7 minutes on 21 March, which puts it near 2 degrees east.
         let t = at("1850-03-21T12:00:00Z");
         let sun = Sun::at(t);
-        assert!(sun.declination.to_degrees().abs() < 1.0, "{}", sun.declination.to_degrees());
-        assert!((sun.longitude.to_degrees() - 1.85).abs() < 1.0, "{}", sun.longitude.to_degrees());
+        assert!(
+            sun.declination.to_degrees().abs() < 1.0,
+            "{}",
+            sun.declination.to_degrees()
+        );
+        assert!(
+            (sun.longitude.to_degrees() - 1.85).abs() < 1.0,
+            "{}",
+            sun.longitude.to_degrees()
+        );
         // The same calendar moment 176 years later agrees to a fraction of a degree.
         let now = Sun::at(at("2026-03-21T12:00:00Z"));
         assert!((now.longitude - sun.longitude).to_degrees().abs() < 0.5);
@@ -440,11 +580,19 @@ mod tests {
 
     #[test]
     fn the_sky_and_the_shadow_stay_finite_before_1970_and_far_outside_the_range() {
-        for text in ["1850-06-21T12:00:00Z", "1800-01-01T00:00:00Z", "1700-01-01T12:00:00Z", "2100-06-21T12:00:00Z"] {
+        for text in [
+            "1850-06-21T12:00:00Z",
+            "1800-01-01T00:00:00Z",
+            "1700-01-01T12:00:00Z",
+            "2100-06-21T12:00:00Z",
+        ] {
             let t = at(text);
             assert!(t < 4.2e9);
             let bodies = crate::planets::bodies(t);
-            assert!(bodies.len() >= 5 && bodies.iter().all(|b| b.dir.is_finite()), "{text}");
+            assert!(
+                bodies.len() >= 5 && bodies.iter().all(|b| b.dir.is_finite()),
+                "{text}"
+            );
             let sm = crate::ephemeris::SunMoon::at(t);
             assert!(sm.sun.is_finite() && sm.moon.is_finite(), "{text}");
             if let Some(e) = eclipse::shadow_at(t) {

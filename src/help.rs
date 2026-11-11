@@ -63,6 +63,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl-S", "Name and save the view as a place"),
             ("K", "List of saved places"),
             ("I", "List of imported items"),
+            ("U", "Measurement library: create rulers, edit tracks and export GPX"),
             ("E", "Eclipses and events; 1 to 5 filter the feeds"),
             ("G", "List of map services"),
             ("V", "View options: choose lines, names, scene, building colours, projection, imagery"),
@@ -83,7 +84,10 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, scroll: Option<f32>) {
     let start = (screen.width() - 40.0).clamp(260.0, 600.0);
     let shown = gui::window("Keyboard and mouse", WINDOW)
         .open(&mut open)
-        .default_pos(egui::pos2(screen.right() - start - 30.0, screen.top() + 60.0))
+        .default_pos(egui::pos2(
+            screen.right() - start - 30.0,
+            screen.top() + 60.0,
+        ))
         .default_width(start)
         .default_height((screen.height() - 200.0).max(150.0))
         .show(ctx, |ui| {
@@ -101,10 +105,19 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, scroll: Option<f32>) {
                         if width > 420.0 {
                             ui.horizontal_top(|ui| {
                                 // The keys in a column of their own, left aligned.
-                                ui.allocate_ui_with_layout(egui::vec2(key_width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                                    ui.set_width(key_width);
-                                    ui.add(egui::Label::new(egui::RichText::new(*keys).color(gui::accent())).wrap());
-                                });
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(key_width, 0.0),
+                                    egui::Layout::top_down(egui::Align::Min),
+                                    |ui| {
+                                        ui.set_width(key_width);
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(*keys).color(gui::accent()),
+                                            )
+                                            .wrap(),
+                                        );
+                                    },
+                                );
                                 ui.add(egui::Label::new(*what).wrap());
                             });
                         } else {
@@ -128,7 +141,10 @@ mod tests {
     /// The first cell of each row of the key table in docs/FEATURES.md.
     fn spec_keys() -> Vec<String> {
         let doc = include_str!("../docs/FEATURES.md");
-        let controls = doc.split("\n## Controls\n").nth(1).expect("Controls section");
+        let controls = doc
+            .split("\n## Controls\n")
+            .nth(1)
+            .expect("Controls section");
         let controls = controls.split("\n## ").next().unwrap();
         controls
             .lines()
@@ -143,9 +159,15 @@ mod tests {
     fn every_key_of_the_spec_table_is_listed() {
         let keys = spec_keys();
         assert!(keys.len() > 30, "the table was found: {keys:?}");
-        let listed: Vec<&str> = SHORTCUTS.iter().flat_map(|g| g.1.iter().map(|i| i.0)).collect();
+        let listed: Vec<&str> = SHORTCUTS
+            .iter()
+            .flat_map(|g| g.1.iter().map(|i| i.0))
+            .collect();
         for k in &keys {
-            assert!(listed.contains(&k.as_str()), "{k:?} is in docs/FEATURES.md but not in the help table");
+            assert!(
+                listed.contains(&k.as_str()),
+                "{k:?} is in docs/FEATURES.md but not in the help table"
+            );
         }
     }
 
@@ -155,7 +177,10 @@ mod tests {
         let mut seen = Vec::new();
         for (_, items) in SHORTCUTS {
             for (k, what) in *items {
-                assert!(keys.iter().any(|s| s == k), "{k:?} is not in docs/FEATURES.md");
+                assert!(
+                    keys.iter().any(|s| s == k),
+                    "{k:?} is not in docs/FEATURES.md"
+                );
                 assert!(!seen.contains(k), "{k:?} twice");
                 assert!(!what.is_empty());
                 seen.push(k);

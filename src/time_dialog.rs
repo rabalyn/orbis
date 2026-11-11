@@ -14,7 +14,11 @@ use std::rc::Rc;
 
 pub const WINDOW: &str = "time-window";
 
-const TRACKS: [(Track, &str); 3] = [(Track::Year, "Year"), (Track::Day, "Day"), (Track::Time, "Time of day")];
+const TRACKS: [(Track, &str); 3] = [
+    (Track::Year, "Year"),
+    (Track::Day, "Day"),
+    (Track::Time, "Time of day"),
+];
 
 /// What the dialog shows.
 #[derive(Clone, Debug, PartialEq)]
@@ -34,7 +38,14 @@ pub struct Model {
 
 impl Default for Model {
     fn default() -> Self {
-        Self { time: 0.0, reading: String::new(), running: true, rate: 1.0, earth: true, eclipse: None }
+        Self {
+            time: 0.0,
+            reading: String::new(),
+            running: true,
+            rate: 1.0,
+            earth: true,
+            eclipse: None,
+        }
     }
 }
 
@@ -51,7 +62,9 @@ pub enum Action {
     Step(Track, i32),
     Now,
     /// Plays forwards, or backwards, at the chosen speed.
-    Play { backwards: bool },
+    Play {
+        backwards: bool,
+    },
     Pause,
     /// One of `RATES`; the direction stays.
     Speed(f64),
@@ -71,7 +84,10 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Vec<Action> {
         .open(&mut open)
         // Above its icon at the bottom right.
         .pivot(egui::Align2::RIGHT_BOTTOM)
-        .default_pos(egui::pos2(screen.right() - 10.0, screen.bottom() - 2.0 * crate::compass::MARGIN - crate::compass::ICON - 6.0))
+        .default_pos(egui::pos2(
+            screen.right() - 10.0,
+            screen.bottom() - 2.0 * crate::compass::MARGIN - crate::compass::ICON - 6.0,
+        ))
         .default_width(340.0f32.min(screen.width() - 40.0).max(220.0))
         .show(ctx, |ui| {
             const GAP: f32 = 8.0;
@@ -85,7 +101,10 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Vec<Action> {
                     ui.horizontal(|ui| {
                         ui.label(name);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new(time_slider::value_label(track, model.time)).color(gui::accent()));
+                            ui.label(
+                                egui::RichText::new(time_slider::value_label(track, model.time))
+                                    .color(gui::accent()),
+                            );
                         });
                     });
                     for slide in gui::track(ui, time_slider::position(track, model.time), width) {
@@ -100,11 +119,17 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Vec<Action> {
                     let (first, last) = time_slider::end_labels(track);
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(first).weak().small());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(egui::RichText::new(last).weak().small()));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new(last).weak().small())
+                        });
                     });
                 }
                 ui.add_space(4.0);
-                if ui.add_sized([width, 26.0], egui::Button::new("Now")).on_hover_text("Back to the real time, running at real speed").clicked() {
+                if ui
+                    .add_sized([width, 26.0], egui::Button::new("Now"))
+                    .on_hover_text("Back to the real time, running at real speed")
+                    .clicked()
+                {
                     actions.push(Action::Now);
                 }
             });
@@ -115,7 +140,10 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Vec<Action> {
                 let backwards = model.running && model.rate < 0.0;
                 let forwards = model.running && model.rate >= 0.0;
                 ui.horizontal(|ui| {
-                    let button = |ui: &mut egui::Ui, text: &str, on: bool| ui.add_sized([third, 26.0], egui::Button::new(text).selected(on)).clicked();
+                    let button = |ui: &mut egui::Ui, text: &str, on: bool| {
+                        ui.add_sized([third, 26.0], egui::Button::new(text).selected(on))
+                            .clicked()
+                    };
                     if button(ui, "\u{25c0} Backwards", backwards) {
                         actions.push(Action::Play { backwards: true });
                     }
@@ -127,12 +155,18 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Vec<Action> {
                     }
                 });
                 ui.add_space(4.0);
-                let speed_at = RATES.iter().position(|r| *r >= model.rate.abs() - 1e-9).unwrap_or(0);
+                let speed_at = RATES
+                    .iter()
+                    .position(|r| *r >= model.rate.abs() - 1e-9)
+                    .unwrap_or(0);
                 let last = RATES.len() - 1;
                 ui.horizontal(|ui| {
                     ui.label("Speed");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new(sky_time::rate_name(RATES[speed_at])).color(gui::accent()));
+                        ui.label(
+                            egui::RichText::new(sky_time::rate_name(RATES[speed_at]))
+                                .color(gui::accent()),
+                        );
                     });
                 });
                 for slide in gui::track(ui, speed_at as f64 / last as f64, width) {
@@ -146,9 +180,17 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Vec<Action> {
                     }
                 }
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(sky_time::rate_name(RATES[0])).weak().small());
+                    ui.label(
+                        egui::RichText::new(sky_time::rate_name(RATES[0]))
+                            .weak()
+                            .small(),
+                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new(sky_time::rate_name(RATES[last])).weak().small())
+                        ui.label(
+                            egui::RichText::new(sky_time::rate_name(RATES[last]))
+                                .weak()
+                                .small(),
+                        )
                     });
                 });
             });
@@ -157,10 +199,16 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Vec<Action> {
                 gui::group(ui, "Eclipses", |ui, width| {
                     let half = (width - ui.spacing().item_spacing.x) / 2.0;
                     ui.horizontal(|ui| {
-                        if ui.add_sized([half, 26.0], egui::Button::new("\u{25c0} Previous")).clicked() {
+                        if ui
+                            .add_sized([half, 26.0], egui::Button::new("\u{25c0} Previous"))
+                            .clicked()
+                        {
                             actions.push(Action::PreviousEclipse);
                         }
-                        if ui.add_sized([half, 26.0], egui::Button::new("Next \u{25b6}")).clicked() {
+                        if ui
+                            .add_sized([half, 26.0], egui::Button::new("Next \u{25b6}"))
+                            .clicked()
+                        {
                             actions.push(Action::NextEclipse);
                         }
                     });
@@ -187,4 +235,3 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Vec<Action> {
     gui.set_visible(WINDOW, open);
     actions
 }
-

@@ -27,7 +27,12 @@ pub enum WikiError {
 
 /// A language edition: lower-case letters only, else English.
 pub fn language(lang: &str) -> String {
-    let code: String = lang.trim().chars().take_while(|c| c.is_ascii_alphabetic()).collect::<String>().to_ascii_lowercase();
+    let code: String = lang
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect::<String>()
+        .to_ascii_lowercase();
     if (2..=3).contains(&code.len()) {
         code
     } else {
@@ -43,7 +48,10 @@ fn api(lang: &str) -> String {
 
 fn api_action(lang: &str, action: &str) -> String {
     // maxlag asks the service to refuse us while its servers are behind, which is its etiquette for programs.
-    let url = format!("https://{}.wikipedia.org/w/api.php?action={action}&format=json&formatversion=2&maxlag=5", language(lang));
+    let url = format!(
+        "https://{}.wikipedia.org/w/api.php?action={action}&format=json&formatversion=2&maxlag=5",
+        language(lang)
+    );
     // A page in a browser may read the answer only if it asks as an anonymous other site.
     #[cfg(target_arch = "wasm32")]
     let url = url + "&origin=*";
@@ -52,18 +60,32 @@ fn api_action(lang: &str, action: &str) -> String {
 
 /// Pages whose title or text fits the name, with their coordinates.
 pub fn search_url(lang: &str, name: &str) -> String {
-    format!("{}&generator=search&gsrsearch={}&gsrnamespace=0&gsrlimit=10&{PAGE_FIELDS}", api(lang), percent_encode(name.trim()))
+    format!(
+        "{}&generator=search&gsrsearch={}&gsrnamespace=0&gsrlimit=10&{PAGE_FIELDS}",
+        api(lang),
+        percent_encode(name.trim())
+    )
 }
 
 /// One article by its title, following redirects.
 pub fn title_url(lang: &str, title: &str) -> String {
-    format!("{}&titles={}&redirects=1&{PAGE_FIELDS}", api(lang), percent_encode(title.trim()))
+    format!(
+        "{}&titles={}&redirects=1&{PAGE_FIELDS}",
+        api(lang),
+        percent_encode(title.trim())
+    )
 }
 
 /// Which candidate, if any, is the article about the feature `name` on `body` at `at` (degrees):
 /// the first, best ranked, whose title is the name and whose own position on that body lies
 /// within `reach` degrees. An article without a position on the body is not taken.
-pub fn choose_feature(name: &str, body: &str, at: (f64, f64), reach: f64, cands: &[Candidate]) -> Option<usize> {
+pub fn choose_feature(
+    name: &str,
+    body: &str,
+    at: (f64, f64),
+    reach: f64,
+    cands: &[Candidate],
+) -> Option<usize> {
     cands.iter().position(|c| {
         !c.disambiguation
             && name_matches(name, &c.title)
@@ -75,8 +97,14 @@ pub fn choose_feature(name: &str, body: &str, at: (f64, f64), reach: f64, cands:
 
 /// The angle between two places, in degrees.
 pub fn angle_deg(a: (f64, f64), b: (f64, f64)) -> f64 {
-    let (la1, lo1, la2, lo2) = (a.0.to_radians(), a.1.to_radians(), b.0.to_radians(), b.1.to_radians());
-    let h = ((la2 - la1) / 2.0).sin().powi(2) + la1.cos() * la2.cos() * ((lo2 - lo1) / 2.0).sin().powi(2);
+    let (la1, lo1, la2, lo2) = (
+        a.0.to_radians(),
+        a.1.to_radians(),
+        b.0.to_radians(),
+        b.1.to_radians(),
+    );
+    let h = ((la2 - la1) / 2.0).sin().powi(2)
+        + la1.cos() * la2.cos() * ((lo2 - lo1) / 2.0).sin().powi(2);
     (2.0 * h.sqrt().min(1.0).asin()).to_degrees()
 }
 
@@ -109,7 +137,10 @@ pub fn sparql_url(item: &str, lang: &str) -> Option<String> {
         return None;
     }
     let query = SPARQL.replace("@Q@", item).replace("@L@", &language(lang));
-    Some(format!("{SPARQL_SERVICE}?format=json&query={}", percent_encode(&query)))
+    Some(format!(
+        "{SPARQL_SERVICE}?format=json&query={}",
+        percent_encode(&query)
+    ))
 }
 
 pub fn is_item(s: &str) -> bool {
@@ -167,7 +198,11 @@ fn pages(v: &Value) -> Result<&[Value], WikiError> {
     match v.get("query") {
         // Nothing found: the answer has no query part at all.
         None => Ok(&[]),
-        Some(q) => q.get("pages").and_then(Value::as_array).map(|a| a.as_slice()).ok_or(WikiError::Garbled),
+        Some(q) => q
+            .get("pages")
+            .and_then(Value::as_array)
+            .map(|a| a.as_slice())
+            .ok_or(WikiError::Garbled),
     }
 }
 
@@ -179,32 +214,62 @@ pub fn parse_candidates(body: &str) -> Result<Vec<Candidate>, WikiError> {
         if p.get("missing").is_some() || p.get("invalid").is_some() {
             continue;
         }
-        let (Some(page_id), Some(title)) = (p.get("pageid").and_then(Value::as_u64), p.get("title").and_then(Value::as_str)) else { continue };
-        let url = p.get("fullurl").or_else(|| p.get("canonicalurl")).and_then(Value::as_str).and_then(article_url);
+        let (Some(page_id), Some(title)) = (
+            p.get("pageid").and_then(Value::as_u64),
+            p.get("title").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        let url = p
+            .get("fullurl")
+            .or_else(|| p.get("canonicalurl"))
+            .and_then(Value::as_str)
+            .and_then(article_url);
         // An article whose address cannot be shown or opened safely cannot be credited either.
         let Some(url) = url else { continue };
-        let at = p.get("coordinates").and_then(Value::as_array).and_then(|list| {
-            list.iter().find_map(|c| {
-                let earth = c.get("globe").and_then(Value::as_str).is_none_or(|g| g == "earth");
-                let (lat, lon) = (c.get("lat")?.as_f64()?, c.get("lon")?.as_f64()?);
-                (earth && lat.abs() <= 90.0 && lon.abs() <= 360.0).then_some((lat, lon))
-            })
-        });
-        let elsewhere = p.get("coordinates").and_then(Value::as_array).and_then(|list| {
-            list.iter().find_map(|c| {
-                let globe = c.get("globe").and_then(Value::as_str).filter(|g| *g != "earth")?;
-                let (lat, lon) = (c.get("lat")?.as_f64()?, c.get("lon")?.as_f64()?);
-                (lat.abs() <= 90.0 && lon.abs() <= 360.0).then(|| (globe.to_ascii_lowercase(), lat, lon))
-            })
-        });
+        let at = p
+            .get("coordinates")
+            .and_then(Value::as_array)
+            .and_then(|list| {
+                list.iter().find_map(|c| {
+                    let earth = c
+                        .get("globe")
+                        .and_then(Value::as_str)
+                        .is_none_or(|g| g == "earth");
+                    let (lat, lon) = (c.get("lat")?.as_f64()?, c.get("lon")?.as_f64()?);
+                    (earth && lat.abs() <= 90.0 && lon.abs() <= 360.0).then_some((lat, lon))
+                })
+            });
+        let elsewhere = p
+            .get("coordinates")
+            .and_then(Value::as_array)
+            .and_then(|list| {
+                list.iter().find_map(|c| {
+                    let globe = c
+                        .get("globe")
+                        .and_then(Value::as_str)
+                        .filter(|g| *g != "earth")?;
+                    let (lat, lon) = (c.get("lat")?.as_f64()?, c.get("lon")?.as_f64()?);
+                    (lat.abs() <= 90.0 && lon.abs() <= 360.0)
+                        .then(|| (globe.to_ascii_lowercase(), lat, lon))
+                })
+            });
         let props = p.get("pageprops");
         out.push(Candidate {
             elsewhere,
             page_id,
             title: title.to_string(),
-            description: p.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
+            description: p
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
             at,
-            item: props.and_then(|x| x.get("wikibase_item")).and_then(Value::as_str).filter(|s| is_item(s)).map(str::to_string),
+            item: props
+                .and_then(|x| x.get("wikibase_item"))
+                .and_then(Value::as_str)
+                .filter(|s| is_item(s))
+                .map(str::to_string),
             disambiguation: props.is_some_and(|x| x.get("disambiguation").is_some()),
             url,
             rank: p.get("index").and_then(Value::as_i64).unwrap_or(i64::MAX),
@@ -220,9 +285,19 @@ pub fn article_url(url: &str) -> Option<String> {
     let rest = url.strip_prefix("https://")?;
     let (host, path) = rest.split_once('/')?;
     let lang = host.strip_suffix(".wikipedia.org")?;
-    let lang_ok = !lang.is_empty() && lang.len() <= 12 && lang.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') && !lang.starts_with('-');
-    let path_ok = !path.is_empty() && path.len() < 1500 && path.bytes().all(|b| b.is_ascii_graphic() && !b"\"'<>\\^`{|}".contains(&b));
-    (lang_ok && path_ok && (path.starts_with("wiki/") || path.starts_with("w/index.php"))).then(|| url.to_string())
+    let lang_ok = !lang.is_empty()
+        && lang.len() <= 12
+        && lang
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !lang.starts_with('-');
+    let path_ok = !path.is_empty()
+        && path.len() < 1500
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_graphic() && !b"\"'<>\\^`{|}".contains(&b));
+    (lang_ok && path_ok && (path.starts_with("wiki/") || path.starts_with("w/index.php")))
+        .then(|| url.to_string())
 }
 
 /// The text of one article.
@@ -252,8 +327,15 @@ pub fn parse_extract(body: &str) -> Result<Extract, WikiError> {
     if p.get("missing").is_some() {
         return Err(WikiError::Missing);
     }
-    let title = p.get("title").and_then(Value::as_str).ok_or(WikiError::Garbled)?;
-    let url = p.get("fullurl").and_then(Value::as_str).and_then(article_url).ok_or(WikiError::Garbled)?;
+    let title = p
+        .get("title")
+        .and_then(Value::as_str)
+        .ok_or(WikiError::Garbled)?;
+    let url = p
+        .get("fullurl")
+        .and_then(Value::as_str)
+        .and_then(article_url)
+        .ok_or(WikiError::Garbled)?;
     let text = p.get("extract").and_then(Value::as_str).unwrap_or("");
     let mut languages: Vec<Language> = p
         .get("langlinks")
@@ -266,13 +348,22 @@ pub fn parse_extract(body: &str) -> Result<Extract, WikiError> {
                     let name = l.get("autonym").and_then(Value::as_str).unwrap_or(code);
                     // Only editions the interface can name, and so most likely also show.
                     (language(code) == code && !title.is_empty() && name.chars().all(can_draw))
-                        .then(|| Language { code: code.to_string(), name: name.to_string(), title: title.to_string() })
+                        .then(|| Language {
+                            code: code.to_string(),
+                            name: name.to_string(),
+                            title: title.to_string(),
+                        })
                 })
                 .collect()
         })
         .unwrap_or_default();
     languages.sort_by_key(|l| fold_name(&l.name));
-    Ok(Extract { title: title.to_string(), text: text.chars().take(20_000).collect(), url, languages })
+    Ok(Extract {
+        title: title.to_string(),
+        text: text.chars().take(20_000).collect(),
+        url,
+        languages,
+    })
 }
 
 /// A line of an article's infobox, the summary table at the side of the page.
@@ -293,7 +384,11 @@ const MAX_BOX_ROWS: usize = 120;
 /// Pictures are left out; an article without an infobox gives no rows.
 pub fn parse_infobox(body: &str) -> Result<Vec<BoxRow>, WikiError> {
     let v = parse_json(body)?;
-    let html = v.get("parse").and_then(|p| p.get("text")).and_then(Value::as_str).ok_or(WikiError::Garbled)?;
+    let html = v
+        .get("parse")
+        .and_then(|p| p.get("text"))
+        .and_then(Value::as_str)
+        .ok_or(WikiError::Garbled)?;
     Ok(infobox_rows(html))
 }
 
@@ -327,7 +422,9 @@ fn tokens(html: &str) -> Vec<Token<'_>> {
             Some(i) => (true, i),
             None => (false, inner),
         };
-        let end = inner.find(|c: char| c.is_whitespace() || c == '/').unwrap_or(inner.len());
+        let end = inner
+            .find(|c: char| c.is_whitespace() || c == '/')
+            .unwrap_or(inner.len());
         let name = inner[..end].to_ascii_lowercase();
         if name.is_empty() {
             continue;
@@ -336,7 +433,10 @@ fn tokens(html: &str) -> Vec<Token<'_>> {
             out.push(Token::Close(name));
         } else {
             let attrs = &inner[end..];
-            let void = matches!(name.as_str(), "br" | "img" | "hr" | "wbr" | "meta" | "link" | "input" | "col" | "source" | "area") || attrs.trim_end().ends_with('/');
+            let void = matches!(
+                name.as_str(),
+                "br" | "img" | "hr" | "wbr" | "meta" | "link" | "input" | "col" | "source" | "area"
+            ) || attrs.trim_end().ends_with('/');
             out.push(Token::Open(name.clone(), attrs));
             if void {
                 out.push(Token::Close(name));
@@ -376,9 +476,19 @@ fn hidden(name: &str, attrs: &str) -> bool {
     let style = attr(attrs, "style").replace(' ', "");
     matches!(name, "style" | "script" | "img" | "figure")
         || style.contains("display:none")
-        || ["reference", "mw-ref", "noprint", "geo-nondefault", "geo-multi-punct", "error", "mw-empty-elt", "infobox-image", "sortkey"]
-            .iter()
-            .any(|c| has_class(attrs, c))
+        || [
+            "reference",
+            "mw-ref",
+            "noprint",
+            "geo-nondefault",
+            "geo-multi-punct",
+            "error",
+            "mw-empty-elt",
+            "infobox-image",
+            "sortkey",
+        ]
+        .iter()
+        .any(|c| has_class(attrs, c))
 }
 
 fn unescape(s: &str) -> String {
@@ -433,7 +543,12 @@ fn unescape(s: &str) -> String {
 /// Text as a reader sees it: spaces collapsed within lines, empty lines dropped.
 fn tidy_cell(s: &str) -> String {
     s.split('\n')
-        .map(|l| l.split(|c: char| c.is_whitespace() || c == '\u{feff}').filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" "))
+        .map(|l| {
+            l.split(|c: char| c.is_whitespace() || c == '\u{feff}')
+                .filter(|w| !w.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
         .filter(|l| !l.is_empty())
         .collect::<Vec<_>>()
         .join("\n")
@@ -441,7 +556,10 @@ fn tidy_cell(s: &str) -> String {
 
 fn infobox_rows(html: &str) -> Vec<BoxRow> {
     let toks = tokens(html);
-    let Some(start) = toks.iter().position(|t| matches!(t, Token::Open(n, a) if n == "table" && has_class(a, "infobox"))) else {
+    let Some(start) = toks
+        .iter()
+        .position(|t| matches!(t, Token::Open(n, a) if n == "table" && has_class(a, "infobox")))
+    else {
         return Vec::new();
     };
     let mut rows = Vec::new();
@@ -474,7 +592,8 @@ fn infobox_rows(html: &str) -> Vec<BoxRow> {
                     }
                 }
                 if let Some(c) = &mut cell {
-                    c.pictured |= matches!(name.as_str(), "img" | "figure") || has_class(attrs, "mw-kartographer-map");
+                    c.pictured |= matches!(name.as_str(), "img" | "figure")
+                        || has_class(attrs, "mw-kartographer-map");
                 }
                 if hidden(name, attrs) {
                     skip = Some((name.clone(), 1));
@@ -482,7 +601,14 @@ fn infobox_rows(html: &str) -> Vec<BoxRow> {
                 }
                 match name.as_str() {
                     "tr" if depth == 1 => cells.clear(),
-                    "th" | "td" if depth == 1 => cell = Some(Cell { head: name == "th", class: attr(attrs, "class").to_string(), text: String::new(), pictured: false }),
+                    "th" | "td" if depth == 1 => {
+                        cell = Some(Cell {
+                            head: name == "th",
+                            class: attr(attrs, "class").to_string(),
+                            text: String::new(),
+                            pictured: false,
+                        })
+                    }
                     "br" | "li" | "p" | "div" | "tr" | "dd" | "dt" => {
                         if let Some(c) = &mut cell {
                             c.text.push('\n');
@@ -568,10 +694,16 @@ fn box_row(cells: &[Cell]) -> Option<BoxRow> {
         [] => None,
         // The title over the box repeats the article's; a caption is no use without its picture.
         [c] if is(c, "infobox-above") || c.pictured => None,
-        [c] if c.head || is(c, "infobox-header") => Some(BoxRow::Heading(c.text.replace('\n', " "))),
+        [c] if c.head || is(c, "infobox-header") => {
+            Some(BoxRow::Heading(c.text.replace('\n', " ")))
+        }
         [c] => Some(BoxRow::Text(c.text.clone())),
         [name, rest @ ..] => {
-            let value = rest.iter().map(|c| c.text.as_str()).collect::<Vec<_>>().join("\n");
+            let value = rest
+                .iter()
+                .map(|c| c.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
             Some(BoxRow::Fact(name.text.replace('\n', " "), value))
         }
     }
@@ -594,12 +726,34 @@ pub struct Facts {
 
 pub fn parse_facts(body: &str) -> Result<Facts, WikiError> {
     let v: Value = serde_json::from_str(body).map_err(|_| WikiError::Garbled)?;
-    let rows = v.get("results").and_then(|r| r.get("bindings")).and_then(Value::as_array).ok_or(WikiError::Garbled)?;
-    let get = |row: &Value, key: &str| row.get(key).and_then(|c| c.get("value")).and_then(Value::as_str).map(str::to_string);
+    let rows = v
+        .get("results")
+        .and_then(|r| r.get("bindings"))
+        .and_then(Value::as_array)
+        .ok_or(WikiError::Garbled)?;
+    let get = |row: &Value, key: &str| {
+        row.get(key)
+            .and_then(|c| c.get("value"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
     let mut f = Facts::default();
-    let Some(first) = rows.first() else { return Ok(f) };
-    f.classes = get(first, "classes").unwrap_or_default().split_whitespace().filter(|q| is_item(q)).map(str::to_string).collect();
-    f.class_labels = get(first, "classLabels").unwrap_or_default().split(", ").filter(|s| !s.trim().is_empty()).take(3).map(|s| s.trim().to_string()).collect();
+    let Some(first) = rows.first() else {
+        return Ok(f);
+    };
+    f.classes = get(first, "classes")
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter(|q| is_item(q))
+        .map(str::to_string)
+        .collect();
+    f.class_labels = get(first, "classLabels")
+        .unwrap_or_default()
+        .split(", ")
+        .filter(|s| !s.trim().is_empty())
+        .take(3)
+        .map(|s| s.trim().to_string())
+        .collect();
     for row in rows {
         if let Some(c) = get(row, "countryLabel").filter(|c| !c.trim().is_empty() && !is_item(c)) {
             if !f.countries.contains(&c) && f.countries.len() < 3 {
@@ -607,18 +761,30 @@ pub fn parse_facts(body: &str) -> Result<Facts, WikiError> {
             }
         }
     }
-    let number = |key: &str| get(first, key).and_then(|s| s.parse::<f64>().ok()).filter(|n| n.is_finite());
-    f.population = number("pop").filter(|p| *p >= 0.0).map(|p| (p, get(first, "popDate").and_then(|d| year_of(&d))));
+    let number = |key: &str| {
+        get(first, key)
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|n| n.is_finite())
+    };
+    f.population = number("pop")
+        .filter(|p| *p >= 0.0)
+        .map(|p| (p, get(first, "popDate").and_then(|d| year_of(&d))));
     f.elevation = number("elev");
     f.area_m2 = number("area").filter(|a| *a > 0.0);
-    f.website = get(first, "site").filter(|s| (s.starts_with("https://") || s.starts_with("http://")) && s.len() < 200 && s.bytes().all(|b| b.is_ascii_graphic()));
+    f.website = get(first, "site").filter(|s| {
+        (s.starts_with("https://") || s.starts_with("http://"))
+            && s.len() < 200
+            && s.bytes().all(|b| b.is_ascii_graphic())
+    });
     f.timezone = get(first, "tzLabel").filter(|t| !t.trim().is_empty() && !is_item(t));
     Ok(f)
 }
 
 fn year_of(date: &str) -> Option<i32> {
     let digits: String = date.chars().take(4).collect();
-    (digits.len() == 4 && digits.bytes().all(|b| b.is_ascii_digit())).then(|| digits.parse().ok()).flatten()
+    (digits.len() == 4 && digits.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| digits.parse().ok())
+        .flatten()
 }
 
 /// Whether Wikidata's classes fit the kind of label. Used for places that have no coordinates, where
@@ -647,14 +813,24 @@ pub fn fact_lines(f: &Facts, lang: &str) -> Vec<(&'static str, String)> {
     }
     if let Some((n, year)) = f.population {
         let year = year.map_or(String::new(), |y| format!(" ({y})"));
-        rows.push(("Population", format!("{}{year}", group_digits(n.round(), sep))));
+        rows.push((
+            "Population",
+            format!("{}{year}", group_digits(n.round(), sep)),
+        ));
     }
     // A sea level of zero is what Wikidata says about water, not about a place worth stating.
     if let Some(e) = f.elevation.filter(|e| *e != 0.0) {
         rows.push(("Elevation", format!("{} m", short_number(e, sep))));
     }
     if let Some(a) = f.area_m2 {
-        rows.push(("Area", if a >= 1.0e6 { format!("{} km\u{b2}", short_number(a / 1.0e6, sep)) } else { format!("{} m\u{b2}", short_number(a, sep)) }));
+        rows.push((
+            "Area",
+            if a >= 1.0e6 {
+                format!("{} km\u{b2}", short_number(a / 1.0e6, sep))
+            } else {
+                format!("{} m\u{b2}", short_number(a, sep))
+            },
+        ));
     }
     if let Some(w) = &f.website {
         rows.push(("Website", w.clone()));
@@ -695,7 +871,11 @@ fn short_number(n: f64, sep: &str) -> String {
     } else {
         let s = format!("{n:.1}");
         let s = s.strip_suffix(".0").unwrap_or(&s).to_string();
-        if sep == "," { s } else { s.replace('.', ",") }
+        if sep == "," {
+            s
+        } else {
+            s.replace('.', ",")
+        }
     }
 }
 
@@ -723,7 +903,14 @@ pub fn needs_class(style: LabelStyle) -> bool {
 
 /// Labels small enough for a search of the surroundings to find their article.
 pub fn small(style: LabelStyle) -> bool {
-    matches!(style, LabelStyle::Peak | LabelStyle::Local | LabelStyle::Village | LabelStyle::Town | LabelStyle::City)
+    matches!(
+        style,
+        LabelStyle::Peak
+            | LabelStyle::Local
+            | LabelStyle::Village
+            | LabelStyle::Town
+            | LabelStyle::City
+    )
 }
 
 /// Great-circle distance in metres on a sphere of Earth's mean radius.
@@ -748,16 +935,34 @@ pub enum Choice {
 /// position must lie within the kind's radius; when two same-named places both could be meant and
 /// one is not clearly nearer, nothing is chosen. A wrong article is worse than none.
 pub fn choose(name: &str, style: LabelStyle, at: (f64, f64), cands: &[Candidate]) -> Choice {
-    let Some(radius) = radius_m(style) else { return Choice::None };
-    let named: Vec<(usize, &Candidate)> = cands.iter().enumerate().filter(|(_, c)| !c.disambiguation && name_matches(name, &c.title)).collect();
-    let mut near: Vec<(usize, f64)> = named.iter().filter_map(|(i, c)| c.at.map(|p| (*i, distance_m(at, p)))).filter(|(_, d)| *d <= radius).collect();
+    let Some(radius) = radius_m(style) else {
+        return Choice::None;
+    };
+    let named: Vec<(usize, &Candidate)> = cands
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !c.disambiguation && name_matches(name, &c.title))
+        .collect();
+    let mut near: Vec<(usize, f64)> = named
+        .iter()
+        .filter_map(|(i, c)| c.at.map(|p| (*i, distance_m(at, p))))
+        .filter(|(_, d)| *d <= radius)
+        .collect();
     near.sort_by(|a, b| a.1.total_cmp(&b.1));
     if let Some(&(best, d)) = near.first() {
         let rival = near.get(1).is_some_and(|(_, d2)| *d2 < 3.0 * d + 1000.0);
-        return if rival { Choice::None } else { Choice::Match(best) };
+        return if rival {
+            Choice::None
+        } else {
+            Choice::Match(best)
+        };
     }
     if matches!(style, LabelStyle::Country | LabelStyle::Sea) {
-        let bare: Vec<usize> = named.iter().filter(|(_, c)| c.at.is_none() && c.item.is_some()).map(|(i, _)| *i).collect();
+        let bare: Vec<usize> = named
+            .iter()
+            .filter(|(_, c)| c.at.is_none() && c.item.is_some())
+            .map(|(i, _)| *i)
+            .collect();
         // Another article of that name with a position elsewhere would be a different place.
         let elsewhere = named.iter().any(|(_, c)| c.at.is_some());
         if let [only] = bare[..] {
@@ -858,34 +1063,110 @@ fn fold_char(c: char) -> Option<String> {
 /// The characters the interface's fonts draw (Noto Sans and its symbols subset), as inclusive
 /// ranges in order, made from the fonts' character maps.
 const DRAWN: &[(u32, u32)] = &[
-    (0x20, 0x7E), (0xA0, 0x377), (0x37A, 0x37F), (0x384, 0x38A), (0x38C, 0x38C), (0x38E, 0x3A1),
-    (0x3A3, 0x3E1), (0x3F0, 0x52F), (0x10FB, 0x10FB), (0x1AB0, 0x1AC0), (0x1AC5, 0x1AC5),
-    (0x1AC7, 0x1ACE), (0x1C80, 0x1C88), (0x1D00, 0x1DF9), (0x1DFB, 0x1F15), (0x1F18, 0x1F1D),
-    (0x1F20, 0x1F45), (0x1F48, 0x1F4D), (0x1F50, 0x1F57), (0x1F59, 0x1F59), (0x1F5B, 0x1F5B),
-    (0x1F5D, 0x1F5D), (0x1F5F, 0x1F7D), (0x1F80, 0x1FB4), (0x1FB6, 0x1FC4), (0x1FC6, 0x1FD3),
-    (0x1FD6, 0x1FDB), (0x1FDD, 0x1FEF), (0x1FF2, 0x1FF4), (0x1FF6, 0x1FFE), (0x2000, 0x2064),
-    (0x2066, 0x2071), (0x2074, 0x208E), (0x2090, 0x209C), (0x20A0, 0x20C0), (0x20F0, 0x20F0),
-    (0x2100, 0x215F), (0x2183, 0x2184), (0x2189, 0x2189), (0x21AF, 0x21AF), (0x21E6, 0x21F0),
-    (0x21F3, 0x21F3), (0x2212, 0x2212), (0x25A0, 0x2609), (0x260E, 0x2612), (0x2614, 0x2623),
-    (0x2630, 0x2637), (0x263C, 0x263C), (0x2654, 0x2668), (0x267F, 0x268F), (0x269E, 0x26A1),
-    (0x26AA, 0x26AC), (0x26BD, 0x26CD), (0x26CF, 0x26E1), (0x2B00, 0x2B0D), (0x2B12, 0x2B2F),
-    (0x2B4D, 0x2B73), (0x2B76, 0x2B95), (0x2B97, 0x2BFD), (0x2BFF, 0x2BFF), (0x2C60, 0x2C7F),
-    (0x2DE0, 0x2E5D), (0xA640, 0xA69F), (0xA700, 0xA7CA), (0xA7D0, 0xA7D1), (0xA7D3, 0xA7D3),
-    (0xA7D5, 0xA7D9), (0xA7F2, 0xA7FF), (0xA92E, 0xA92E), (0xAB30, 0xAB6B), (0xFB00, 0xFB06),
-    (0xFE00, 0xFE00), (0xFE20, 0xFE2F), (0xFEFF, 0xFEFF), (0xFFFC, 0xFFFD), (0x10780, 0x10785),
-    (0x10787, 0x107B0), (0x107B2, 0x107BA), (0x1DF00, 0x1DF1E),
+    (0x20, 0x7E),
+    (0xA0, 0x377),
+    (0x37A, 0x37F),
+    (0x384, 0x38A),
+    (0x38C, 0x38C),
+    (0x38E, 0x3A1),
+    (0x3A3, 0x3E1),
+    (0x3F0, 0x52F),
+    (0x10FB, 0x10FB),
+    (0x1AB0, 0x1AC0),
+    (0x1AC5, 0x1AC5),
+    (0x1AC7, 0x1ACE),
+    (0x1C80, 0x1C88),
+    (0x1D00, 0x1DF9),
+    (0x1DFB, 0x1F15),
+    (0x1F18, 0x1F1D),
+    (0x1F20, 0x1F45),
+    (0x1F48, 0x1F4D),
+    (0x1F50, 0x1F57),
+    (0x1F59, 0x1F59),
+    (0x1F5B, 0x1F5B),
+    (0x1F5D, 0x1F5D),
+    (0x1F5F, 0x1F7D),
+    (0x1F80, 0x1FB4),
+    (0x1FB6, 0x1FC4),
+    (0x1FC6, 0x1FD3),
+    (0x1FD6, 0x1FDB),
+    (0x1FDD, 0x1FEF),
+    (0x1FF2, 0x1FF4),
+    (0x1FF6, 0x1FFE),
+    (0x2000, 0x2064),
+    (0x2066, 0x2071),
+    (0x2074, 0x208E),
+    (0x2090, 0x209C),
+    (0x20A0, 0x20C0),
+    (0x20F0, 0x20F0),
+    (0x2100, 0x215F),
+    (0x2183, 0x2184),
+    (0x2189, 0x2189),
+    (0x21AF, 0x21AF),
+    (0x21E6, 0x21F0),
+    (0x21F3, 0x21F3),
+    (0x2212, 0x2212),
+    (0x25A0, 0x2609),
+    (0x260E, 0x2612),
+    (0x2614, 0x2623),
+    (0x2630, 0x2637),
+    (0x263C, 0x263C),
+    (0x2654, 0x2668),
+    (0x267F, 0x268F),
+    (0x269E, 0x26A1),
+    (0x26AA, 0x26AC),
+    (0x26BD, 0x26CD),
+    (0x26CF, 0x26E1),
+    (0x2B00, 0x2B0D),
+    (0x2B12, 0x2B2F),
+    (0x2B4D, 0x2B73),
+    (0x2B76, 0x2B95),
+    (0x2B97, 0x2BFD),
+    (0x2BFF, 0x2BFF),
+    (0x2C60, 0x2C7F),
+    (0x2DE0, 0x2E5D),
+    (0xA640, 0xA69F),
+    (0xA700, 0xA7CA),
+    (0xA7D0, 0xA7D1),
+    (0xA7D3, 0xA7D3),
+    (0xA7D5, 0xA7D9),
+    (0xA7F2, 0xA7FF),
+    (0xA92E, 0xA92E),
+    (0xAB30, 0xAB6B),
+    (0xFB00, 0xFB06),
+    (0xFE00, 0xFE00),
+    (0xFE20, 0xFE2F),
+    (0xFEFF, 0xFEFF),
+    (0xFFFC, 0xFFFD),
+    (0x10780, 0x10785),
+    (0x10787, 0x107B0),
+    (0x107B2, 0x107BA),
+    (0x1DF00, 0x1DF1E),
 ];
 
 /// Whether the interface's fonts have a character.
 pub fn can_draw(c: char) -> bool {
     let c = c as u32;
-    DRAWN.binary_search_by(|&(a, b)| if b < c { std::cmp::Ordering::Less } else if a > c { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Equal }).is_ok()
+    DRAWN
+        .binary_search_by(|&(a, b)| {
+            if b < c {
+                std::cmp::Ordering::Less
+            } else if a > c {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
 }
 
 /// Makes text for the windows: like [`display_text`], but every character the interface's
 /// fonts have is kept, so Greek, Cyrillic and the accents of any Latin script stay as written.
 pub fn box_text(text: &str) -> String {
-    clean(text, |c| can_draw(c) && !matches!(c, '\u{ad}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}'))
+    clean(text, |c| {
+        can_draw(c)
+            && !matches!(c, '\u{ad}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}')
+    })
 }
 
 /// Makes text fit the built-in font (ASCII and Latin-1): accented letters outside Latin-1 become
@@ -908,15 +1189,28 @@ fn clean(text: &str, keep: impl Fn(char) -> bool) -> String {
             c if keep(c) => c.to_string(),
             c if (c as u32) < 0x7f || (0xA0..=0xFF).contains(&(c as u32)) => {
                 // Latin-1 letters are in the font; only the soft hyphen has to go.
-                if c == '\u{ad}' { String::new() } else { c.to_string() }
+                if c == '\u{ad}' {
+                    String::new()
+                } else {
+                    c.to_string()
+                }
             }
-            '\u{2013}' | '\u{2014}' | '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2212}' => "-".into(),
+            '\u{2013}' | '\u{2014}' | '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2212}' => {
+                "-".into()
+            }
             '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{2032}' | '\u{2bc}' => "'".into(),
             '\u{201c}' | '\u{201d}' | '\u{201e}' | '\u{2033}' => "\"".into(),
             '\u{2026}' => "...".into(),
             '\u{2022}' | '\u{b7}' => "*".into(),
             '\u{2002}'..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}' => " ".into(),
-            '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}' | '\u{feff}' | '\u{2066}'..='\u{2069}' | '\u{301}' | '\u{300}' | '\u{308}' => String::new(),
+            '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'
+            | '\u{feff}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{301}'
+            | '\u{300}'
+            | '\u{308}' => String::new(),
             c => fold_char(c).unwrap_or_else(|| "\u{1}".into()),
         };
         out.push_str(&mapped);
@@ -953,7 +1247,15 @@ fn tidy(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for line in s.split('\n') {
         let mut l = line.split_whitespace().collect::<Vec<_>>().join(" ");
-        for (from, to) in [("( ", "("), (" )", ")"), (" ,", ","), (" ;", ";"), (" .", "."), ("(, ", "("), ("(; ", "(")] {
+        for (from, to) in [
+            ("( ", "("),
+            (" )", ")"),
+            (" ,", ","),
+            (" ;", ";"),
+            (" .", "."),
+            ("(, ", "("),
+            ("(; ", "("),
+        ] {
             while l.contains(from) {
                 l = l.replace(from, to);
             }
@@ -1032,7 +1334,10 @@ fn drop_pronunciations(text: &str) -> String {
                 out.push(']');
             }
         } else {
-            let kept: Vec<&str> = inner.split(';').filter(|seg| !seg.chars().any(is_phonetic)).collect();
+            let kept: Vec<&str> = inner
+                .split(';')
+                .filter(|seg| !seg.chars().any(is_phonetic))
+                .collect();
             if !kept.is_empty() && !kept.join("").trim().is_empty() {
                 out.push(open);
                 out.push_str(&kept.join(";"));
@@ -1086,10 +1391,18 @@ pub fn wrap_lines(text: &str, cols: usize) -> Vec<String> {
 /// The place's name as written on its label. Peak labels read "▲ Name 1126 m": the sign and
 /// the height are not part of the name.
 pub fn label_name(text: &str, style: LabelStyle) -> String {
-    let mut name = text.trim().trim_start_matches(|c: char| !c.is_alphanumeric()).trim().to_string();
+    let mut name = text
+        .trim()
+        .trim_start_matches(|c: char| !c.is_alphanumeric())
+        .trim()
+        .to_string();
     if style == LabelStyle::Peak {
         if let Some(rest) = name.strip_suffix(" m") {
-            let digits = rest.chars().rev().take_while(|c| c.is_ascii_digit()).count();
+            let digits = rest
+                .chars()
+                .rev()
+                .take_while(|c| c.is_ascii_digit())
+                .count();
             if digits > 0 && rest[..rest.len() - digits].ends_with(' ') {
                 name = rest[..rest.len() - digits].trim_end().to_string();
             }
@@ -1111,7 +1424,13 @@ pub fn shorten(text: &str, cols: usize) -> String {
 
 /// "47.0012 N 12.6945 E".
 pub fn coords_text(lat: f64, lon: f64) -> String {
-    format!("{:.4}\u{b0} {}  {:.4}\u{b0} {}", lat.abs(), if lat < 0.0 { 'S' } else { 'N' }, lon.abs(), if lon < 0.0 { 'W' } else { 'E' })
+    format!(
+        "{:.4}\u{b0} {}  {:.4}\u{b0} {}",
+        lat.abs(),
+        if lat < 0.0 { 'S' } else { 'N' },
+        lon.abs(),
+        if lon < 0.0 { 'W' } else { 'E' }
+    )
 }
 
 /// "850 m", "12.3 km".
@@ -1140,7 +1459,16 @@ pub struct Near {
 
 /// The `n` nearest real articles (not disambiguation pages) that have a position.
 pub fn nearest(cands: &[Candidate], at: (f64, f64), n: usize) -> Vec<Near> {
-    let mut list: Vec<Near> = cands.iter().filter(|c| !c.disambiguation).filter_map(|c| c.at.map(|p| Near { cand: c.clone(), distance: distance_m(at, p) })).collect();
+    let mut list: Vec<Near> = cands
+        .iter()
+        .filter(|c| !c.disambiguation)
+        .filter_map(|c| {
+            c.at.map(|p| Near {
+                cand: c.clone(),
+                distance: distance_m(at, p),
+            })
+        })
+        .collect();
     list.sort_by(|a, b| a.distance.total_cmp(&b.distance));
     list.truncate(n);
     list
@@ -1173,34 +1501,146 @@ mod tests {
         // (label, kind, position, saved answer, expected article)
         type Row<'a> = (&'a str, LabelStyle, (f64, f64), &'a str, Option<&'a str>);
         let table: &[Row] = &[
-            ("Vienna", City, (48.208, 16.372), "search_vienna_en.json", Some("Vienna")),
+            (
+                "Vienna",
+                City,
+                (48.208, 16.372),
+                "search_vienna_en.json",
+                Some("Vienna"),
+            ),
             // Articles about Vienna are not about the city: the name must be the title.
-            ("Vienna", City, (48.208, 16.372), "search_paris_en.json", None),
-            ("Paris", City, (48.857, 2.352), "search_paris_en.json", Some("Paris")),
+            (
+                "Vienna",
+                City,
+                (48.208, 16.372),
+                "search_paris_en.json",
+                None,
+            ),
+            (
+                "Paris",
+                City,
+                (48.857, 2.352),
+                "search_paris_en.json",
+                Some("Paris"),
+            ),
             // The text search does not list Paris, Texas; a search around the label finds it, and
             // the same label in France finds nothing there.
-            ("Paris", Town, (33.66, -95.555), "search_paris_en.json", None),
-            ("Paris", Town, (33.66, -95.555), "geo_paris_tx_en.json", Some("Paris, Texas")),
+            (
+                "Paris",
+                Town,
+                (33.66, -95.555),
+                "search_paris_en.json",
+                None,
+            ),
+            (
+                "Paris",
+                Town,
+                (33.66, -95.555),
+                "geo_paris_tx_en.json",
+                Some("Paris, Texas"),
+            ),
             ("Paris", City, (48.857, 2.352), "geo_paris_tx_en.json", None),
-            ("Springfield", City, (39.80, -89.64), "search_springfield_en.json", Some("Springfield, Illinois")),
-            ("Springfield", Town, (0.0, 0.0), "search_springfield_en.json", None),
-            ("Georgia", Country, (42.0, 43.5), "search_georgia_en.json", Some("Georgia (country)")),
-            ("Georgia", State, (33.0, -83.0), "search_georgia_en.json", Some("Georgia (U.S. state)")),
+            (
+                "Springfield",
+                City,
+                (39.80, -89.64),
+                "search_springfield_en.json",
+                Some("Springfield, Illinois"),
+            ),
+            (
+                "Springfield",
+                Town,
+                (0.0, 0.0),
+                "search_springfield_en.json",
+                None,
+            ),
+            (
+                "Georgia",
+                Country,
+                (42.0, 43.5),
+                "search_georgia_en.json",
+                Some("Georgia (country)"),
+            ),
+            (
+                "Georgia",
+                State,
+                (33.0, -83.0),
+                "search_georgia_en.json",
+                Some("Georgia (U.S. state)"),
+            ),
             // By position and name alone this would pass; a country label also has to be a country (below).
-            ("Georgia", Country, (33.0, -83.0), "search_georgia_en.json", Some("Georgia (U.S. state)")),
-            ("Mediterranean Sea", Sea, (35.0, 18.0), "search_mediterranean_en.json", Some("Mediterranean Sea")),
+            (
+                "Georgia",
+                Country,
+                (33.0, -83.0),
+                "search_georgia_en.json",
+                Some("Georgia (U.S. state)"),
+            ),
+            (
+                "Mediterranean Sea",
+                Sea,
+                (35.0, 18.0),
+                "search_mediterranean_en.json",
+                Some("Mediterranean Sea"),
+            ),
             // A sea label on the other side of the world does not get that sea's article.
-            ("Mediterranean Sea", Sea, (-30.0, -150.0), "search_mediterranean_en.json", None),
-            ("Matterhorn", Peak, (45.9766, 7.6585), "search_matterhorn_en.json", Some("Matterhorn")),
-            ("Matterhorn", Peak, (46.5, 8.5), "search_matterhorn_en.json", None),
+            (
+                "Mediterranean Sea",
+                Sea,
+                (-30.0, -150.0),
+                "search_mediterranean_en.json",
+                None,
+            ),
+            (
+                "Matterhorn",
+                Peak,
+                (45.9766, 7.6585),
+                "search_matterhorn_en.json",
+                Some("Matterhorn"),
+            ),
+            (
+                "Matterhorn",
+                Peak,
+                (46.5, 8.5),
+                "search_matterhorn_en.json",
+                None,
+            ),
             // Mercury: the planet, the element and the god are not a place in Nevada.
-            ("Mercury", Town, (36.66, -115.99), "search_mercury_en.json", None),
-            ("Mercury", Town, (36.66, -115.99), "geo_mercury_nv_en.json", Some("Mercury, Nevada")),
-            ("Mercury", Town, (36.66, -115.99), "geo_paris_tx_en.json", None),
-            ("Hallstatt", Village, (47.562, 13.649), "search_hallstatt_de.json", Some("Hallstatt")),
+            (
+                "Mercury",
+                Town,
+                (36.66, -115.99),
+                "search_mercury_en.json",
+                None,
+            ),
+            (
+                "Mercury",
+                Town,
+                (36.66, -115.99),
+                "geo_mercury_nv_en.json",
+                Some("Mercury, Nevada"),
+            ),
+            (
+                "Mercury",
+                Town,
+                (36.66, -115.99),
+                "geo_paris_tx_en.json",
+                None,
+            ),
+            (
+                "Hallstatt",
+                Village,
+                (47.562, 13.649),
+                "search_hallstatt_de.json",
+                Some("Hallstatt"),
+            ),
         ];
         for (label, style, at, file, want) in table {
-            assert_eq!(pick(label, *style, *at, file).as_deref(), *want, "{label} {style:?} {at:?} in {file}");
+            assert_eq!(
+                pick(label, *style, *at, file).as_deref(),
+                *want,
+                "{label} {style:?} {at:?} in {file}"
+            );
         }
     }
 
@@ -1217,11 +1657,20 @@ mod tests {
             url: "https://en.wikipedia.org/wiki/X".into(),
             rank: 0,
         };
-        let two = [c("Sprungfeld, Alpha", 10.0, 10.0), c("Sprungfeld, Beta", 10.0, 10.03)];
+        let two = [
+            c("Sprungfeld, Alpha", 10.0, 10.0),
+            c("Sprungfeld, Beta", 10.0, 10.03),
+        ];
         // The label lies between two places of that name, 3 km apart: no choice.
-        assert_eq!(choose("Sprungfeld", LabelStyle::Town, (10.0, 10.015), &two), Choice::None);
+        assert_eq!(
+            choose("Sprungfeld", LabelStyle::Town, (10.0, 10.015), &two),
+            Choice::None
+        );
         // Right on one of them, the other 3 km away is clearly the second.
-        assert_eq!(choose("Sprungfeld", LabelStyle::Town, (10.0, 10.0), &two), Choice::Match(0));
+        assert_eq!(
+            choose("Sprungfeld", LabelStyle::Town, (10.0, 10.0), &two),
+            Choice::Match(0)
+        );
     }
 
     #[test]
@@ -1232,26 +1681,48 @@ mod tests {
         let moon = br#"{"query":{"pages":[{"pageid":5,"title":"Tycho","index":1,"fullurl":"https://en.wikipedia.org/wiki/Tycho","coordinates":[{"lat":-43.3,"lon":-11.2,"primary":true,"globe":"moon"}]}]}}"#;
         let list = parse_candidates(std::str::from_utf8(moon).unwrap()).unwrap();
         assert_eq!(list[0].at, None);
-        assert_eq!(choose("Tycho", LabelStyle::Peak, (-43.3, -11.2), &list), Choice::None);
+        assert_eq!(
+            choose("Tycho", LabelStyle::Peak, (-43.3, -11.2), &list),
+            Choice::None
+        );
         // On the Moon itself it is the one.
-        assert_eq!(choose_feature("Tycho", "moon", (-43.31, -11.36), 2.0, &list), Some(0));
-        assert_eq!(choose_feature("Tycho", "mars", (-43.31, -11.36), 2.0, &list), None);
-        assert_eq!(choose_feature("Tycho", "moon", (10.0, 40.0), 2.0, &list), None);
+        assert_eq!(
+            choose_feature("Tycho", "moon", (-43.31, -11.36), 2.0, &list),
+            Some(0)
+        );
+        assert_eq!(
+            choose_feature("Tycho", "mars", (-43.31, -11.36), 2.0, &list),
+            None
+        );
+        assert_eq!(
+            choose_feature("Tycho", "moon", (10.0, 40.0), 2.0, &list),
+            None
+        );
     }
 
     #[test]
     fn infoboxes_are_read_as_headings_and_facts() {
         let tycho = parse_infobox(&fixture("parse_tycho_en.json")).unwrap();
         assert_eq!(tycho[0], BoxRow::Fact("Location".into(), "The Moon".into()));
-        assert!(tycho.contains(&BoxRow::Fact("Diameter".into(), "c. 85 km".into())), "{tycho:?}");
+        assert!(
+            tycho.contains(&BoxRow::Fact("Diameter".into(), "c. 85 km".into())),
+            "{tycho:?}"
+        );
         // Only one form of the coordinates, and no footnote marks.
-        assert!(tycho.iter().any(|r| matches!(r, BoxRow::Fact(k, v) if k == "Coordinates" && v == "43.31°S 11.36°W")), "{tycho:?}");
+        assert!(
+            tycho.iter().any(
+                |r| matches!(r, BoxRow::Fact(k, v) if k == "Coordinates" && v == "43.31°S 11.36°W")
+            ),
+            "{tycho:?}"
+        );
         let rover = parse_infobox(&fixture("parse_perseverance_en.json")).unwrap();
         assert!(rover.contains(&BoxRow::Heading("Specifications".into())));
         assert!(rover.contains(&BoxRow::Fact("Owner".into(), "NASA".into())));
         // Lists keep their lines; the picture and its caption are left out.
         assert!(rover.iter().any(|r| matches!(r, BoxRow::Fact(k, v) if k == "Communication" && v.lines().count() == 2 && v.starts_with("\u{2022} UHF"))));
-        assert!(!rover.iter().any(|r| format!("{r:?}").contains("Self-portrait") || format!("{r:?}").contains("<")));
+        assert!(!rover
+            .iter()
+            .any(|r| format!("{r:?}").contains("Self-portrait") || format!("{r:?}").contains("<")));
     }
 
     #[test]
@@ -1269,12 +1740,24 @@ mod tests {
         let rows = parse_infobox(&body).unwrap();
         assert_eq!(
             rows,
-            [BoxRow::Heading("Area".into()), BoxRow::Fact("Total".into(), "12 km & more".into()), BoxRow::Text("inner cells".into())]
+            [
+                BoxRow::Heading("Area".into()),
+                BoxRow::Fact("Total".into(), "12 km & more".into()),
+                BoxRow::Text("inner cells".into())
+            ]
         );
-        assert!(parse_infobox(r#"{"parse":{"text":"<p>No box</p>"}}"#).unwrap().is_empty());
+        assert!(parse_infobox(r#"{"parse":{"text":"<p>No box</p>"}}"#)
+            .unwrap()
+            .is_empty());
         // A bare ampersand next to letters of several bytes is left as it is.
-        assert_eq!(unescape("a & •• b &#160;c &bogus; &#x41;"), "a & •• b \u{a0}c &bogus; A");
-        assert!(infobox_url("de", 7).contains("action=parse") && infobox_url("de", 7).starts_with("https://de.wikipedia.org/"));
+        assert_eq!(
+            unescape("a & •• b &#160;c &bogus; &#x41;"),
+            "a & •• b \u{a0}c &bogus; A"
+        );
+        assert!(
+            infobox_url("de", 7).contains("action=parse")
+                && infobox_url("de", 7).starts_with("https://de.wikipedia.org/")
+        );
     }
 
     #[test]
@@ -1296,9 +1779,16 @@ mod tests {
     fn the_windows_keep_what_their_fonts_have() {
         assert!(can_draw('a') && can_draw('ž') && can_draw('Ж') && can_draw('λ') && can_draw('⁄'));
         assert!(!can_draw('日') && !can_draw('ع'));
-        assert_eq!(box_text("Kraków – Тихо, 18\u{2044}2 h"), "Kraków – Тихо, 18\u{2044}2 h");
+        assert_eq!(
+            box_text("Kraków – Тихо, 18\u{2044}2 h"),
+            "Kraków – Тихо, 18\u{2044}2 h"
+        );
         assert_eq!(display_text("Kraków – Тихо"), "Kraków - ?");
-        assert_eq!(box_text("Tōkyō (東京)"), "Tōkyō", "brackets holding only unknown script go");
+        assert_eq!(
+            box_text("Tōkyō (東京)"),
+            "Tōkyō",
+            "brackets holding only unknown script go"
+        );
     }
 
     #[test]
@@ -1307,8 +1797,12 @@ mod tests {
         let list = parse_candidates(std::str::from_utf8(mars).unwrap()).unwrap();
         assert_eq!(list[0].elsewhere, Some(("mars".to_string(), 18.65, 226.2)));
         // Our names give longitudes from -180 to 180.
-        assert_eq!(choose_feature("Olympus Mons", "mars", (18.65, -133.8), 2.0, &list), Some(0));
-        assert!(title_url("en", "Perseverance (rover)").contains("&titles=Perseverance%20%28rover%29&redirects=1"));
+        assert_eq!(
+            choose_feature("Olympus Mons", "mars", (18.65, -133.8), 2.0, &list),
+            Some(0)
+        );
+        assert!(title_url("en", "Perseverance (rover)")
+            .contains("&titles=Perseverance%20%28rover%29&redirects=1"));
     }
 
     #[test]
@@ -1325,11 +1819,23 @@ mod tests {
             rank: 0,
         };
         let one = [bare("Atlantis Sea", "Q9", None)];
-        assert_eq!(choose("Atlantis Sea", LabelStyle::Sea, (0.0, 0.0), &one), Choice::NeedClass(0));
-        assert_eq!(choose("Atlantis Sea", LabelStyle::Lake, (0.0, 0.0), &one), Choice::None);
+        assert_eq!(
+            choose("Atlantis Sea", LabelStyle::Sea, (0.0, 0.0), &one),
+            Choice::NeedClass(0)
+        );
+        assert_eq!(
+            choose("Atlantis Sea", LabelStyle::Lake, (0.0, 0.0), &one),
+            Choice::None
+        );
         // The same name with a position elsewhere is another thing entirely.
-        let two = [bare("Atlantis Sea", "Q9", None), bare("Atlantis Sea", "Q10", Some((60.0, 20.0)))];
-        assert_eq!(choose("Atlantis Sea", LabelStyle::Sea, (0.0, 0.0), &two), Choice::None);
+        let two = [
+            bare("Atlantis Sea", "Q9", None),
+            bare("Atlantis Sea", "Q10", Some((60.0, 20.0))),
+        ];
+        assert_eq!(
+            choose("Atlantis Sea", LabelStyle::Sea, (0.0, 0.0), &two),
+            Choice::None
+        );
         let q = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
         assert!(class_ok(LabelStyle::Sea, &q(&["Q166620", "Q1973404"])));
         assert!(class_ok(LabelStyle::Country, &q(&["Q3624078", "Q6256"])));
@@ -1344,7 +1850,10 @@ mod tests {
     #[test]
     fn roads_are_never_looked_up() {
         let list = cands("search_vienna_en.json");
-        assert_eq!(choose("Vienna", LabelStyle::Road, (48.2, 16.37), &list), Choice::None);
+        assert_eq!(
+            choose("Vienna", LabelStyle::Road, (48.2, 16.37), &list),
+            Choice::None
+        );
     }
 
     #[test]
@@ -1374,15 +1883,28 @@ mod tests {
 
     #[test]
     fn broken_answers_are_errors_not_panics() {
-        for body in ["", "<html>", "[]", "{\"query\":{\"pages\":3}}", "{\"query\":{\"pages\":[1,\"a\",null]}}", "{\"query\":{\"pages\":[{\"pageid\":\"x\"}]}}"] {
+        for body in [
+            "",
+            "<html>",
+            "[]",
+            "{\"query\":{\"pages\":3}}",
+            "{\"query\":{\"pages\":[1,\"a\",null]}}",
+            "{\"query\":{\"pages\":[{\"pageid\":\"x\"}]}}",
+        ] {
             let r = parse_candidates(body);
             assert!(r.is_err() || r.unwrap().is_empty(), "{body}");
             assert!(parse_extract(body).is_err(), "extract of {body}");
             assert!(parse_facts(body).is_err(), "facts of {body}");
         }
         assert_eq!(parse_candidates("{\"batchcomplete\":true}"), Ok(vec![]));
-        assert_eq!(parse_candidates(r#"{"error":{"code":"maxlag","info":"waiting"}}"#), Err(WikiError::Busy));
-        assert_eq!(parse_extract(r#"{"query":{"pages":[{"pageid":1,"missing":true}]}}"#), Err(WikiError::Missing));
+        assert_eq!(
+            parse_candidates(r#"{"error":{"code":"maxlag","info":"waiting"}}"#),
+            Err(WikiError::Busy)
+        );
+        assert_eq!(
+            parse_extract(r#"{"query":{"pages":[{"pageid":1,"missing":true}]}}"#),
+            Err(WikiError::Missing)
+        );
         // Truncated in the middle.
         let text = fixture("search_vienna_en.json");
         assert!(parse_candidates(&text[..text.len() / 2]).is_err());
@@ -1422,8 +1944,14 @@ mod tests {
         assert_eq!(f.population, Some((2028289.0, Some(2025))));
         assert_eq!(f.area_m2, Some(414_830_000.0));
         let rows = fact_lines(&f, "en");
-        assert!(rows.contains(&("Population", "2,028,289 (2025)".to_string())), "{rows:?}");
-        assert!(rows.contains(&("Area", "415 km\u{b2}".to_string())), "{rows:?}");
+        assert!(
+            rows.contains(&("Population", "2,028,289 (2025)".to_string())),
+            "{rows:?}"
+        );
+        assert!(
+            rows.contains(&("Area", "415 km\u{b2}".to_string())),
+            "{rows:?}"
+        );
         assert!(rows.contains(&("Country", "Austria".to_string())));
         let de = fact_lines(&f, "de");
         assert!(de.contains(&("Population", "2.028.289 (2025)".to_string())));
@@ -1432,16 +1960,24 @@ mod tests {
         assert_eq!(sea.countries, ["Spain", "Italy", "Greece"]);
         assert!(fact_lines(&sea, "en").iter().all(|r| r.0 != "Elevation"));
         let de = parse_facts(&fixture("sparql_q183_en.json")).unwrap();
-        assert!(class_ok(LabelStyle::Country, &de.classes) && !class_ok(LabelStyle::Sea, &de.classes));
+        assert!(
+            class_ok(LabelStyle::Country, &de.classes) && !class_ok(LabelStyle::Sea, &de.classes)
+        );
         let ocean = parse_facts(&fixture("sparql_q98_en.json")).unwrap();
         assert!(class_ok(LabelStyle::Sea, &ocean.classes));
-        assert_eq!(parse_facts(r#"{"results":{"bindings":[]}}"#), Ok(Facts::default()));
+        assert_eq!(
+            parse_facts(r#"{"results":{"bindings":[]}}"#),
+            Ok(Facts::default())
+        );
     }
 
     #[test]
     fn urls_are_encoded_and_bounded() {
         let u = search_url("de", "Zürich & Co");
-        assert!(u.starts_with("https://de.wikipedia.org/w/api.php?action=query&format=json"), "{u}");
+        assert!(
+            u.starts_with("https://de.wikipedia.org/w/api.php?action=query&format=json"),
+            "{u}"
+        );
         assert!(u.contains("gsrsearch=Z%C3%BCrich%20%26%20Co&") && u.contains("maxlag=5"));
         // A hostile language code cannot change the host.
         assert!(search_url("../evil.com/", "x").starts_with("https://en.wikipedia.org/"));
@@ -1467,16 +2003,28 @@ mod tests {
         assert_eq!(distance_text(850.0), "850 m");
         assert_eq!(distance_text(12_340.0), "12.3 km");
         assert_eq!(distance_text(250_000.0), "250 km");
-        assert_eq!(coords_text(-47.5, 12.25), "47.5000\u{b0} S  12.2500\u{b0} E");
+        assert_eq!(
+            coords_text(-47.5, 12.25),
+            "47.5000\u{b0} S  12.2500\u{b0} E"
+        );
     }
 
     #[test]
     fn text_is_made_to_fit_the_font() {
         let e = parse_extract(&fixture("extract_vienna_en.json")).unwrap();
         let t = display_text(&e.text);
-        assert!(t.starts_with("Vienna (German: Wien; Austro-Bavarian: Wean) is the capital"), "{}", &t[..120]);
-        assert!(t.chars().all(|c| c == '\n' || (' '..='~').contains(&c) || ('\u{a0}'..='\u{ff}').contains(&c)));
-        assert_eq!(display_text("Dvo\u{159}\u{e1}k \u{2013} \u{201c}Pra\u{17e}sk\u{fd}\u{201d}"), "Dvor\u{e1}k - \"Prazsk\u{fd}\"");
+        assert!(
+            t.starts_with("Vienna (German: Wien; Austro-Bavarian: Wean) is the capital"),
+            "{}",
+            &t[..120]
+        );
+        assert!(t
+            .chars()
+            .all(|c| c == '\n' || (' '..='~').contains(&c) || ('\u{a0}'..='\u{ff}').contains(&c)));
+        assert_eq!(
+            display_text("Dvo\u{159}\u{e1}k \u{2013} \u{201c}Pra\u{17e}sk\u{fd}\u{201d}"),
+            "Dvor\u{e1}k - \"Prazsk\u{fd}\""
+        );
         assert_eq!(display_text("a\r\n\n\n\nb ( ) c"), "a\n\nb c");
         assert_eq!(display_text("x (\u{1f600}\u{1f600})"), "x");
     }
@@ -1487,7 +2035,12 @@ mod tests {
             let e = parse_extract(&fixture(file)).unwrap();
             let t = display_text(&e.text);
             assert!(!t.is_empty());
-            assert!(t.chars().all(|c| c == '\n' || (' '..='~').contains(&c) || ('\u{a0}'..='\u{ff}').contains(&c)), "{file}");
+            assert!(
+                t.chars().all(|c| c == '\n'
+                    || (' '..='~').contains(&c)
+                    || ('\u{a0}'..='\u{ff}').contains(&c)),
+                "{file}"
+            );
             for line in wrap_lines(&t, 20) {
                 assert!(line.chars().count() <= 20);
             }
@@ -1500,9 +2053,18 @@ mod tests {
 
     #[test]
     fn peak_labels_lose_their_sign_and_height() {
-        assert_eq!(label_name("\u{25b2} Wehrkogel 1126 m", LabelStyle::Peak), "Wehrkogel");
-        assert_eq!(label_name("\u{25b2} Gro\u{df}er Priel", LabelStyle::Peak), "Gro\u{df}er Priel");
-        assert_eq!(label_name("\u{25b2} Mont Blanc 4806 m", LabelStyle::Peak), "Mont Blanc");
+        assert_eq!(
+            label_name("\u{25b2} Wehrkogel 1126 m", LabelStyle::Peak),
+            "Wehrkogel"
+        );
+        assert_eq!(
+            label_name("\u{25b2} Gro\u{df}er Priel", LabelStyle::Peak),
+            "Gro\u{df}er Priel"
+        );
+        assert_eq!(
+            label_name("\u{25b2} Mont Blanc 4806 m", LabelStyle::Peak),
+            "Mont Blanc"
+        );
         assert_eq!(label_name("  Vienna ", LabelStyle::City), "Vienna");
         // A height is cut from peaks only, and only as a number of its own.
         assert_eq!(label_name("Route 66 m", LabelStyle::City), "Route 66 m");
@@ -1512,9 +2074,15 @@ mod tests {
 
     #[test]
     fn long_words_are_broken_inside() {
-        let lines = wrap_lines("short Llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch end\n\nnext", 10);
+        let lines = wrap_lines(
+            "short Llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch end\n\nnext",
+            10,
+        );
         assert!(lines.iter().all(|l| l.chars().count() <= 10), "{lines:?}");
-        assert_eq!(lines.join("").replace(' ', ""), "shortLlanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogochendnext");
+        assert_eq!(
+            lines.join("").replace(' ', ""),
+            "shortLlanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogochendnext"
+        );
         assert_eq!(wrap_lines("a\n\nb", 5), ["a", "", "b"]);
         assert_eq!(wrap_lines("", 5), [""]);
         assert_eq!(wrap_lines("x", 0), ["x"]);

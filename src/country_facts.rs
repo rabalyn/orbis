@@ -37,7 +37,12 @@ pub struct Row {
 
 /// The country a click's box is about, by its Wikidata item, or else by the outline under the
 /// clicked point when `by_outline` (a country's name, or open ground at the scale of countries).
-pub fn match_code<'a>(countries: &'a Countries, item: Option<&str>, at: Option<(f64, f64)>, by_outline: bool) -> Option<&'a str> {
+pub fn match_code<'a>(
+    countries: &'a Countries,
+    item: Option<&str>,
+    at: Option<(f64, f64)>,
+    by_outline: bool,
+) -> Option<&'a str> {
     if let Some(o) = item.and_then(|q| countries.by_wikidata(q)) {
         return Some(&o.code);
     }
@@ -46,7 +51,12 @@ pub fn match_code<'a>(countries: &'a Countries, item: Option<&str>, at: Option<(
 }
 
 /// The Data tab for a click, or None if the box is not about a country with figures.
-pub fn for_click(item: Option<&str>, at: Option<(f64, f64)>, by_outline: bool, year: i32) -> Option<Facts> {
+pub fn for_click(
+    item: Option<&str>,
+    at: Option<(f64, f64)>,
+    by_outline: bool,
+    year: i32,
+) -> Option<Facts> {
     let code = match_code(Countries::bundled()?, item, at, by_outline)?;
     facts(Owid::bundled()?, code, year)
 }
@@ -58,15 +68,23 @@ pub fn for_year(f: &Facts, year: i32) -> Option<Facts> {
 
 /// A figure's values over the years.
 fn series(c: &Country, s: Series) -> Vec<(i32, f64)> {
-    let Some((first, last)) = c.years(s) else { return Vec::new() };
-    (first..=last).filter_map(|y| c.year(s, y).map(|v| (y, v))).collect()
+    let Some((first, last)) = c.years(s) else {
+        return Vec::new();
+    };
+    (first..=last)
+        .filter_map(|y| c.year(s, y).map(|v| (y, v)))
+        .collect()
 }
 
 /// Electricity generated per person, in kWh, for the years both are known.
 fn per_person(c: &Country) -> Vec<(i32, f64)> {
     series(c, Series::Generation)
         .into_iter()
-        .filter_map(|(y, twh)| c.year(Series::Population, y).filter(|&p| p > 0.0).map(|p| (y, twh * 1e9 / p)))
+        .filter_map(|(y, twh)| {
+            c.year(Series::Population, y)
+                .filter(|&p| p > 0.0)
+                .map(|p| (y, twh * 1e9 / p))
+        })
         .collect()
 }
 
@@ -75,23 +93,44 @@ pub fn facts(owid: &Owid, code: &str, year: i32) -> Option<Facts> {
     let c = owid.country(code)?;
     let population = series(c, Series::Population);
     let mut rows = Vec::new();
-    let mut add = |name: &str, points: Vec<(i32, f64)>, value: &dyn Fn(f64) -> String, unit: &str, source: String| {
-        let Some(&(y, v)) = points.iter().rev().find(|p| p.0 <= year) else { return };
-        let (lo, hi) = points.iter().fold((0.0f64, 0.0f64), |(lo, hi), p| (lo.min(p.1), hi.max(p.1)));
+    let mut add = |name: &str,
+                   points: Vec<(i32, f64)>,
+                   value: &dyn Fn(f64) -> String,
+                   unit: &str,
+                   source: String| {
+        let Some(&(y, v)) = points.iter().rev().find(|p| p.0 <= year) else {
+            return;
+        };
+        let (lo, hi) = points
+            .iter()
+            .fold((0.0f64, 0.0f64), |(lo, hi), p| (lo.min(p.1), hi.max(p.1)));
         // Population is drawn in a unit that keeps the top of the line a whole number.
-        let scale = if unit.is_empty() && hi >= 1e7 { 1e6 } else if unit.is_empty() && hi >= 1e4 { 1e3 } else { 1.0 };
+        let scale = if unit.is_empty() && hi >= 1e7 {
+            1e6
+        } else if unit.is_empty() && hi >= 1e4 {
+            1e3
+        } else {
+            1.0
+        };
         let unit = match scale {
             1e6 => "millions",
             1e3 => "thousands",
             _ if unit.is_empty() => "people",
             _ => unit,
         };
-        let when = if y == year { String::new() } else { format!(" ({y})") };
+        let when = if y == year {
+            String::new()
+        } else {
+            format!(" ({y})")
+        };
         rows.push(Row {
             year: y,
             trend: Trend {
                 title: format!("{name}: {}{when}", value(v)),
-                points: points.iter().map(|&(t, v)| (t as f32, (v / scale) as f32)).collect(),
+                points: points
+                    .iter()
+                    .map(|&(t, v)| (t as f32, (v / scale) as f32))
+                    .collect(),
                 max: nice(hi / scale),
                 min: if lo < 0.0 { -nice(-lo / scale) } else { 0.0 },
                 mark: Some(y as f32),
@@ -104,12 +143,34 @@ pub fn facts(owid: &Owid, code: &str, year: i32) -> Option<Facts> {
     let src = source(Series::Population)(year);
     add("Population", population.clone(), &people, "", src);
     let pp = per_person(c);
-    let src = format!("{} and {}", source(Series::Generation)(latest(&pp)), crate::owid::Source::Population.name());
-    add("Electricity per person", pp, &|v| format!("{} kWh", group(v.round())), "kWh", src);
+    let src = format!(
+        "{} and {}",
+        source(Series::Generation)(latest(&pp)),
+        crate::owid::Source::Population.name()
+    );
+    add(
+        "Electricity per person",
+        pp,
+        &|v| format!("{} kWh", group(v.round())),
+        "kWh",
+        src,
+    );
     for (name, s, unit, value) in [
-        ("Renewable share", Series::RenewableShare, "%", (|v| format!("{v:.1}%")) as fn(f64) -> String),
-        ("Carbon intensity", Series::CarbonIntensity, "g CO\u{2082}/kWh", |v| format!("{v:.0} g CO\u{2082}/kWh")),
-        ("Net imports", Series::NetImports, "TWh", |v| format!("{v:+.1} TWh")),
+        (
+            "Renewable share",
+            Series::RenewableShare,
+            "%",
+            (|v| format!("{v:.1}%")) as fn(f64) -> String,
+        ),
+        (
+            "Carbon intensity",
+            Series::CarbonIntensity,
+            "g CO\u{2082}/kWh",
+            |v| format!("{v:.0} g CO\u{2082}/kWh"),
+        ),
+        ("Net imports", Series::NetImports, "TWh", |v| {
+            format!("{v:+.1} TWh")
+        }),
     ] {
         let p = series(c, s);
         let src = source(s)(latest(&p));
@@ -125,10 +186,18 @@ pub fn facts(owid: &Owid, code: &str, year: i32) -> Option<Facts> {
         if years.iter().all(|&y| y == newest) {
             format!("There are no figures for {year} yet; these are for {newest}.")
         } else {
-            format!("Not all figures for {year} are out yet; the latest are shown, with their year.")
+            format!(
+                "Not all figures for {year} are out yet; the latest are shown, with their year."
+            )
         }
     });
-    Some(Facts { code: code.to_string(), name: c.name.clone(), asked: year, note, rows })
+    Some(Facts {
+        code: code.to_string(),
+        name: c.name.clone(),
+        asked: year,
+        note,
+        rows,
+    })
 }
 
 /// A round number at or above a value, for the top of a line: 1 to 8 times a power of ten.
@@ -137,7 +206,10 @@ fn nice(v: f64) -> f32 {
         return 0.0;
     }
     let p = 10f64.powf(v.log10().floor());
-    let m = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0].into_iter().find(|&m| m * p >= v * 0.999_999).unwrap_or(10.0);
+    let m = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0]
+        .into_iter()
+        .find(|&m| m * p >= v * 0.999_999)
+        .unwrap_or(10.0);
     (m * p) as f32
 }
 
@@ -151,7 +223,11 @@ fn group(v: f64) -> String {
         }
         out.push(ch);
     }
-    if v < 0.0 { format!("-{out}") } else { out }
+    if v < 0.0 {
+        format!("-{out}")
+    } else {
+        out
+    }
 }
 
 fn people(v: f64) -> String {
@@ -176,7 +252,10 @@ mod tests {
     fn a_country_is_matched_by_its_wikidata_item() {
         let (c, _) = data();
         assert_eq!(match_code(c, Some("Q142"), None, false), Some("FRA"));
-        assert_eq!(match_code(c, Some("Q155"), Some((0.0, 0.0)), false), Some("BRA"));
+        assert_eq!(
+            match_code(c, Some("Q155"), Some((0.0, 0.0)), false),
+            Some("BRA")
+        );
         // A city's item is no country, and its point is not looked at.
         assert_eq!(match_code(c, Some("Q90"), Some((48.86, 2.35)), false), None);
     }
@@ -185,9 +264,16 @@ mod tests {
     fn a_country_is_matched_by_the_outline_under_the_click() {
         let (c, _) = data();
         assert_eq!(match_code(c, None, Some((48.86, 2.35)), true), Some("FRA"));
-        assert_eq!(match_code(c, Some("Q90"), Some((-15.8, -47.9)), true), Some("BRA"));
+        assert_eq!(
+            match_code(c, Some("Q90"), Some((-15.8, -47.9)), true),
+            Some("BRA")
+        );
         assert_eq!(match_code(c, None, Some((48.86, 2.35)), false), None);
-        assert_eq!(match_code(c, None, Some((0.0, -30.0)), true), None, "open sea");
+        assert_eq!(
+            match_code(c, None, Some((0.0, -30.0)), true),
+            None,
+            "open sea"
+        );
     }
 
     #[test]
@@ -195,8 +281,16 @@ mod tests {
         let (c, o) = data();
         assert!(facts(o, "XXX", 2025).is_none());
         // Outlines exist for some places OWID has no figures for: none of them gets a tab.
-        let without: Vec<&str> = c.all().iter().filter(|x| o.country(&x.code).is_none()).map(|x| x.code.as_str()).collect();
-        assert!(!without.is_empty(), "the bundled outlines should include places without figures");
+        let without: Vec<&str> = c
+            .all()
+            .iter()
+            .filter(|x| o.country(&x.code).is_none())
+            .map(|x| x.code.as_str())
+            .collect();
+        assert!(
+            !without.is_empty(),
+            "the bundled outlines should include places without figures"
+        );
         for code in without {
             assert!(facts(o, code, 2025).is_none(), "{code}");
         }
@@ -208,13 +302,33 @@ mod tests {
     fn a_year_beyond_the_figures_takes_the_latest_and_says_so() {
         let (_, o) = data();
         let f = facts(o, "FRA", 2100).unwrap();
-        assert_eq!(f.rows.len(), 5, "{:?}", f.rows.iter().map(|r| &r.trend.title).collect::<Vec<_>>());
-        let last = o.country("FRA").unwrap().years(Series::Population).unwrap().1;
+        assert_eq!(
+            f.rows.len(),
+            5,
+            "{:?}",
+            f.rows.iter().map(|r| &r.trend.title).collect::<Vec<_>>()
+        );
+        let last = o
+            .country("FRA")
+            .unwrap()
+            .years(Series::Population)
+            .unwrap()
+            .1;
         assert_eq!(f.rows[0].year, last);
-        assert!(f.rows.iter().all(|r| r.year < 2100 && r.trend.title.contains(&format!("({})", r.year))));
-        assert!(f.note.as_deref().is_some_and(|n| n.contains("2100")), "{:?}", f.note);
+        assert!(f
+            .rows
+            .iter()
+            .all(|r| r.year < 2100 && r.trend.title.contains(&format!("({})", r.year))));
+        assert!(
+            f.note.as_deref().is_some_and(|n| n.contains("2100")),
+            "{:?}",
+            f.note
+        );
         let now = facts(o, "FRA", last).unwrap();
-        assert!(now.rows[0].trend.title.starts_with("Population: ") && !now.rows[0].trend.title.contains('('));
+        assert!(
+            now.rows[0].trend.title.starts_with("Population: ")
+                && !now.rows[0].trend.title.contains('(')
+        );
     }
 
     #[test]
@@ -223,7 +337,10 @@ mod tests {
         let f = facts(o, "FRA", 2023).unwrap();
         let t: Vec<&str> = f.rows.iter().map(|r| r.trend.title.as_str()).collect();
         assert!(t[0].contains("million"), "{t:?}");
-        assert!(t[1].starts_with("Electricity per person: ") && t[1].ends_with(" kWh"), "{t:?}");
+        assert!(
+            t[1].starts_with("Electricity per person: ") && t[1].ends_with(" kWh"),
+            "{t:?}"
+        );
         assert!(f.rows.iter().all(|r| r.trend.caption.contains("Source: ")));
         // France exports: its line reaches below zero.
         assert!(f.rows[4].trend.min < 0.0, "{:?}", f.rows[4].trend);

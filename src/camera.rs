@@ -180,7 +180,11 @@ pub fn wrap(a: f64) -> f64 {
         return a;
     }
     let w = (a + PI).rem_euclid(TAU) - PI;
-    if w <= -PI { w + TAU } else { w }
+    if w <= -PI {
+        w + TAU
+    } else {
+        w
+    }
 }
 
 #[cfg(test)]
@@ -188,12 +192,24 @@ mod tests {
     use super::*;
 
     fn cam() -> Camera {
-        Camera { lat: 0.8, lon: 0.2, target_h: 0.0, distance: 50_000.0, heading: 0.7, tilt: 0.6, sky: 0.0 }
+        Camera {
+            lat: 0.8,
+            lon: 0.2,
+            target_h: 0.0,
+            distance: 50_000.0,
+            heading: 0.7,
+            tilt: 0.6,
+            sky: 0.0,
+        }
     }
 
     #[test]
     fn straight_down_north_up_basis() {
-        let c = Camera { heading: 0.0, tilt: 0.0, ..cam() };
+        let c = Camera {
+            heading: 0.0,
+            tilt: 0.0,
+            ..cam()
+        };
         let b = c.basis();
         let (e, n, up) = enu(c.lat, c.lon);
         assert!((b.right - e).length() < 1e-9);
@@ -212,7 +228,14 @@ mod tests {
     fn pose_round_trip() {
         let c = cam();
         let b = c.basis();
-        let mut d = Camera { lat: 0.0, lon: 0.0, distance: 1.0, heading: 0.0, tilt: 0.0, ..c };
+        let mut d = Camera {
+            lat: 0.0,
+            lon: 0.0,
+            distance: 1.0,
+            heading: 0.0,
+            tilt: 0.0,
+            ..c
+        };
         assert!(d.set_pose(b.pos, b.look));
         assert!((d.lat - c.lat).abs() < 1e-9);
         assert!((d.lon - c.lon).abs() < 1e-9);
@@ -240,7 +263,11 @@ mod tests {
 
     #[test]
     fn rotation_moves_view_rigidly() {
-        let mut c = Camera { lat: 0.3, lon: 0.0, ..cam() };
+        let mut c = Camera {
+            lat: 0.3,
+            lon: 0.0,
+            ..cam()
+        };
         let before = c.basis();
         let q = DQuat::from_rotation_z(0.25);
         c.apply_rotation(q);
@@ -262,7 +289,10 @@ mod tests {
 
     #[test]
     fn raised_head_looks_up_from_the_same_place() {
-        let mut c = Camera { tilt: MAX_TILT, ..cam() };
+        let mut c = Camera {
+            tilt: MAX_TILT,
+            ..cam()
+        };
         let flat = c.basis();
         c.set_total_tilt(MAX_TILT + 0.5);
         let b = c.basis();
@@ -270,14 +300,20 @@ mod tests {
         let up = enu(c.lat, c.lon).2;
         assert!(b.look.dot(up) > flat.look.dot(up));
         assert!((b.look.length() - 1.0).abs() < 1e-12 && b.look.dot(b.up).abs() < 1e-12);
-        assert!(c.pick(DVec2::new(0.0, 0.9), 1.5).is_none(), "the sky hits no ground");
+        assert!(
+            c.pick(DVec2::new(0.0, 0.9), 1.5).is_none(),
+            "the sky hits no ground"
+        );
         c.set_total_tilt(10.0);
         assert!((c.total_tilt() - PI).abs() < 1e-12);
     }
 
     #[test]
     fn look_around_keeps_the_raised_head() {
-        let mut c = Camera { tilt: MAX_TILT - 0.1, ..cam() };
+        let mut c = Camera {
+            tilt: MAX_TILT - 0.1,
+            ..cam()
+        };
         c.set_total_tilt(MAX_TILT + 0.3);
         let p = c.basis().pos;
         assert!(c.look_around(0.2, 0.0));

@@ -51,7 +51,9 @@ impl Track {
 
     fn pos(self, style: &Style) -> f64 {
         let p = match self {
-            Track::Opacity => (style.idle_opacity - OPACITY_RANGE.0) / (OPACITY_RANGE.1 - OPACITY_RANGE.0),
+            Track::Opacity => {
+                (style.idle_opacity - OPACITY_RANGE.0) / (OPACITY_RANGE.1 - OPACITY_RANGE.0)
+            }
             Track::Height => log_pos(HEIGHT_RANGE, style.height),
             Track::Width => log_pos(WIDTH_RANGE, style.width),
         };
@@ -113,7 +115,9 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Option<Action>
                         ui.spacing_mut().item_spacing.x = 2.0;
                         let [r, g, b] = style.colour(source);
                         gui::swatch(ui, [r, g, b, 255], source.fossil());
-                        if let Some(([ir, ig, ib], a)) = style.idle_colour(source).filter(|_| model.output) {
+                        if let Some(([ir, ig, ib], a)) =
+                            style.idle_colour(source).filter(|_| model.output)
+                        {
                             gui::swatch(ui, [ir, ig, ib, a], source.fossil());
                         }
                         ui.add_space(4.0);
@@ -121,7 +125,14 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Option<Action>
                     });
                 }
             });
-            gui::note(ui, if model.output { "Left: running now. Right: not running. Hatched: fossil or nuclear." } else { "Hatched: fossil or nuclear." });
+            gui::note(
+                ui,
+                if model.output {
+                    "Left: running now. Right: not running. Hatched: fossil or nuclear."
+                } else {
+                    "Hatched: fossil or nuclear."
+                },
+            );
 
             gui::section(ui, "Capacity not running");
             for idle in Idle::ALL {
@@ -132,7 +143,10 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Option<Action>
             let label = format!("Opacity {:.0}%", style.idle_opacity * 100.0);
             slider(ui, &mut style, Track::Opacity, &label);
             if !model.output {
-                gui::note(ui, "Shown while the bars show output at the clock's time (view options).");
+                gui::note(
+                    ui,
+                    "Shown while the bars show output at the clock's time (view options).",
+                );
             }
 
             gui::section(ui, "Bar size");
@@ -179,13 +193,26 @@ mod tests {
 
     #[test]
     fn sliders_run_over_their_ranges() {
-        assert!((Track::Height.value(0.0) - HEIGHT_RANGE.0).abs() < 1e-9 && (Track::Height.value(1.0) - HEIGHT_RANGE.1).abs() < 1e-9);
-        assert!((Track::Height.value(0.5) - 1.0).abs() < 1e-9, "the usual height in the middle");
-        let st = Style { width: 1.7, idle_opacity: 0.5, ..Style::default() };
+        assert!(
+            (Track::Height.value(0.0) - HEIGHT_RANGE.0).abs() < 1e-9
+                && (Track::Height.value(1.0) - HEIGHT_RANGE.1).abs() < 1e-9
+        );
+        assert!(
+            (Track::Height.value(0.5) - 1.0).abs() < 1e-9,
+            "the usual height in the middle"
+        );
+        let st = Style {
+            width: 1.7,
+            idle_opacity: 0.5,
+            ..Style::default()
+        };
         for t in [Track::Opacity, Track::Height, Track::Width] {
             let mut back = st;
             t.set(&mut back, t.value(t.pos(&st)));
-            assert!((back.width - st.width).abs() < 1e-9 && (back.idle_opacity - st.idle_opacity).abs() < 1e-9);
+            assert!(
+                (back.width - st.width).abs() < 1e-9
+                    && (back.idle_opacity - st.idle_opacity).abs() < 1e-9
+            );
         }
     }
 }

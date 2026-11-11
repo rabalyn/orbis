@@ -6,9 +6,9 @@ use crate::buildings::{BuildingMesh, BuildingVertex, WALL_COLUMNS};
 use crate::camera::{Camera, FOV_Y};
 use crate::geo::{geodetic_to_ecef, radius, TileKey};
 use crate::labels::{AtlasRect, Mask, Shelves, TextKey, TextWorker, ATLAS_SIZE};
+use crate::loader::{mesh_indices, RoofData, TileData, Vertex, GRID, TILE_MAX_Z};
 use crate::shadows;
 use crate::sky::SkyPoint;
-use crate::loader::{mesh_indices, RoofData, TileData, Vertex, GRID, TILE_MAX_Z};
 use bytemuck::{Pod, Zeroable};
 use glam::{DMat3, DVec3};
 use std::collections::{HashMap, HashSet};
@@ -235,9 +235,18 @@ fn roof_bind(
         label: Some("roof"),
         layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(picture) },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(walls) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(picture),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(walls),
+            },
         ],
     })
 }
@@ -251,7 +260,11 @@ fn tile_texture_view(
     let (w, h, _) = mips[0];
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("tile"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: mips.len() as u32,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -273,7 +286,11 @@ fn tile_texture_view(
                 bytes_per_row: Some(mw * 4),
                 rows_per_image: Some(*mh),
             },
-            wgpu::Extent3d { width: *mw, height: *mh, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: *mw,
+                height: *mh,
+                depth_or_array_layers: 1,
+            },
         );
     }
     texture.create_view(&wgpu::TextureViewDescriptor::default())
@@ -342,52 +359,66 @@ pub fn sample_count(adapter: &wgpu::Adapter, format: wgpu::TextureFormat) -> u32
     let depth = adapter.get_texture_format_features(DEPTH_FORMAT).flags;
     let usable = colour.contains(Flags::MULTISAMPLE_X4 | Flags::MULTISAMPLE_RESOLVE)
         && depth.contains(Flags::MULTISAMPLE_X4);
-    if usable { 4 } else { 1 }
+    if usable {
+        4
+    } else {
+        1
+    }
 }
 
 impl Renderer {
-    pub fn new(device: wgpu::Device, queue: wgpu::Queue, format: wgpu::TextureFormat, samples: u32) -> Self {
+    pub fn new(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        format: wgpu::TextureFormat,
+        samples: u32,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::include_wgsl!("globe.wgsl"));
-        let multisample = wgpu::MultisampleState { count: samples, ..Default::default() };
+        let multisample = wgpu::MultisampleState {
+            count: samples,
+            ..Default::default()
+        };
 
         let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("frame"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Depth,
-                    view_dimension: wgpu::TextureViewDimension::D2Array,
-                    multisampled: false,
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
                 },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    count: None,
+                },
+            ],
         });
         let texture_entry = |binding| wgpu::BindGroupLayoutEntry {
             binding,
@@ -544,7 +575,10 @@ impl Renderer {
         };
         let added = [Some(wgpu::ColorTargetState {
             format,
-            blend: Some(wgpu::BlendState { color: additive, alpha: additive }),
+            blend: Some(wgpu::BlendState {
+                color: additive,
+                alpha: additive,
+            }),
             write_mask: wgpu::ColorWrites::ALL,
         })];
         let star_attrs = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4];
@@ -587,7 +621,8 @@ impl Renderer {
             bind_group_layouts: &[Some(&frame_layout), Some(&roof_layout)],
             immediate_size: 0,
         });
-        let building_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4, 3 => Unorm16x2];
+        let building_attrs =
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4, 3 => Unorm16x2];
         let building_instance_attrs = wgpu::vertex_attr_array![2 => Float32x3];
         let building_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("building"),
@@ -634,49 +669,50 @@ impl Renderer {
         });
         // The see-through parts of the energy bars: tested against the depth of everything solid,
         // but not written to it, so that what stands behind them shows.
-        let building_ghost_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("building ghost"),
-            layout: Some(&building_pl),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_building"),
-                compilation_options: Default::default(),
-                buffers: &[
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: size_of::<BuildingVertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &building_attrs,
-                    }),
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: size_of::<[f32; 3]>() as u64,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &building_instance_attrs,
-                    }),
-                ],
-            },
-            // Only outward faces, so that a camera inside a building sees out rather than
-            // a screen full of wall.
-            primitive: wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Greater),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample,
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_building_ghost"),
-                compilation_options: Default::default(),
-                targets: &blended,
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let building_ghost_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("building ghost"),
+                layout: Some(&building_pl),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_building"),
+                    compilation_options: Default::default(),
+                    buffers: &[
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: size_of::<BuildingVertex>() as u64,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &building_attrs,
+                        }),
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: size_of::<[f32; 3]>() as u64,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &building_instance_attrs,
+                        }),
+                    ],
+                },
+                // Only outward faces, so that a camera inside a building sees out rather than
+                // a screen full of wall.
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Greater),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample,
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_building_ghost"),
+                    compilation_options: Default::default(),
+                    targets: &blended,
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
         let shadow_shader = device.create_shader_module(wgpu::include_wgsl!("shadow.wgsl"));
         let cascade_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("cascade"),
@@ -769,7 +805,10 @@ impl Renderer {
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("cascade"),
                     layout: &cascade_layout,
-                    entries: &[wgpu::BindGroupEntry { binding: 0, resource: b.as_entire_binding() }],
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: b.as_entire_binding(),
+                    }],
                 })
             })
             .collect();
@@ -826,7 +865,11 @@ impl Renderer {
         let shadow_dummy = device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("no shadow maps"),
-                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -838,8 +881,14 @@ impl Renderer {
                 dimension: Some(wgpu::TextureViewDimension::D2Array),
                 ..Default::default()
             });
-        let frame_bind =
-            make_frame_bind(&device, &frame_layout, &frame_buffer, &shadow_uniform, &shadow_dummy, &shadow_sampler);
+        let frame_bind = make_frame_bind(
+            &device,
+            &frame_layout,
+            &frame_buffer,
+            &shadow_uniform,
+            &shadow_dummy,
+            &shadow_sampler,
+        );
         let tile_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("tile"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -872,13 +921,23 @@ impl Renderer {
                 label: Some(label),
                 layout: &tile_layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
                 ],
             })
         };
-        let under_view =
-            tile_texture_view(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, &underlay_mips());
+        let under_view = tile_texture_view(
+            &device,
+            &queue,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            &underlay_mips(),
+        );
         let underlay_bind = texture_bind(&under_view, &tile_sampler, "underlay");
         let empty_view = tile_texture_view(
             &device,
@@ -887,11 +946,21 @@ impl Renderer {
             &[(1, 1, vec![0, 0, 0, 0])],
         );
         let no_overlay = texture_bind(&empty_view, &tile_sampler, "no overlay");
-        let no_roof = roof_bind(&device, &roof_layout, &empty_view, &tile_sampler, &empty_view);
+        let no_roof = roof_bind(
+            &device,
+            &roof_layout,
+            &empty_view,
+            &tile_sampler,
+            &empty_view,
+        );
 
         let label_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("label atlas"),
-            size: wgpu::Extent3d { width: ATLAS_SIZE, height: ATLAS_SIZE, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: ATLAS_SIZE,
+                height: ATLAS_SIZE,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -905,7 +974,11 @@ impl Renderer {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let label_bind = texture_bind(&label_texture.create_view(&Default::default()), &label_sampler, "label");
+        let label_bind = texture_bind(
+            &label_texture.create_view(&Default::default()),
+            &label_sampler,
+            "label",
+        );
         let label_capacity = 256;
         let label_instances = create_label_buffer(&device, label_capacity);
 
@@ -1000,10 +1073,16 @@ impl Renderer {
             bytemuck::cast_slice::<_, u8>(&mesh.indices),
         );
         let device = &self.device;
-        let (mut vertices, mut indices, mut vertex_capacity, mut index_capacity) = match self.atlas.take() {
-            Some(a) => (Some(a.vertices), Some(a.indices), a.vertex_capacity, a.index_capacity),
-            None => (None, None, 0, 0),
-        };
+        let (mut vertices, mut indices, mut vertex_capacity, mut index_capacity) =
+            match self.atlas.take() {
+                Some(a) => (
+                    Some(a.vertices),
+                    Some(a.indices),
+                    a.vertex_capacity,
+                    a.index_capacity,
+                ),
+                None => (None, None, 0, 0),
+            };
         let grow = |buffer: &mut Option<wgpu::Buffer>, capacity: &mut u64, needed: u64, usage| {
             if buffer.is_none() || needed > *capacity {
                 *capacity = needed.next_power_of_two().max(1 << 16);
@@ -1015,14 +1094,31 @@ impl Renderer {
                 }));
             }
         };
-        grow(&mut vertices, &mut vertex_capacity, vbytes.len() as u64, wgpu::BufferUsages::VERTEX);
-        grow(&mut indices, &mut index_capacity, ibytes.len() as u64, wgpu::BufferUsages::INDEX);
+        grow(
+            &mut vertices,
+            &mut vertex_capacity,
+            vbytes.len() as u64,
+            wgpu::BufferUsages::VERTEX,
+        );
+        grow(
+            &mut indices,
+            &mut index_capacity,
+            ibytes.len() as u64,
+            wgpu::BufferUsages::INDEX,
+        );
         let (vertices, indices) = (vertices.expect("grown"), indices.expect("grown"));
         if !vbytes.is_empty() {
             self.queue.write_buffer(&vertices, 0, vbytes);
             self.queue.write_buffer(&indices, 0, ibytes);
         }
-        self.atlas = Some(AtlasDraw { vertices, indices, vertex_capacity, index_capacity, underlay, tiles });
+        self.atlas = Some(AtlasDraw {
+            vertices,
+            indices,
+            vertex_capacity,
+            index_capacity,
+            underlay,
+            tiles,
+        });
     }
 
     pub fn has_tile(&self, k: TileKey) -> bool {
@@ -1039,10 +1135,18 @@ impl Renderer {
             contents: bytemuck::cast_slice(&data.vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let view = tile_texture_view(&self.device, &self.queue, wgpu::TextureFormat::Rgba8UnormSrgb, &data.mips);
+        let view = tile_texture_view(
+            &self.device,
+            &self.queue,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            &data.mips,
+        );
         let bind_group = self.sampled_bind(&view);
         // The first and last grid vertices are the corners of the imagery's part.
-        let (first, last) = (data.vertices.first(), data.vertices.get((GRID + 1) * (GRID + 1) - 1));
+        let (first, last) = (
+            data.vertices.first(),
+            data.vertices.get((GRID + 1) * (GRID + 1) - 1),
+        );
         let uv_rect = match (first, last) {
             (Some(a), Some(b)) => (a.uv[0] as f64, a.uv[1] as f64, (b.uv[0] - a.uv[0]) as f64),
             _ => (0.0, 0.0, 1.0),
@@ -1050,7 +1154,11 @@ impl Renderer {
         let tile_radius = data
             .vertices
             .iter()
-            .map(|v| f64::from(v.pos[0]).hypot(f64::from(v.pos[1])).hypot(f64::from(v.pos[2])))
+            .map(|v| {
+                f64::from(v.pos[0])
+                    .hypot(f64::from(v.pos[1]))
+                    .hypot(f64::from(v.pos[2]))
+            })
             .fold(0.0, f64::max);
         self.tiles.insert(
             data.key,
@@ -1077,7 +1185,12 @@ impl Renderer {
     /// (`--mark-underlay`).
     pub fn mark_underlay(&mut self) {
         let magenta = [255u8, 0, 255, 255].repeat(4);
-        let view = tile_texture_view(&self.device, &self.queue, wgpu::TextureFormat::Rgba8UnormSrgb, &[(1, 4, magenta)]);
+        let view = tile_texture_view(
+            &self.device,
+            &self.queue,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            &[(1, 4, magenta)],
+        );
         self.underlay_bind = self.sampled_bind(&view);
     }
 
@@ -1086,8 +1199,14 @@ impl Renderer {
             label: Some("tile"),
             layout: &self.tile_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.tile_sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.tile_sampler),
+                },
             ],
         })
     }
@@ -1115,7 +1234,11 @@ impl Renderer {
         let reach = mesh
             .vertices
             .iter()
-            .map(|v| f64::from(v.pos[0]).hypot(f64::from(v.pos[1])).hypot(f64::from(v.pos[2])))
+            .map(|v| {
+                f64::from(v.pos[0])
+                    .hypot(f64::from(v.pos[1]))
+                    .hypot(f64::from(v.pos[2]))
+            })
             .fold(0.0, f64::max);
         self.buildings.insert(
             k,
@@ -1133,20 +1256,42 @@ impl Renderer {
 
     /// The imagery zoom of a building tile's aerial picture, 0 when it has none.
     pub fn roof_z(&self, k: TileKey) -> u8 {
-        self.buildings.get(&k).and_then(|b| b.roof.as_ref()).map_or(0, |r| r.z)
+        self.buildings
+            .get(&k)
+            .and_then(|b| b.roof.as_ref())
+            .map_or(0, |r| r.z)
     }
 
     /// Gives a building tile its aerial picture and wall colours. A tile not loaded keeps none.
     pub fn insert_roofs(&mut self, k: TileKey, z: u8, data: &RoofData) {
-        let Some(b) = self.buildings.get_mut(&k) else { return };
-        let picture = tile_texture_view(&self.device, &self.queue, wgpu::TextureFormat::Rgba8UnormSrgb, &data.mips);
+        let Some(b) = self.buildings.get_mut(&k) else {
+            return;
+        };
+        let picture = tile_texture_view(
+            &self.device,
+            &self.queue,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            &data.mips,
+        );
         // Whole rows, so that every building's index finds a texel.
         let rows = (data.walls.len() as u32).div_ceil(WALL_COLUMNS).max(1);
         let mut walls: Vec<u8> = bytemuck::cast_slice(&data.walls).to_vec();
         walls.resize((WALL_COLUMNS * rows * 4) as usize, 0);
-        let walls = tile_texture_view(&self.device, &self.queue, wgpu::TextureFormat::Rgba8Unorm, &[(WALL_COLUMNS, rows, walls)]);
-        let bytes = data.mips.iter().map(|m| m.2.len() as u64).sum::<u64>() + u64::from(WALL_COLUMNS * rows * 4);
-        let bind = roof_bind(&self.device, &self.roof_layout, &picture, &self.tile_sampler, &walls);
+        let walls = tile_texture_view(
+            &self.device,
+            &self.queue,
+            wgpu::TextureFormat::Rgba8Unorm,
+            &[(WALL_COLUMNS, rows, walls)],
+        );
+        let bytes = data.mips.iter().map(|m| m.2.len() as u64).sum::<u64>()
+            + u64::from(WALL_COLUMNS * rows * 4);
+        let bind = roof_bind(
+            &self.device,
+            &self.roof_layout,
+            &picture,
+            &self.tile_sampler,
+            &walls,
+        );
         b.roof = Some(GpuRoof { bind, z, bytes });
     }
 
@@ -1170,12 +1315,17 @@ impl Renderer {
             let size = shadows::MAP_SIZE;
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("shadow maps"),
-                size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: shadows::CASCADES as u32 },
+                size: wgpu::Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: shadows::CASCADES as u32,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: DEPTH_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
             let layers = (0..shadows::CASCADES as u32)
@@ -1192,7 +1342,11 @@ impl Renderer {
                 dimension: Some(wgpu::TextureViewDimension::D2Array),
                 ..Default::default()
             });
-            ShadowMap { _texture: texture, layers, array }
+            ShadowMap {
+                _texture: texture,
+                layers,
+                array,
+            }
         });
         let view = maps.as_ref().map_or(&self.shadow_dummy, |m| &m.array);
         self.frame_bind = make_frame_bind(
@@ -1208,23 +1362,30 @@ impl Renderer {
 
     /// Sets the energy bars to draw, or none: a mesh whose indices from `solid` on are see-through.
     pub fn set_energy(&mut self, mesh: Option<(&BuildingMesh, u32)>) {
-        self.energy = mesh.filter(|m| !m.0.indices.is_empty()).map(|(mesh, solid)| (GpuBuildings {
-            vertices: self.device.create_buffer_init(&BufferInitDescriptor {
-                label: Some("energy vertices"),
-                contents: bytemuck::cast_slice(&mesh.vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            }),
-            indices: self.device.create_buffer_init(&BufferInitDescriptor {
-                label: Some("energy indices"),
-                contents: bytemuck::cast_slice(&mesh.indices),
-                usage: wgpu::BufferUsages::INDEX,
-            }),
-            index_count: mesh.indices.len() as u32,
-            center: mesh.center,
-            radius: 0.0,
-            last_used: 0,
-            roof: None,
-        }, solid));
+        self.energy = mesh
+            .filter(|m| !m.0.indices.is_empty())
+            .map(|(mesh, solid)| {
+                (
+                    GpuBuildings {
+                        vertices: self.device.create_buffer_init(&BufferInitDescriptor {
+                            label: Some("energy vertices"),
+                            contents: bytemuck::cast_slice(&mesh.vertices),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        }),
+                        indices: self.device.create_buffer_init(&BufferInitDescriptor {
+                            label: Some("energy indices"),
+                            contents: bytemuck::cast_slice(&mesh.indices),
+                            usage: wgpu::BufferUsages::INDEX,
+                        }),
+                        index_count: mesh.indices.len() as u32,
+                        center: mesh.center,
+                        radius: 0.0,
+                        last_used: 0,
+                        roof: None,
+                    },
+                    solid,
+                )
+            });
     }
 
     /// Chooses the building tiles to draw. Ones not loaded yet are simply left out.
@@ -1233,7 +1394,10 @@ impl Renderer {
     }
 
     pub fn visible_building_count(&self) -> usize {
-        self.visible_buildings.iter().filter(|k| self.buildings.contains_key(k)).count()
+        self.visible_buildings
+            .iter()
+            .filter(|k| self.buildings.contains_key(k))
+            .count()
     }
 
     /// Sends queued uploads to the GPU. Until this or a frame is submitted, each upload keeps
@@ -1262,7 +1426,12 @@ impl Renderer {
             usage: wgpu::BufferUsages::INDEX,
         });
         self.underlay_count = i.len() as u32;
-        let view = tile_texture_view(&self.device, &self.queue, wgpu::TextureFormat::Rgba8UnormSrgb, &underlay_mips());
+        let view = tile_texture_view(
+            &self.device,
+            &self.queue,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            &underlay_mips(),
+        );
         self.underlay_bind = self.sampled_bind(&view);
         self.tiles.clear();
         self.buildings.clear();
@@ -1292,7 +1461,12 @@ impl Renderer {
             return;
         }
         // Premultiplied sRGB values, which the shader decodes itself.
-        let view = tile_texture_view(&self.device, &self.queue, wgpu::TextureFormat::Rgba8Unorm, mips);
+        let view = tile_texture_view(
+            &self.device,
+            &self.queue,
+            wgpu::TextureFormat::Rgba8Unorm,
+            mips,
+        );
         let bind = self.sampled_bind(&view);
         if let Some(tile) = self.tiles.get_mut(&k) {
             tile.overlay = Some(bind);
@@ -1312,11 +1486,14 @@ impl Renderer {
     /// Puts rasterised text into the atlas. A full atlas starts over; what is still on
     /// screen simply gets requested again.
     pub fn receive_mask(&mut self, mask: Mask) {
-        let at = self.label_shelves.alloc(mask.width, mask.height).or_else(|| {
-            self.label_rects.clear();
-            self.label_shelves.clear();
-            self.label_shelves.alloc(mask.width, mask.height)
-        });
+        let at = self
+            .label_shelves
+            .alloc(mask.width, mask.height)
+            .or_else(|| {
+                self.label_rects.clear();
+                self.label_shelves.clear();
+                self.label_shelves.alloc(mask.width, mask.height)
+            });
         let Some((x, y)) = at else { return };
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -1331,15 +1508,28 @@ impl Renderer {
                 bytes_per_row: Some(mask.width * 2),
                 rows_per_image: Some(mask.height),
             },
-            wgpu::Extent3d { width: mask.width, height: mask.height, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: mask.width,
+                height: mask.height,
+                depth_or_array_layers: 1,
+            },
         );
-        self.label_rects.insert(mask.key, Some(AtlasRect { x, y, w: mask.width, h: mask.height }));
+        self.label_rects.insert(
+            mask.key,
+            Some(AtlasRect {
+                x,
+                y,
+                w: mask.width,
+                h: mask.height,
+            }),
+        );
     }
 
     /// Loads the stars, once. Planets and the Moon follow them in the same buffer.
     pub fn set_stars(&mut self, stars: &[SkyPoint]) {
         self.sky_points = create_sky_buffer(&self.device, stars.len());
-        self.queue.write_buffer(&self.sky_points, 0, bytemuck::cast_slice(stars));
+        self.queue
+            .write_buffer(&self.sky_points, 0, bytemuck::cast_slice(stars));
         self.star_count = stars.len();
         self.body_count = 0;
     }
@@ -1351,7 +1541,8 @@ impl Renderer {
     pub fn set_sky_bodies(&mut self, bodies: &[SkyPoint]) {
         let bodies = &bodies[..bodies.len().min(SKY_BODIES)];
         let offset = (self.star_count * size_of::<SkyPoint>()) as u64;
-        self.queue.write_buffer(&self.sky_points, offset, bytemuck::cast_slice(bodies));
+        self.queue
+            .write_buffer(&self.sky_points, offset, bytemuck::cast_slice(bodies));
         self.body_count = bodies.len();
     }
 
@@ -1360,7 +1551,8 @@ impl Renderer {
             self.label_capacity = instances.len().next_power_of_two();
             self.label_instances = create_label_buffer(&self.device, self.label_capacity);
         }
-        self.queue.write_buffer(&self.label_instances, 0, bytemuck::cast_slice(instances));
+        self.queue
+            .write_buffer(&self.label_instances, 0, bytemuck::cast_slice(instances));
         self.label_count = instances.len() as u32;
     }
 
@@ -1397,13 +1589,21 @@ impl Renderer {
     /// the share of its imagery's tile it covers, and the mesh height at a position.
     pub fn tile_report(&self, k: TileKey, lat: f64, lon: f64) -> Option<TileReport> {
         let t = self.tiles.get(&k)?;
-        let (min, max) = t.heights.iter().fold((f32::MAX, f32::MIN), |(a, b), h| (a.min(*h), b.max(*h)));
+        let (min, max) = t
+            .heights
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(a, b), h| (a.min(*h), b.max(*h)));
         let (u, v) = (
             crate::geo::lon_to_merc_u(lon) * (1u64 << k.z) as f64 - k.x as f64,
             crate::geo::lat_to_merc_v(lat) * (1u64 << k.z) as f64 - k.y as f64,
         );
         let inside = (0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v);
-        Some(TileReport { min, max, imagery_size: t.uv_rect.2, height_here: inside.then(|| crate::loader::height_on_mesh(&t.heights, u, v)) })
+        Some(TileReport {
+            min,
+            max,
+            imagery_size: t.uv_rect.2,
+            height_here: inside.then(|| crate::loader::height_on_mesh(&t.heights, u, v)),
+        })
     }
 
     fn evict(&mut self, in_use: &HashSet<TileKey>) {
@@ -1416,12 +1616,20 @@ impl Renderer {
                 .map(|(k, b)| (b.last_used, *k))
                 .collect();
             old.sort_unstable();
-            for (_, k) in old.into_iter().take(self.buildings.len() - MAX_BUILDING_TILES) {
+            for (_, k) in old
+                .into_iter()
+                .take(self.buildings.len() - MAX_BUILDING_TILES)
+            {
                 self.buildings.remove(&k);
             }
         }
         // Roofs out of view are given up first, the longest unused before others; those in view stay.
-        let mut roof_bytes: u64 = self.buildings.values().filter_map(|b| b.roof.as_ref()).map(|r| r.bytes).sum();
+        let mut roof_bytes: u64 = self
+            .buildings
+            .values()
+            .filter_map(|b| b.roof.as_ref())
+            .map(|r| r.bytes)
+            .sum();
         if roof_bytes > MAX_ROOF_BYTES {
             let shown: HashSet<TileKey> = self.visible_buildings.iter().copied().collect();
             let mut old: Vec<_> = self
@@ -1479,7 +1687,11 @@ impl Renderer {
         }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("depth"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: self.samples,
             dimension: wgpu::TextureDimension::D2,
@@ -1504,7 +1716,11 @@ impl Renderer {
         }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("multisampled colour"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: self.samples,
             dimension: wgpu::TextureDimension::D2,
@@ -1538,7 +1754,12 @@ impl Renderer {
             up: vec4(basis.up, 0.0),
             look: vec4(basis.look, 0.0),
             viewport: [width as f32, height as f32, 0.0, 0.0],
-            sun: [self.sun.x as f32, self.sun.y as f32, self.sun.z as f32, if self.sun_on { 1.0 } else { 0.0 }],
+            sun: [
+                self.sun.x as f32,
+                self.sun.y as f32,
+                self.sun.z as f32,
+                if self.sun_on { 1.0 } else { 0.0 },
+            ],
             sky_rot: {
                 let r = self.sky_rot;
                 let c = |v: DVec3| [v.x as f32, v.y as f32, v.z as f32, 0.0];
@@ -1547,17 +1768,29 @@ impl Renderer {
             sky: [
                 self.sky_limit as f32,
                 radius() as f32,
-                if crate::body::current().atmosphere { 1.0 } else { 0.0 },
+                if crate::body::current().atmosphere {
+                    1.0
+                } else {
+                    0.0
+                },
                 self.sky_discs.map_or(0.0, |d| d.sun_radius as f32),
             ],
             eclipse_axis: self.shadow.map_or([0.0; 4], |e| vec4(e.axis, 1.0)),
             eclipse_foot: self.shadow.map_or([0.0; 4], |e| vec4(e.foot, 0.0)),
             eclipse_cones: self.shadow.map_or([0.0; 4], |e| {
-                [e.umbra_apex as f32, e.penumbra_apex as f32, e.tan_umbra as f32, e.tan_penumbra as f32]
+                [
+                    e.umbra_apex as f32,
+                    e.penumbra_apex as f32,
+                    e.tan_umbra as f32,
+                    e.tan_penumbra as f32,
+                ]
             }),
-            moon: self.sky_discs.map_or([0.0; 4], |d| vec4(d.moon, d.moon_radius)),
+            moon: self
+                .sky_discs
+                .map_or([0.0; 4], |d| vec4(d.moon, d.moon_radius)),
         };
-        self.queue.write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
+        self.queue
+            .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
 
         let in_use: HashSet<TileKey> = draw.iter().copied().collect();
         let mut origins: Vec<[f32; 3]> = Vec::with_capacity(draw.len() + 1);
@@ -1586,7 +1819,11 @@ impl Renderer {
             origins.push((e.center - basis.pos).as_vec3().to_array());
         }
         // Shadow casters: the drawn tiles and buildings, and loaded ones beyond them that reach into the maps.
-        let cast = if self.atlas.is_none() && self.shadows_on { self.cast.take() } else { None };
+        let cast = if self.atlas.is_none() && self.shadows_on {
+            self.cast.take()
+        } else {
+            None
+        };
         let mut casters: Vec<(Caster, u32, DVec3, f64)> = Vec::new();
         if let Some((plan, extra)) = &cast {
             let rel = |c: DVec3| c - basis.pos;
@@ -1597,19 +1834,34 @@ impl Renderer {
             for k in extra.iter().filter(|k| !in_use.contains(k)) {
                 let Some(t) = self.tiles.get(k) else { continue };
                 if plan.touches(rel(t.center), t.radius) {
-                    casters.push((Caster::Tile(*k), origins.len() as u32, rel(t.center), t.radius));
+                    casters.push((
+                        Caster::Tile(*k),
+                        origins.len() as u32,
+                        rel(t.center),
+                        t.radius,
+                    ));
                     origins.push(rel(t.center).as_vec3().to_array());
                 }
             }
             for (i, k) in shown.iter().enumerate() {
                 let b = &self.buildings[k];
-                casters.push((Caster::Building(*k), first_building + i as u32, rel(b.center), b.radius));
+                casters.push((
+                    Caster::Building(*k),
+                    first_building + i as u32,
+                    rel(b.center),
+                    b.radius,
+                ));
             }
             // Buildings that are loaded but not shown still cast.
             let shown_set: HashSet<TileKey> = shown.iter().copied().collect();
             for (k, b) in &self.buildings {
                 if !shown_set.contains(k) && plan.touches(rel(b.center), b.radius) {
-                    casters.push((Caster::Building(*k), origins.len() as u32, rel(b.center), b.radius));
+                    casters.push((
+                        Caster::Building(*k),
+                        origins.len() as u32,
+                        rel(b.center),
+                        b.radius,
+                    ));
                     origins.push(rel(b.center).as_vec3().to_array());
                 }
             }
@@ -1618,7 +1870,8 @@ impl Renderer {
             self.instance_capacity = origins.len().next_power_of_two();
             self.instances = create_instance_buffer(&self.device, self.instance_capacity);
         }
-        self.queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(&origins));
+        self.queue
+            .write_buffer(&self.instances, 0, bytemuck::cast_slice(&origins));
 
         let depth = self.depth_view(width, height);
         let msaa = self.msaa_view(width, height);
@@ -1628,20 +1881,32 @@ impl Renderer {
             None => (target, None, wgpu::StoreOp::Store),
         };
 
-        self.sync_shadow_map(self.shadows_on && self.atlas.is_none() && self.shadow_map.is_some() || cast.is_some());
+        self.sync_shadow_map(
+            self.shadows_on && self.atlas.is_none() && self.shadow_map.is_some() || cast.is_some(),
+        );
         let mut shadow_data = ShadowUniform::zeroed();
         if let Some((plan, _)) = &cast {
             for (i, c) in plan.cascades.iter().enumerate() {
                 shadow_data.mats[i] = c.matrix.to_cols_array_2d();
                 shadow_data.texel[i] = c.texel as f32;
                 shadow_data.range[i] = c.depth_range as f32;
-                self.queue.write_buffer(&self.cascade_buffers[i], 0, bytemuck::bytes_of(&shadow_data.mats[i]));
+                self.queue.write_buffer(
+                    &self.cascade_buffers[i],
+                    0,
+                    bytemuck::bytes_of(&shadow_data.mats[i]),
+                );
             }
-            shadow_data.ends = [plan.ends[0] as f32, plan.ends[1] as f32, plan.ends[2] as f32, shadows::BLEND as f32];
+            shadow_data.ends = [
+                plan.ends[0] as f32,
+                plan.ends[1] as f32,
+                plan.ends[2] as f32,
+                shadows::BLEND as f32,
+            ];
             shadow_data.texel[3] = plan.strength as f32;
             shadow_data.range[3] = shadows::MAP_SIZE as f32;
         }
-        self.queue.write_buffer(&self.shadow_uniform, 0, bytemuck::bytes_of(&shadow_data));
+        self.queue
+            .write_buffer(&self.shadow_uniform, 0, bytemuck::bytes_of(&shadow_data));
 
         let mut encoder = self.device.create_command_encoder(&Default::default());
         if let (Some((plan, _)), Some(maps)) = (&cast, &self.shadow_map) {
@@ -1652,7 +1917,10 @@ impl Renderer {
                     color_attachments: &[],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                         view: layer,
-                        depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
                         stencil_ops: None,
                     }),
                     timestamp_writes: None,
@@ -1691,7 +1959,10 @@ impl Renderer {
                     view,
                     depth_slice: None,
                     resolve_target,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store,
+                    },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &depth,
@@ -1758,7 +2029,11 @@ impl Renderer {
                 for (i, k) in shown.iter().enumerate() {
                     let b = &self.buildings[k];
                     let instance = first_building + i as u32;
-                    let roof = b.roof.as_ref().filter(|_| self.aerial_roofs).map_or(&self.no_roof, |r| &r.bind);
+                    let roof = b
+                        .roof
+                        .as_ref()
+                        .filter(|_| self.aerial_roofs)
+                        .map_or(&self.no_roof, |r| &r.bind);
                     pass.set_bind_group(1, roof, &[]);
                     pass.set_vertex_buffer(0, b.vertices.slice(..));
                     pass.set_index_buffer(b.indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -1778,7 +2053,11 @@ impl Renderer {
                 }
                 if solid < e.index_count {
                     pass.set_pipeline(&self.building_ghost_pipeline);
-                    pass.draw_indexed(solid..e.index_count, 0, energy_instance..energy_instance + 1);
+                    pass.draw_indexed(
+                        solid..e.index_count,
+                        0,
+                        energy_instance..energy_instance + 1,
+                    );
                 }
             }
 
@@ -1808,10 +2087,22 @@ fn make_frame_bind(
         label: Some("frame"),
         layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: frame.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: shadow.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(maps) },
-            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: frame.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: shadow.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(maps),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
         ],
     })
 }
@@ -1886,8 +2177,14 @@ mod tests {
 
     #[test]
     fn hemisphere_labels() {
-        assert_eq!(hemisphere_label(0.5f64.to_radians(), -1.25f64.to_radians()), "0.5000° N  1.2500° W");
-        assert_eq!(hemisphere_label(-0.5f64.to_radians(), 1.25f64.to_radians()), "0.5000° S  1.2500° E");
+        assert_eq!(
+            hemisphere_label(0.5f64.to_radians(), -1.25f64.to_radians()),
+            "0.5000° N  1.2500° W"
+        );
+        assert_eq!(
+            hemisphere_label(-0.5f64.to_radians(), 1.25f64.to_radians()),
+            "0.5000° S  1.2500° E"
+        );
     }
 
     #[test]
@@ -1901,8 +2198,14 @@ mod tests {
         assert!(north && south);
         assert!(i.iter().all(|&n| (n as usize) < v.len()));
         // Antarctica is ice, and the Arctic cap matches the water around it.
-        let south_pole = v.iter().min_by(|a, b| a.pos[2].total_cmp(&b.pos[2])).unwrap();
-        let north_pole = v.iter().max_by(|a, b| a.pos[2].total_cmp(&b.pos[2])).unwrap();
+        let south_pole = v
+            .iter()
+            .min_by(|a, b| a.pos[2].total_cmp(&b.pos[2]))
+            .unwrap();
+        let north_pole = v
+            .iter()
+            .max_by(|a, b| a.pos[2].total_cmp(&b.pos[2]))
+            .unwrap();
         assert_eq!(south_pole.uv[1], 0.25);
         assert_eq!(north_pole.uv[1], 0.75);
     }

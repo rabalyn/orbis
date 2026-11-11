@@ -6,10 +6,10 @@
 use crate::events::{Event, Kind};
 use crate::fetcher::Fetcher;
 use crate::sky_time::{days_from_civil, format_utc};
-use serde_json::Value;
 use crate::worker::Worker;
-use std::sync::Arc;
 use crate::wtime::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use serde_json::Value;
+use std::sync::Arc;
 
 const DAY: f64 = 86_400.0;
 /// Requests to a publisher are at least this far apart.
@@ -28,7 +28,12 @@ pub enum Feed {
 }
 
 impl Feed {
-    pub const ALL: [Feed; 4] = [Feed::Quakes, Feed::Eruptions, Feed::Tsunamis, Feed::Fireballs];
+    pub const ALL: [Feed; 4] = [
+        Feed::Quakes,
+        Feed::Eruptions,
+        Feed::Tsunamis,
+        Feed::Fireballs,
+    ];
 
     /// The name of the source in `EventList`, and of the command line option's value.
     pub fn source(self) -> &'static str {
@@ -41,7 +46,9 @@ impl Feed {
     }
 
     pub fn from_name(name: &str) -> Option<Feed> {
-        Feed::ALL.into_iter().find(|f| f.source() == name.trim().to_ascii_lowercase())
+        Feed::ALL
+            .into_iter()
+            .find(|f| f.source() == name.trim().to_ascii_lowercase())
     }
 
     pub fn kind(self) -> Kind {
@@ -56,7 +63,9 @@ impl Feed {
     pub fn publisher(self) -> &'static str {
         match self {
             Feed::Quakes => "the U.S. Geological Survey",
-            Feed::Eruptions | Feed::Tsunamis => "NOAA's National Centers for Environmental Information",
+            Feed::Eruptions | Feed::Tsunamis => {
+                "NOAA's National Centers for Environmental Information"
+            }
             Feed::Fireballs => "NASA/JPL CNEOS",
         }
     }
@@ -65,8 +74,12 @@ impl Feed {
     pub fn credit(self) -> &'static str {
         match self {
             Feed::Quakes => "Earthquakes: U.S. Geological Survey",
-            Feed::Eruptions => "Eruptions: NOAA NCEI, Global Significant Volcanic Eruptions Database",
-            Feed::Tsunamis => "Tsunamis: NOAA NCEI/WDS Global Historical Tsunami Database (doi:10.7289/V5PN93H7)",
+            Feed::Eruptions => {
+                "Eruptions: NOAA NCEI, Global Significant Volcanic Eruptions Database"
+            }
+            Feed::Tsunamis => {
+                "Tsunamis: NOAA NCEI/WDS Global Historical Tsunami Database (doi:10.7289/V5PN93H7)"
+            }
             Feed::Fireballs => "Fireballs: NASA/JPL Center for Near Earth Object Studies (CNEOS)",
         }
     }
@@ -151,13 +164,24 @@ fn text(v: &Value) -> Option<&str> {
 }
 
 fn position(lat: f64, lon: f64) -> Option<(f64, f64)> {
-    ((-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon)).then(|| (lat.to_radians(), lon.to_radians()))
+    ((-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon))
+        .then(|| (lat.to_radians(), lon.to_radians()))
 }
 
 /// Unix seconds of a civil date and time; parts out of range are refused.
 fn civil(year: f64, month: f64, day: f64, hour: f64, minute: f64, second: f64) -> Option<f64> {
-    let ok = (1800.0..=2200.0).contains(&year) && (1.0..=12.0).contains(&month) && (1.0..=31.0).contains(&day) && (0.0..24.0).contains(&hour) && (0.0..60.0).contains(&minute) && (0.0..61.0).contains(&second);
-    ok.then(|| days_from_civil(year as i64, month as i64, day as i64) as f64 * DAY + hour * 3600.0 + minute * 60.0 + second)
+    let ok = (1800.0..=2200.0).contains(&year)
+        && (1.0..=12.0).contains(&month)
+        && (1.0..=31.0).contains(&day)
+        && (0.0..24.0).contains(&hour)
+        && (0.0..60.0).contains(&minute)
+        && (0.0..61.0).contains(&second);
+    ok.then(|| {
+        days_from_civil(year as i64, month as i64, day as i64) as f64 * DAY
+            + hour * 3600.0
+            + minute * 60.0
+            + second
+    })
 }
 
 fn json(text: &str) -> Result<Value, String> {
@@ -165,25 +189,56 @@ fn json(text: &str) -> Result<Value, String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn event(feed: Feed, time: f64, lat: f64, lon: f64, marker: f32, distance: f64, title: &str, detail: String, note: String) -> Event {
-    Event { source: feed.source(), kind: feed.kind(), time, lat, lon, distance, set_clock: true, title: title.to_string(), detail, note, marker }
+fn event(
+    feed: Feed,
+    time: f64,
+    lat: f64,
+    lon: f64,
+    marker: f32,
+    distance: f64,
+    title: &str,
+    detail: String,
+    note: String,
+) -> Event {
+    Event {
+        source: feed.source(),
+        kind: feed.kind(),
+        time,
+        lat,
+        lon,
+        distance,
+        set_clock: true,
+        title: title.to_string(),
+        detail,
+        note,
+        marker,
+    }
 }
 
 /// USGS GeoJSON summary or query: features with `properties.mag`, `place`, `time` (milliseconds)
 /// and `geometry.coordinates` as longitude, latitude, depth in km.
 pub fn parse_quakes(body: &str) -> Result<Vec<Event>, String> {
     let v = json(body)?;
-    let features = v.get("features").and_then(Value::as_array).ok_or("no features")?;
+    let features = v
+        .get("features")
+        .and_then(Value::as_array)
+        .ok_or("no features")?;
     let mut out = Vec::new();
     for f in features {
         let p = &f["properties"];
         let c = f["geometry"]["coordinates"].as_array();
-        let (Some(mag), Some(ms), Some(c)) = (number(&p["mag"]), number(&p["time"]), c) else { continue };
-        let (Some(lon), Some(lat)) = (c.first().and_then(number), c.get(1).and_then(number)) else { continue };
+        let (Some(mag), Some(ms), Some(c)) = (number(&p["mag"]), number(&p["time"]), c) else {
+            continue;
+        };
+        let (Some(lon), Some(lat)) = (c.first().and_then(number), c.get(1).and_then(number)) else {
+            continue;
+        };
         if p["type"].as_str().is_some_and(|t| t != "earthquake") {
             continue;
         }
-        let Some((lat, lon)) = position(lat, lon) else { continue };
+        let Some((lat, lon)) = position(lat, lon) else {
+            continue;
+        };
         let place = text(&p["place"]).unwrap_or("unknown place");
         let depth = c.get(2).and_then(number);
         let mut note = format!("Magnitude {mag:.1} earthquake, {place}");
@@ -192,7 +247,17 @@ pub fn parse_quakes(body: &str) -> Result<Vec<Event>, String> {
         }
         note.push('.');
         let size = (4.5 + (mag - 4.0).max(0.0) * 3.0).min(24.0) as f32;
-        out.push(event(Feed::Quakes, ms / 1000.0, lat, lon, size, 1.2e6, "Earthquake", format!("M{mag:.1}  {place}"), note));
+        out.push(event(
+            Feed::Quakes,
+            ms / 1000.0,
+            lat,
+            lon,
+            size,
+            1.2e6,
+            "Earthquake",
+            format!("M{mag:.1}  {place}"),
+            note,
+        ));
     }
     Ok(out)
 }
@@ -207,10 +272,22 @@ pub fn parse_eruptions(body: &str) -> Result<Vec<Event>, String> {
         if i["eruption"].as_bool() == Some(false) {
             continue;
         }
-        let (Some(y), Some(lat), Some(lon)) = (number(&i["year"]), number(&i["latitude"]), number(&i["longitude"])) else { continue };
+        let (Some(y), Some(lat), Some(lon)) = (
+            number(&i["year"]),
+            number(&i["latitude"]),
+            number(&i["longitude"]),
+        ) else {
+            continue;
+        };
         let at = |k: &str, d: f64| number(&i[k]).unwrap_or(d);
-        let Some(time) = civil(y, at("month", 1.0), at("day", 1.0), 0.0, 0.0, 0.0).or_else(|| civil(y, 1.0, 1.0, 0.0, 0.0, 0.0)) else { continue };
-        let Some((lat, lon)) = position(lat, lon) else { continue };
+        let Some(time) = civil(y, at("month", 1.0), at("day", 1.0), 0.0, 0.0, 0.0)
+            .or_else(|| civil(y, 1.0, 1.0, 0.0, 0.0, 0.0))
+        else {
+            continue;
+        };
+        let Some((lat, lon)) = position(lat, lon) else {
+            continue;
+        };
         let name = text(&i["name"]).unwrap_or("unnamed volcano");
         let place = match text(&i["country"]) {
             Some(c) => format!("{name}, {c}"),
@@ -221,9 +298,22 @@ pub fn parse_eruptions(body: &str) -> Result<Vec<Event>, String> {
             Some(v) => format!("VEI {v:.0}  {place}"),
             None => place.clone(),
         };
-        let note = format!("Eruption of {place}{}. Only the day is known.", vei.map_or(String::new(), |v| format!(", explosivity index {v:.0}")));
+        let note = format!(
+            "Eruption of {place}{}. Only the day is known.",
+            vei.map_or(String::new(), |v| format!(", explosivity index {v:.0}"))
+        );
         let size = (7.0 + vei.unwrap_or(2.0).clamp(0.0, 8.0) * 2.0) as f32;
-        out.push(event(Feed::Eruptions, time, lat, lon, size, 6.0e5, "Eruption", detail, note));
+        out.push(event(
+            Feed::Eruptions,
+            time,
+            lat,
+            lon,
+            size,
+            6.0e5,
+            "Eruption",
+            detail,
+            note,
+        ));
     }
     Ok(out)
 }
@@ -235,12 +325,38 @@ pub fn parse_tsunamis(body: &str) -> Result<Vec<Event>, String> {
     let items = v.get("items").and_then(Value::as_array).ok_or("no items")?;
     let mut out = Vec::new();
     for i in items {
-        let (Some(y), Some(lat), Some(lon)) = (number(&i["year"]), number(&i["latitude"]), number(&i["longitude"])) else { continue };
+        let (Some(y), Some(lat), Some(lon)) = (
+            number(&i["year"]),
+            number(&i["latitude"]),
+            number(&i["longitude"]),
+        ) else {
+            continue;
+        };
         let at = |k: &str, d: f64| number(&i[k]).unwrap_or(d);
-        let Some(time) = civil(y, at("month", 1.0), at("day", 1.0), at("hour", 0.0), at("minute", 0.0), at("second", 0.0)).or_else(|| civil(y, 1.0, 1.0, 0.0, 0.0, 0.0)) else { continue };
-        let Some((lat, lon)) = position(lat, lon) else { continue };
-        let place = [text(&i["locationName"]), text(&i["country"])].into_iter().flatten().collect::<Vec<_>>().join(", ");
-        let place = if place.is_empty() { "unknown place".to_string() } else { place };
+        let Some(time) = civil(
+            y,
+            at("month", 1.0),
+            at("day", 1.0),
+            at("hour", 0.0),
+            at("minute", 0.0),
+            at("second", 0.0),
+        )
+        .or_else(|| civil(y, 1.0, 1.0, 0.0, 0.0, 0.0)) else {
+            continue;
+        };
+        let Some((lat, lon)) = position(lat, lon) else {
+            continue;
+        };
+        let place = [text(&i["locationName"]), text(&i["country"])]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let place = if place.is_empty() {
+            "unknown place".to_string()
+        } else {
+            place
+        };
         let mag = number(&i["eqMagnitude"]);
         let height = number(&i["maxWaterHeight"]).filter(|h| *h > 0.0);
         let mut detail = mag.map_or(String::new(), |m| format!("M{m:.1}  "));
@@ -252,7 +368,17 @@ pub fn parse_tsunamis(body: &str) -> Result<Vec<Event>, String> {
         note.push('.');
         let size = 8.0 + (mag.unwrap_or(6.0).clamp(4.0, 9.5) - 4.0) * 2.0;
         let size = size as f32;
-        out.push(event(Feed::Tsunamis, time, lat, lon, size, 2.0e6, "Tsunami", detail, note));
+        out.push(event(
+            Feed::Tsunamis,
+            time,
+            lat,
+            lon,
+            size,
+            2.0e6,
+            "Tsunami",
+            detail,
+            note,
+        ));
     }
     Ok(out)
 }
@@ -264,34 +390,66 @@ pub fn parse_fireballs(body: &str) -> Result<Vec<Event>, String> {
     if v.get("signature").is_none() && v.get("data").is_none() {
         return Err("not a fireball reply".into());
     }
-    let Some(data) = v.get("data").and_then(Value::as_array) else { return Ok(Vec::new()) };
-    let fields: Vec<&str> = v.get("fields").and_then(Value::as_array).ok_or("no fields")?.iter().filter_map(Value::as_str).collect();
+    let Some(data) = v.get("data").and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    let fields: Vec<&str> = v
+        .get("fields")
+        .and_then(Value::as_array)
+        .ok_or("no fields")?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
     let col = |name: &str| fields.iter().position(|f| *f == name);
-    let (Some(cd), Some(clat), Some(clon)) = (col("date"), col("lat"), col("lon")) else { return Err("columns missing".into()) };
+    let (Some(cd), Some(clat), Some(clon)) = (col("date"), col("lat"), col("lon")) else {
+        return Err("columns missing".into());
+    };
     let (cld, clod, ce, ca) = (col("lat-dir"), col("lon-dir"), col("energy"), col("alt"));
     let mut out = Vec::new();
     for row in data {
         let Some(row) = row.as_array() else { continue };
         let get = |c: usize| row.get(c).unwrap_or(&Value::Null);
         let Some(date) = text(get(cd)) else { continue };
-        let Some(time) = crate::sky_time::parse_iso8601(date) else { continue };
-        let (Some(lat), Some(lon)) = (number(get(clat)), number(get(clon))) else { continue };
+        let Some(time) = crate::sky_time::parse_iso8601(date) else {
+            continue;
+        };
+        let (Some(lat), Some(lon)) = (number(get(clat)), number(get(clon))) else {
+            continue;
+        };
         let south = cld.and_then(|c| text(get(c))) == Some("S");
         let west = clod.and_then(|c| text(get(c))) == Some("W");
-        let Some((lat, lon)) = position(if south { -lat } else { lat }, if west { -lon } else { lon }) else { continue };
+        let Some((lat, lon)) = position(
+            if south { -lat } else { lat },
+            if west { -lon } else { lon },
+        ) else {
+            continue;
+        };
         let energy = ce.and_then(|c| number(get(c)));
         let alt = ca.and_then(|c| number(get(c)));
         let detail = match energy {
             Some(e) => format!("{e} kt"),
             None => "energy unknown".to_string(),
         };
-        let mut note = format!("Fireball seen by sensors in the sky, radiated energy {}", energy.map_or("unknown".to_string(), |e| format!("{e} kt of TNT")));
+        let mut note = format!(
+            "Fireball seen by sensors in the sky, radiated energy {}",
+            energy.map_or("unknown".to_string(), |e| format!("{e} kt of TNT"))
+        );
         if let Some(a) = alt {
             note.push_str(&format!(", at {a:.0} km height"));
         }
         note.push('.');
         let size = (8.0 + energy.unwrap_or(1.0).max(0.1).log10() * 3.0).clamp(5.0, 20.0) as f32;
-        out.push(event(Feed::Fireballs, time, lat, lon, size, 2.0e6, "Fireball", detail, note));
+        out.push(event(
+            Feed::Fireballs,
+            time,
+            lat,
+            lon,
+            size,
+            2.0e6,
+            "Fireball",
+            detail,
+            note,
+        ));
     }
     Ok(out)
 }
@@ -307,9 +465,19 @@ pub enum FeedError {
 impl FeedError {
     pub fn message(&self, feed: Feed) -> String {
         match self {
-            FeedError::Offline => format!("No stored {} and the program is offline.", feed.source()),
-            FeedError::Unreachable => format!("Could not reach {} for the {}.", feed.publisher(), feed.source()),
-            FeedError::Garbled => format!("The answer from {} for the {} could not be read.", feed.publisher(), feed.source()),
+            FeedError::Offline => {
+                format!("No stored {} and the program is offline.", feed.source())
+            }
+            FeedError::Unreachable => format!(
+                "Could not reach {} for the {}.",
+                feed.publisher(),
+                feed.source()
+            ),
+            FeedError::Garbled => format!(
+                "The answer from {} for the {} could not be read.",
+                feed.publisher(),
+                feed.source()
+            ),
         }
     }
 }
@@ -328,7 +496,11 @@ pub(crate) fn pack(now: f64, body: &[u8]) -> Vec<u8> {
 
 pub(crate) fn unpack(data: &[u8]) -> Option<(f64, &str)> {
     let end = data.iter().position(|b| *b == b'\n')?;
-    let stamp = std::str::from_utf8(&data[..end]).ok()?.strip_prefix("orbis-feed ")?.parse().ok()?;
+    let stamp = std::str::from_utf8(&data[..end])
+        .ok()?
+        .strip_prefix("orbis-feed ")?
+        .parse()
+        .ok()?;
     Some((stamp, std::str::from_utf8(&data[end + 1..]).ok()?))
 }
 
@@ -341,13 +513,24 @@ fn cache_name(feed: Feed, url: &str) -> String {
 }
 
 pub(crate) fn unix_now() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64())
 }
 
-fn load(fetcher: &Fetcher, feed: Feed, url: &str, max_age: f64, wait: &mut Option<Instant>) -> Result<Vec<Event>, FeedError> {
+fn load(
+    fetcher: &Fetcher,
+    feed: Feed,
+    url: &str,
+    max_age: f64,
+    wait: &mut Option<Instant>,
+) -> Result<Vec<Event>, FeedError> {
     let name = cache_name(feed, url);
     let stored = fetcher.cache().get(&name);
-    let parsed = stored.as_deref().and_then(unpack).and_then(|(t, b)| feed.parse(b).ok().map(|e| (t, e)));
+    let parsed = stored
+        .as_deref()
+        .and_then(unpack)
+        .and_then(|(t, b)| feed.parse(b).ok().map(|e| (t, e)));
     if let Some((stamp, events)) = &parsed {
         if fetcher.is_offline() || unix_now() - stamp < max_age {
             return Ok(events.clone());
@@ -362,8 +545,12 @@ fn load(fetcher: &Fetcher, feed: Feed, url: &str, max_age: f64, wait: &mut Optio
     *wait = Some(Instant::now());
     // A stored answer that is too old still beats nothing when the publisher cannot be reached.
     let stale = || parsed.clone().map(|(_, e)| e).ok_or(FeedError::Unreachable);
-    let Ok(data) = fetcher.fetch_service(url) else { return stale() };
-    let Ok(body) = std::str::from_utf8(&data) else { return stale().map_err(|_| FeedError::Garbled) };
+    let Ok(data) = fetcher.fetch_service(url) else {
+        return stale();
+    };
+    let Ok(body) = std::str::from_utf8(&data) else {
+        return stale().map_err(|_| FeedError::Garbled);
+    };
     match feed.parse(body) {
         Ok(events) => {
             if let Err(e) = fetcher.cache().put(&name, &pack(unix_now(), &data)) {
@@ -383,16 +570,21 @@ pub struct Feeds {
 impl Feeds {
     pub fn new(fetcher: Arc<Fetcher>) -> Self {
         let mut wait = None;
-        let worker = Worker::new(false, MIN_GAP, move |(feed, url, max_age): (Feed, String, f64)| {
-            let answer = load(&fetcher, feed, &url, max_age, &mut wait);
-            Reply { feed, answer }
-        });
+        let worker = Worker::new(
+            false,
+            MIN_GAP,
+            move |(feed, url, max_age): (Feed, String, f64)| {
+                let answer = load(&fetcher, feed, &url, max_age, &mut wait);
+                Reply { feed, answer }
+            },
+        );
         Self { worker }
     }
 
     pub fn submit(&self, feed: Feed, time: f64) {
         let now = unix_now();
-        self.worker.submit((feed, feed.url(time, now), feed.max_age(time, now)));
+        self.worker
+            .submit((feed, feed.url(time, now), feed.max_age(time, now)));
     }
 
     pub fn poll(&self) -> Option<Reply> {
@@ -418,7 +610,10 @@ mod tests {
         let e = parse_quakes(QUAKES).unwrap();
         assert_eq!(e.len(), 2);
         assert_eq!(e[0].time, 1_712_600_000.0);
-        assert!((e[0].lat.to_degrees() - 25.25).abs() < 1e-9 && (e[0].lon.to_degrees() + 104.5).abs() < 1e-9);
+        assert!(
+            (e[0].lat.to_degrees() - 25.25).abs() < 1e-9
+                && (e[0].lon.to_degrees() + 104.5).abs() < 1e-9
+        );
         assert_eq!(e[0].detail, "M6.1  10 km N of Somewhere");
         assert!(e[0].note.contains("12 km deep") || e[0].note.contains("13 km deep"));
         assert!(e[0].marker > e[1].marker);
@@ -427,14 +622,27 @@ mod tests {
 
     #[test]
     fn malformed_input_is_an_error_or_empty_never_a_panic() {
-        for bad in ["", "<html>", "[]", "{}", "null", "{\"features\":3}", "{\"items\":{}}", "{\"features\":[1,null,\"x\"]}"] {
+        for bad in [
+            "",
+            "<html>",
+            "[]",
+            "{}",
+            "null",
+            "{\"features\":3}",
+            "{\"items\":{}}",
+            "{\"features\":[1,null,\"x\"]}",
+        ] {
             for feed in Feed::ALL {
                 let r = feed.parse(bad);
                 assert!(r.is_err() || r.unwrap().is_empty(), "{bad} {feed:?}");
             }
         }
-        assert!(parse_fireballs("{\"signature\":{},\"count\":\"0\"}").unwrap().is_empty());
-        assert!(parse_fireballs("{\"signature\":{},\"fields\":[\"date\"],\"data\":[[\"x\"]]}").is_err());
+        assert!(parse_fireballs("{\"signature\":{},\"count\":\"0\"}")
+            .unwrap()
+            .is_empty());
+        assert!(
+            parse_fireballs("{\"signature\":{},\"fields\":[\"date\"],\"data\":[[\"x\"]]}").is_err()
+        );
     }
 
     #[test]
@@ -473,7 +681,10 @@ mod tests {
                   ["bad","1","1","1","N","1","E",null,null]]}"#;
         let e = parse_fireballs(body).unwrap();
         assert_eq!(e.len(), 2);
-        assert!((e[0].lat.to_degrees() + 41.8).abs() < 1e-9 && (e[0].lon.to_degrees() + 173.1).abs() < 1e-9);
+        assert!(
+            (e[0].lat.to_degrees() + 41.8).abs() < 1e-9
+                && (e[0].lon.to_degrees() + 173.1).abs() < 1e-9
+        );
         assert!(e[1].lon > 0.0 && e[1].lat > 0.0);
         assert_eq!(e[0].detail, "5.4 kt");
     }
@@ -484,12 +695,22 @@ mod tests {
         let recent = Feed::Quakes.url(now - 2.0 * DAY, now);
         assert!(recent.ends_with("4.5_month.geojson"));
         let old = Feed::Quakes.url(parse_iso8601("2024-04-08T18:17:19Z").unwrap(), now);
-        assert!(old.contains("starttime=2024-03-24&endtime=2024-04-24"), "{old}");
+        assert!(
+            old.contains("starttime=2024-03-24&endtime=2024-04-24"),
+            "{old}"
+        );
         let t = parse_iso8601("2024-04-08T18:17:19Z").unwrap();
-        assert!(Feed::Eruptions.url(t, now).ends_with("minYear=2024&maxYear=2024"));
-        assert!(Feed::Fireballs.url(t, now).contains("date-min=2024-01-09&date-max=2024-07-08"));
+        assert!(Feed::Eruptions
+            .url(t, now)
+            .ends_with("minYear=2024&maxYear=2024"));
+        assert!(Feed::Fireballs
+            .url(t, now)
+            .contains("date-min=2024-01-09&date-max=2024-07-08"));
         // The same day gives the same address, so that the stored answer is found again.
-        assert_eq!(Feed::Tsunamis.url(t, now), Feed::Tsunamis.url(t + 3000.0, now));
+        assert_eq!(
+            Feed::Tsunamis.url(t, now),
+            Feed::Tsunamis.url(t + 3000.0, now)
+        );
     }
 
     #[test]
@@ -511,8 +732,17 @@ mod tests {
         assert_eq!(Feed::Eruptions.max_age(now - 60.0 * DAY, now), DAY);
         // A year's eruptions settle a month after the year ends; days near New Year ask about the next year.
         let jan = parse_iso8601("2026-01-20T00:00:00Z").unwrap();
-        assert_eq!(Feed::Tsunamis.max_age(parse_iso8601("2025-06-01T00:00:00Z").unwrap(), jan), DAY);
-        assert_eq!(Feed::Tsunamis.max_age(parse_iso8601("2025-06-01T00:00:00Z").unwrap(), jan + 15.0 * DAY), f64::INFINITY);
+        assert_eq!(
+            Feed::Tsunamis.max_age(parse_iso8601("2025-06-01T00:00:00Z").unwrap(), jan),
+            DAY
+        );
+        assert_eq!(
+            Feed::Tsunamis.max_age(
+                parse_iso8601("2025-06-01T00:00:00Z").unwrap(),
+                jan + 15.0 * DAY
+            ),
+            f64::INFINITY
+        );
         // History is not asked for again.
         let old = parse_iso8601("2010-03-01T00:00:00Z").unwrap();
         for feed in Feed::ALL {

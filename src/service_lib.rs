@@ -23,7 +23,11 @@ pub const CREDIT_SEP: char = '\u{1f}';
 pub const ID_PREFIX: &str = "svc-";
 
 pub fn default_path() -> Option<PathBuf> {
-    Some(crate::paths::config_dir()?.join("orbis").join("services.json"))
+    Some(
+        crate::paths::config_dir()?
+            .join("orbis")
+            .join("services.json"),
+    )
 }
 
 /// The services the user has added, kept in a JSON file that is written atomically.
@@ -36,13 +40,23 @@ pub struct Library {
 
 impl Library {
     pub fn in_memory() -> Self {
-        Self { path: None, services: Vec::new(), locked: false, notice: None }
+        Self {
+            path: None,
+            services: Vec::new(),
+            locked: false,
+            notice: None,
+        }
     }
 
     /// Reads the file. A missing file is an empty library; one that cannot be understood is left
     /// where it is, never overwritten, and the library is not saved.
     pub fn load(path: PathBuf) -> Self {
-        let mut lib = Self { path: Some(path.clone()), services: Vec::new(), locked: false, notice: None };
+        let mut lib = Self {
+            path: Some(path.clone()),
+            services: Vec::new(),
+            locked: false,
+            notice: None,
+        };
         match read_limited(&path) {
             Ok(None) => {}
             Ok(Some(bytes)) => match parse(&bytes) {
@@ -56,7 +70,9 @@ impl Library {
 
     fn lock(&mut self, why: &str) {
         self.locked = true;
-        self.notice = Some(format!("The map service library could not be read ({why}). It will not be changed."));
+        self.notice = Some(format!(
+            "The map service library could not be read ({why}). It will not be changed."
+        ));
     }
 
     pub fn services(&self) -> &[Service] {
@@ -82,25 +98,43 @@ impl Library {
     /// The service with this name: exactly, ignoring case, or else the only one containing it.
     pub fn find<'a>(list: &'a [Service], name: &str) -> Result<&'a Service, String> {
         let want = name.trim().to_lowercase();
-        if let Some(s) = list.iter().find(|s| s.name.to_lowercase() == want || s.id == want) {
+        if let Some(s) = list
+            .iter()
+            .find(|s| s.name.to_lowercase() == want || s.id == want)
+        {
             return Ok(s);
         }
-        let partial: Vec<_> = list.iter().filter(|s| s.name.to_lowercase().contains(&want)).collect();
+        let partial: Vec<_> = list
+            .iter()
+            .filter(|s| s.name.to_lowercase().contains(&want))
+            .collect();
         match partial.as_slice() {
             [one] => Ok(one),
-            [] => Err(format!("No map service is called {name}. --list-services shows the choices.")),
-            many => Err(format!("{name} fits {} services: {}", many.len(), many.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", "))),
+            [] => Err(format!(
+                "No map service is called {name}. --list-services shows the choices."
+            )),
+            many => Err(format!(
+                "{name} fits {} services: {}",
+                many.len(),
+                many.iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
         }
     }
 
     pub fn save(&self) -> Result<(), String> {
-        let Some(path) = &self.path else { return Ok(()) };
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
         if self.locked {
             return Err("The library is not written because the file could not be read.".into());
         }
         let doc = json!({ "version": VERSION, "services": self.services.iter().map(Service::to_json).collect::<Vec<_>>() });
         let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
-        write_atomically(path, text.as_bytes()).map_err(|e| format!("The library could not be written: {e}"))
+        write_atomically(path, text.as_bytes())
+            .map_err(|e| format!("The library could not be written: {e}"))
     }
 }
 
@@ -111,7 +145,10 @@ fn parse(bytes: &[u8]) -> Result<Vec<Service>, String> {
         Some(_) => return Err("written by a newer version".into()),
         None => return Err("no version".into()),
     }
-    let list = doc.get("services").and_then(Value::as_array).ok_or("no list of services")?;
+    let list = doc
+        .get("services")
+        .and_then(Value::as_array)
+        .ok_or("no list of services")?;
     if list.len() > MAX_SERVICES {
         return Err("too many services".into());
     }
@@ -129,13 +166,15 @@ fn parse(bytes: &[u8]) -> Result<Vec<Service>, String> {
 /// The public services the program knows about, from `data/services.json`.
 pub fn directory() -> &'static [Service] {
     static DIRECTORY: OnceLock<Vec<Service>> = OnceLock::new();
-    DIRECTORY.get_or_init(|| match parse(include_str!("../data/services.json").as_bytes()) {
-        Ok(list) => list,
-        Err(e) => {
-            eprintln!("the built-in directory of map services is damaged: {e}");
-            Vec::new()
-        }
-    })
+    DIRECTORY.get_or_init(
+        || match parse(include_str!("../data/services.json").as_bytes()) {
+            Ok(list) => list,
+            Err(e) => {
+                eprintln!("the built-in directory of map services is damaged: {e}");
+                Vec::new()
+            }
+        },
+    )
 }
 
 // ---- Adding a service ----
@@ -162,7 +201,11 @@ pub struct Prepared {
 /// Works out a service from what was typed: an XYZ address template, or the address of a WMTS
 /// or WMS service, optionally followed by a layer name. `fetch` gets the capabilities
 /// document, and says in words why it could not.
-pub fn prepare(typed: &str, opts: &AddOptions, fetch: &dyn Fn(&str) -> Result<Vec<u8>, String>) -> Result<Prepared, String> {
+pub fn prepare(
+    typed: &str,
+    opts: &AddOptions,
+    fetch: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<Prepared, String> {
     let mut parts = typed.split_whitespace();
     let url = parts.next().ok_or("Type the address of a map service.")?;
     let mut opts = opts.clone();
@@ -180,7 +223,12 @@ pub fn prepare(typed: &str, opts: &AddOptions, fetch: &dyn Fn(&str) -> Result<Ve
         let service = crate::services::from_capabilities(&doc, url, opts.layer.as_deref())?;
         (service, crate::services::layer_list(&doc))
     };
-    if let Some(name) = opts.name.as_deref().map(crate::services::clean).filter(|n| !n.is_empty()) {
+    if let Some(name) = opts
+        .name
+        .as_deref()
+        .map(crate::services::clean)
+        .filter(|n| !n.is_empty())
+    {
         service.name = name;
     }
     if let Some(credit) = &opts.credit {
@@ -234,7 +282,11 @@ pub fn source_for(s: &Service) -> &'static TileSource {
         kind: Kind::Imagery,
         url: intern(s.tiles.clone()),
         cache: intern(format!("{id}/{{z}}/{{x}}/{{y}}.tile")),
-        content_type: intern(if s.format.is_empty() { "image/png".into() } else { s.format.clone() }),
+        content_type: intern(if s.format.is_empty() {
+            "image/png".into()
+        } else {
+            s.format.clone()
+        }),
         min_z: s.min_z,
         max_z: s.max_z,
         bounds,
@@ -243,7 +295,13 @@ pub fn source_for(s: &Service) -> &'static TileSource {
         pixels: 256,
         grid: crate::geo::Grid::Mercator,
     }));
-    made.insert(id, Made { source, tile_size: s.tile_size });
+    made.insert(
+        id,
+        Made {
+            source,
+            tile_size: s.tile_size,
+        },
+    );
     source
 }
 
@@ -258,7 +316,9 @@ fn expected_size(source: &TileSource) -> Option<u32> {
 /// Whether a decoded picture is of the size the service declared.
 pub fn check_size(source: &TileSource, width: u32, height: u32) -> Result<(), String> {
     match expected_size(source) {
-        Some(n) if width != n || height != n => Err(format!("sent {width} by {height} pixel pictures, not {n} by {n}")),
+        Some(n) if width != n || height != n => Err(format!(
+            "sent {width} by {height} pixel pictures, not {n} by {n}"
+        )),
         _ => Ok(()),
     }
 }
@@ -275,7 +335,12 @@ pub struct Active {
 }
 
 pub const DEFAULT_OPACITY: f32 = 0.6;
-const NONE: Active = Active { base: None, overlay: None, opacity: DEFAULT_OPACITY, generation: 0 };
+const NONE: Active = Active {
+    base: None,
+    overlay: None,
+    opacity: DEFAULT_OPACITY,
+    generation: 0,
+};
 
 // Tests run on threads of their own and must not see each other's choices.
 #[cfg(not(test))]
@@ -326,7 +391,11 @@ pub fn invalidate() {
 }
 
 pub fn set_opacity(v: f32) {
-    let v = if v.is_finite() { v.clamp(0.0, 1.0) } else { DEFAULT_OPACITY };
+    let v = if v.is_finite() {
+        v.clamp(0.0, 1.0)
+    } else {
+        DEFAULT_OPACITY
+    };
     change(|a| a.opacity = v);
 }
 
@@ -360,7 +429,11 @@ pub fn problem_text(source: &TileSource) -> Option<String> {
     let h = health().lock().unwrap();
     let e = h.get(source.id)?;
     let why = e.problem.as_ref()?;
-    let kept = if e.good > 0 { "coarser tiles are kept" } else { "nothing has been shown from it" };
+    let kept = if e.good > 0 {
+        "coarser tiles are kept"
+    } else {
+        "nothing has been shown from it"
+    };
     Some(format!("{} failed: the service {why} ({kept})", e.failed))
 }
 
@@ -375,7 +448,11 @@ mod tests {
     use crate::services::xyz_service;
 
     fn svc(n: &str) -> Service {
-        let mut s = xyz_service(&format!("https://t{n}.example/{{z}}/{{x}}/{{y}}.png"), false).unwrap();
+        let mut s = xyz_service(
+            &format!("https://t{n}.example/{{z}}/{{x}}/{{y}}.png"),
+            false,
+        )
+        .unwrap();
         s.name = format!("Service {n}");
         s.assign_id();
         s
@@ -390,7 +467,10 @@ mod tests {
 
     fn serve(doc: &'static str) -> impl Fn(&str) -> Result<Vec<u8>, String> {
         move |url: &str| {
-            assert!(url.contains("GetCapabilities") || url.ends_with(".xml"), "{url}");
+            assert!(
+                url.contains("GetCapabilities") || url.ends_with(".xml"),
+                "{url}"
+            );
             Ok(doc.as_bytes().to_vec())
         }
     }
@@ -398,31 +478,79 @@ mod tests {
     #[test]
     fn preparing_detects_the_kind_and_applies_the_users_words() {
         use crate::capabilities::fixtures;
-        let no_net = |_: &str| -> Result<Vec<u8>, String> { panic!("an XYZ address needs no request") };
-        let p = prepare("https://t.example/{z}/{x}/{y}.png", &AddOptions { name: Some("My tiles".into()), credit: Some("© Me".into()), max_zoom: Some(30), ..Default::default() }, &no_net).unwrap();
-        assert_eq!((p.service.kind, p.service.name.as_str(), p.service.credit.as_str()), (crate::services::Kind::Xyz, "My tiles", "© Me"));
+        let no_net =
+            |_: &str| -> Result<Vec<u8>, String> { panic!("an XYZ address needs no request") };
+        let p = prepare(
+            "https://t.example/{z}/{x}/{y}.png",
+            &AddOptions {
+                name: Some("My tiles".into()),
+                credit: Some("© Me".into()),
+                max_zoom: Some(30),
+                ..Default::default()
+            },
+            &no_net,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                p.service.kind,
+                p.service.name.as_str(),
+                p.service.credit.as_str()
+            ),
+            (crate::services::Kind::Xyz, "My tiles", "© Me")
+        );
         assert_eq!(p.service.max_z, crate::sources::ABSOLUTE_MAX_Z);
         assert!(p.service.id.starts_with("my-tiles-"));
-        let p = prepare("https://w.example/wms", &AddOptions::default(), &serve(fixtures::WMS130)).unwrap();
+        let p = prepare(
+            "https://w.example/wms",
+            &AddOptions::default(),
+            &serve(fixtures::WMS130),
+        )
+        .unwrap();
         assert_eq!(p.service.kind, crate::services::Kind::Wms);
         assert_eq!(p.layers.len(), 2);
-        let p = prepare("https://w.example/wms dem", &AddOptions::default(), &serve(fixtures::WMS130)).unwrap();
-        assert_eq!(p.service.layer, "dem", "a layer name may follow the address");
-        let p = prepare("https://t.example/wmts", &AddOptions::default(), &serve(fixtures::WMTS)).unwrap();
+        let p = prepare(
+            "https://w.example/wms dem",
+            &AddOptions::default(),
+            &serve(fixtures::WMS130),
+        )
+        .unwrap();
+        assert_eq!(
+            p.service.layer, "dem",
+            "a layer name may follow the address"
+        );
+        let p = prepare(
+            "https://t.example/wmts",
+            &AddOptions::default(),
+            &serve(fixtures::WMTS),
+        )
+        .unwrap();
         assert_eq!(p.service.kind, crate::services::Kind::Wmts);
     }
 
     #[test]
     fn preparing_reports_bad_input_and_bad_answers_in_words() {
         let page = |_: &str| Ok(b"<html><body>Please log in</body></html>".to_vec());
-        assert!(prepare("https://h.example/wms", &AddOptions::default(), &page).unwrap_err().contains("web page"));
+        assert!(
+            prepare("https://h.example/wms", &AddOptions::default(), &page)
+                .unwrap_err()
+                .contains("web page")
+        );
         let down = |_: &str| Err("The server did not answer.".to_string());
-        assert_eq!(prepare("https://h.example/wms", &AddOptions::default(), &down).unwrap_err(), "The server did not answer.");
+        assert_eq!(
+            prepare("https://h.example/wms", &AddOptions::default(), &down).unwrap_err(),
+            "The server did not answer."
+        );
         assert!(prepare("", &AddOptions::default(), &down).is_err());
         let never = |_: &str| -> Result<Vec<u8>, String> { panic!("no request may be made") };
         assert!(prepare("file:///etc/passwd", &AddOptions::default(), &never).is_err());
         assert!(prepare("https://u:p@h.example/wms", &AddOptions::default(), &never).is_err());
-        assert!(prepare("ftp://h.example/{z}/{x}/{y}", &AddOptions::default(), &never).is_err());
+        assert!(prepare(
+            "ftp://h.example/{z}/{x}/{y}",
+            &AddOptions::default(),
+            &never
+        )
+        .is_err());
     }
 
     #[test]
@@ -439,7 +567,11 @@ mod tests {
         // Every entry records where its terms were read.
         let raw: Value = serde_json::from_str(include_str!("../data/services.json")).unwrap();
         for e in raw["services"].as_array().unwrap() {
-            assert!(e["terms"].as_str().is_some_and(|t| t.len() > 20), "{}", e["name"]);
+            assert!(
+                e["terms"].as_str().is_some_and(|t| t.len() > 20),
+                "{}",
+                e["name"]
+            );
         }
     }
 
@@ -459,7 +591,10 @@ mod tests {
         let mut lib = again;
         lib.remove(&s.id).unwrap();
         assert_eq!(Library::load(path.clone()).services().len(), 1);
-        assert!(!path.with_extension("json.tmp").exists(), "no temporary file is left");
+        assert!(
+            !path.with_extension("json.tmp").exists(),
+            "no temporary file is left"
+        );
     }
 
     #[test]
@@ -471,7 +606,10 @@ mod tests {
         assert!(lib.add(svc("1")).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
         std::fs::write(&path, r#"{"version":9,"services":[]}"#).unwrap();
-        assert!(Library::load(path.clone()).notice.unwrap().contains("newer"));
+        assert!(Library::load(path.clone())
+            .notice
+            .unwrap()
+            .contains("newer"));
         std::fs::write(&path, r#"{"version":1,"services":[{"name":"x"}]}"#).unwrap();
         assert!(Library::load(path).notice.unwrap().contains("damaged"));
     }
@@ -480,7 +618,9 @@ mod tests {
     fn names_are_found_exactly_then_loosely() {
         let list = vec![svc("1"), svc("2")];
         assert_eq!(Library::find(&list, "service 1").unwrap().name, "Service 1");
-        assert!(Library::find(&list, "service").unwrap_err().contains("fits 2"));
+        assert!(Library::find(&list, "service")
+            .unwrap_err()
+            .contains("fits 2"));
         assert!(Library::find(&list, "nothing").is_err());
         assert_eq!(Library::find(&list, &list[1].id).unwrap().name, "Service 2");
     }
@@ -492,13 +632,21 @@ mod tests {
         let b = source_for(&s);
         assert!(std::ptr::eq(a, b));
         assert!(is_service(a) && !is_service(&crate::sources::EOX));
-        assert!(a.cache_name(crate::geo::TileKey::new(3, 2, 1)).starts_with(&format!("svc-{}/3/2/1", s.id)));
+        assert!(a
+            .cache_name(crate::geo::TileKey::new(3, 2, 1))
+            .starts_with(&format!("svc-{}/3/2/1", s.id)));
         assert_eq!(a.concurrency, 2);
-        assert_eq!(a.credit, "\u{2}t9.example", "the host stands in for a missing credit");
+        assert_eq!(
+            a.credit, "\u{2}t9.example",
+            "the host stands in for a missing credit"
+        );
         let mut bounded = svc("10");
         bounded.bounds = Some([5.0, 45.0, 11.0, 48.0]);
         assert_eq!(source_for(&bounded).bounds.len(), 1);
-        assert!(!source_for(&bounded).blank_means_missing(), "a blank picture from a service is still a picture");
+        assert!(
+            !source_for(&bounded).blank_means_missing(),
+            "a blank picture from a service is still a picture"
+        );
         assert!(check_size(a, 256, 256).is_ok());
         assert!(check_size(a, 512, 512).unwrap_err().contains("512 by 512"));
     }
@@ -519,9 +667,13 @@ mod tests {
         let src = source_for(&s);
         assert_eq!(problem_text(src), None);
         note_problem(src, "sent web pages, not pictures".into());
-        assert!(problem_text(src).unwrap().contains("nothing has been shown"));
+        assert!(problem_text(src)
+            .unwrap()
+            .contains("nothing has been shown"));
         note_good(src);
-        assert!(problem_text(src).unwrap().contains("coarser tiles are kept"));
+        assert!(problem_text(src)
+            .unwrap()
+            .contains("coarser tiles are kept"));
         clear_problems(src);
         assert_eq!(problem_text(src), None);
     }

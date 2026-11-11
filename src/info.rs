@@ -18,7 +18,10 @@ pub enum Content {
     /// Figures in a table under a one-line summary, with explanations in grey below.
     Facts(Card),
     Article(Article),
-    Nearby { items: Vec<NearItem>, radius: f64 },
+    Nearby {
+        items: Vec<NearItem>,
+        radius: f64,
+    },
     /// Named features on another body around the spot, to choose one to read about.
     Features(Vec<crate::planet_names::Near>),
 }
@@ -55,33 +58,74 @@ pub struct Trend {
 
 /// The line of a [`Trend`], with its first and last year below and its top value at the left.
 fn trend(ui: &mut egui::Ui, t: &Trend) {
-    let (Some(first), Some(last)) = (t.points.first(), t.points.last()) else { return };
+    let (Some(first), Some(last)) = (t.points.first(), t.points.last()) else {
+        return;
+    };
     ui.add_space(6.0);
     ui.label(egui::RichText::new(&t.title).color(gui::accent()));
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 56.0), egui::Sense::hover());
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 56.0), egui::Sense::hover());
     let v = ui.visuals();
     let (ink, weak) = (v.text_color(), v.weak_text_color());
     let p = ui.painter();
     let font = egui::FontId::proportional(11.0);
-    let plot = egui::Rect::from_min_max(egui::pos2(rect.left() + 30.0, rect.top() + 4.0), egui::pos2(rect.right() - 4.0, rect.bottom() - 14.0));
+    let plot = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 30.0, rect.top() + 4.0),
+        egui::pos2(rect.right() - 4.0, rect.bottom() - 14.0),
+    );
     p.rect_filled(plot, 2.0, v.extreme_bg_color);
     let span = (last.0 - first.0).max(1.0);
     let range = (t.max - t.min).max(1e-6);
-    let at = |(x, y): (f32, f32)| egui::pos2(plot.left() + (x - first.0) / span * plot.width(), plot.bottom() - ((y - t.min) / range).clamp(0.0, 1.0) * plot.height());
+    let at = |(x, y): (f32, f32)| {
+        egui::pos2(
+            plot.left() + (x - first.0) / span * plot.width(),
+            plot.bottom() - ((y - t.min) / range).clamp(0.0, 1.0) * plot.height(),
+        )
+    };
     if t.min < 0.0 {
         let y = at((first.0, 0.0)).y;
-        p.line_segment([egui::pos2(plot.left(), y), egui::pos2(plot.right(), y)], egui::Stroke::new(1.0, weak));
+        p.line_segment(
+            [egui::pos2(plot.left(), y), egui::pos2(plot.right(), y)],
+            egui::Stroke::new(1.0, weak),
+        );
     }
     if let Some(m) = t.mark.filter(|m| (first.0..=last.0).contains(m)) {
         let x = at((m, 0.0)).x;
-        p.line_segment([egui::pos2(x, plot.top()), egui::pos2(x, plot.bottom())], egui::Stroke::new(1.0, gui::accent()));
+        p.line_segment(
+            [egui::pos2(x, plot.top()), egui::pos2(x, plot.bottom())],
+            egui::Stroke::new(1.0, gui::accent()),
+        );
     }
     let line: Vec<egui::Pos2> = t.points.iter().map(|&q| at(q)).collect();
     p.add(egui::Shape::line(line, egui::Stroke::new(1.5, ink)));
-    p.text(egui::pos2(plot.left() - 4.0, plot.top()), egui::Align2::RIGHT_TOP, axis_text(t.max), font.clone(), weak);
-    p.text(egui::pos2(plot.left() - 4.0, plot.bottom()), egui::Align2::RIGHT_BOTTOM, axis_text(t.min), font.clone(), weak);
-    p.text(egui::pos2(plot.left(), rect.bottom()), egui::Align2::LEFT_BOTTOM, format!("{:.0}", first.0), font.clone(), weak);
-    p.text(egui::pos2(plot.right(), rect.bottom()), egui::Align2::RIGHT_BOTTOM, format!("{:.0}", last.0), font, weak);
+    p.text(
+        egui::pos2(plot.left() - 4.0, plot.top()),
+        egui::Align2::RIGHT_TOP,
+        axis_text(t.max),
+        font.clone(),
+        weak,
+    );
+    p.text(
+        egui::pos2(plot.left() - 4.0, plot.bottom()),
+        egui::Align2::RIGHT_BOTTOM,
+        axis_text(t.min),
+        font.clone(),
+        weak,
+    );
+    p.text(
+        egui::pos2(plot.left(), rect.bottom()),
+        egui::Align2::LEFT_BOTTOM,
+        format!("{:.0}", first.0),
+        font.clone(),
+        weak,
+    );
+    p.text(
+        egui::pos2(plot.right(), rect.bottom()),
+        egui::Align2::RIGHT_BOTTOM,
+        format!("{:.0}", last.0),
+        font,
+        weak,
+    );
     if !t.caption.is_empty() {
         gui::note(ui, &t.caption);
     }
@@ -89,7 +133,11 @@ fn trend(ui: &mut egui::Ui, t: &Trend) {
 
 /// A value at the side of a [`Trend`]: whole numbers, and one decimal below 10.
 fn axis_text(v: f32) -> String {
-    if v.fract() == 0.0 || v.abs() >= 10.0 { format!("{v:.0}") } else { format!("{v:.1}") }
+    if v.fract() == 0.0 || v.abs() >= 10.0 {
+        format!("{v:.0}")
+    } else {
+        format!("{v:.1}")
+    }
 }
 
 /// Bars on one common scale under a small heading: each a label, a bar of stacked segments and a
@@ -124,7 +172,13 @@ pub struct Segment {
 
 impl Segment {
     pub fn solid(value: f32, colour: [u8; 3]) -> Segment {
-        Segment { value, colour, alpha: 255, hatched: false, ink: false }
+        Segment {
+            value,
+            colour,
+            alpha: 255,
+            hatched: false,
+            ink: false,
+        }
     }
 }
 
@@ -135,19 +189,48 @@ fn meters(ui: &mut egui::Ui, groups: &[Meters]) {
     let font = egui::FontId::proportional(12.5);
     for g in groups {
         // The figures' column is as wide as its longest figure.
-        let text = g.rows.iter().map(|m| ui.painter().layout_no_wrap(m.text.clone(), font.clone(), egui::Color32::WHITE).size().x).fold(0.0f32, f32::max) + 10.0;
+        let text = g
+            .rows
+            .iter()
+            .map(|m| {
+                ui.painter()
+                    .layout_no_wrap(m.text.clone(), font.clone(), egui::Color32::WHITE)
+                    .size()
+                    .x
+            })
+            .fold(0.0f32, f32::max)
+            + 10.0;
         ui.add_space(6.0);
         if !g.title.is_empty() {
             ui.label(egui::RichText::new(&g.title).color(gui::accent()));
         }
         for m in &g.rows {
-            let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW), egui::Sense::hover());
+            let (row, _) =
+                ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW), egui::Sense::hover());
             let v = ui.visuals();
             let (ink, weak) = (v.text_color(), v.weak_text_color());
             let p = ui.painter();
-            p.text(egui::pos2(row.left(), row.center().y), egui::Align2::LEFT_CENTER, &m.label, font.clone(), weak);
-            p.text(egui::pos2(row.right(), row.center().y), egui::Align2::RIGHT_CENTER, &m.text, font.clone(), ink);
-            let track = egui::Rect::from_min_max(egui::pos2(row.left() + LABEL, row.top() + 3.0), egui::pos2((row.right() - text).max(row.left() + LABEL + 20.0), row.bottom() - 3.0));
+            p.text(
+                egui::pos2(row.left(), row.center().y),
+                egui::Align2::LEFT_CENTER,
+                &m.label,
+                font.clone(),
+                weak,
+            );
+            p.text(
+                egui::pos2(row.right(), row.center().y),
+                egui::Align2::RIGHT_CENTER,
+                &m.text,
+                font.clone(),
+                ink,
+            );
+            let track = egui::Rect::from_min_max(
+                egui::pos2(row.left() + LABEL, row.top() + 3.0),
+                egui::pos2(
+                    (row.right() - text).max(row.left() + LABEL + 20.0),
+                    row.bottom() - 3.0,
+                ),
+            );
             p.rect_filled(track, 2.0, v.extreme_bg_color);
             let mut x = track.left();
             for s in &m.segments {
@@ -155,12 +238,21 @@ fn meters(ui: &mut egui::Ui, groups: &[Meters]) {
                     continue;
                 }
                 // Something present never vanishes, however small next to the rest.
-                let w = (s.value / g.max * track.width()).max(2.0).min(track.right() - x);
+                let w = (s.value / g.max * track.width())
+                    .max(2.0)
+                    .min(track.right() - x);
                 if w <= 0.0 {
                     break;
                 }
-                let r = egui::Rect::from_min_max(egui::pos2(x, track.top()), egui::pos2(x + w, track.bottom()));
-                let c = if s.ink { ink } else { egui::Color32::from_rgb(s.colour[0], s.colour[1], s.colour[2]) };
+                let r = egui::Rect::from_min_max(
+                    egui::pos2(x, track.top()),
+                    egui::pos2(x + w, track.bottom()),
+                );
+                let c = if s.ink {
+                    ink
+                } else {
+                    egui::Color32::from_rgb(s.colour[0], s.colour[1], s.colour[2])
+                };
                 p.rect_filled(r, 0.0, c.gamma_multiply(s.alpha as f32 / 255.0));
                 if s.hatched {
                     gui::hatch(&p.with_clip_rect(r), r, s.colour);
@@ -188,7 +280,13 @@ pub struct Model {
 
 impl Default for Model {
     fn default() -> Self {
-        Self { title: String::new(), at: None, content: Content::Looking, note: None, data: None }
+        Self {
+            title: String::new(),
+            at: None,
+            content: Content::Looking,
+            note: None,
+            data: None,
+        }
     }
 }
 
@@ -221,7 +319,6 @@ impl Model {
             _ => None,
         }
     }
-
 }
 
 /// A piece of the line that names the sources: text, or text that links to a page.
@@ -242,10 +339,25 @@ impl Model {
         let l = |s: &str, u: &str| Piece::Link(s.to_string(), u.to_string());
         match &self.content {
             Content::Article(a) => {
-                let mut v = vec![t("Text: Wikipedia, "), l(&format!("\"{}\" ({}.wikipedia.org)", a.title, a.lang), &a.url), t(", "), l("CC BY-SA 4.0", CC_BY_SA), t(".")];
+                let mut v = vec![
+                    t("Text: Wikipedia, "),
+                    l(
+                        &format!("\"{}\" ({}.wikipedia.org)", a.title, a.lang),
+                        &a.url,
+                    ),
+                    t(", "),
+                    l("CC BY-SA 4.0", CC_BY_SA),
+                    t("."),
+                ];
                 if !a.facts.is_empty() {
                     match &a.item {
-                        Some(q) => v.extend([t(" Facts: "), l(&format!("Wikidata {q}"), &format!("https://www.wikidata.org/wiki/{q}"))]),
+                        Some(q) => v.extend([
+                            t(" Facts: "),
+                            l(
+                                &format!("Wikidata {q}"),
+                                &format!("https://www.wikidata.org/wiki/{q}"),
+                            ),
+                        ]),
                         None => v.push(t(" Facts: Wikidata")),
                     }
                     v.extend([t(", "), l("CC0", CC0), t(".")]);
@@ -254,12 +366,25 @@ impl Model {
             }
             Content::Nearby { items, .. } if !items.is_empty() => {
                 let lang = &items[0].lang;
-                vec![t("Names: "), l(&format!("Wikipedia ({lang}.wikipedia.org)"), &format!("https://{lang}.wikipedia.org/")), t(", "), l("CC BY-SA 4.0", CC_BY_SA), t(".")]
+                vec![
+                    t("Names: "),
+                    l(
+                        &format!("Wikipedia ({lang}.wikipedia.org)"),
+                        &format!("https://{lang}.wikipedia.org/"),
+                    ),
+                    t(", "),
+                    l("CC BY-SA 4.0", CC_BY_SA),
+                    t("."),
+                ]
             }
-            Content::Features(items) if !items.is_empty() => vec![t("Names: IAU / "), l("USGS Gazetteer of Planetary Nomenclature", GAZETTEER), t(".")],
+            Content::Features(items) if !items.is_empty() => vec![
+                t("Names: IAU / "),
+                l("USGS Gazetteer of Planetary Nomenclature", GAZETTEER),
+                t("."),
+            ],
             _ => Vec::new(),
         }
-     }
+    }
 
     /// The sources of the Data tab: Our World in Data and its licence.
     pub fn data_sources(&self) -> Vec<Piece> {
@@ -286,7 +411,9 @@ enum Tab {
 
 /// The Data tab: a country's figures, each a small line over the years.
 fn data_tab(ui: &mut egui::Ui, f: &Facts) {
-    ui.add(egui::Label::new(egui::RichText::new(format!("{} in {}", f.name, f.asked)).strong()).wrap());
+    ui.add(
+        egui::Label::new(egui::RichText::new(format!("{} in {}", f.name, f.asked)).strong()).wrap(),
+    );
     if let Some(n) = &f.note {
         gui::note(ui, n);
     }
@@ -301,8 +428,19 @@ fn infobox(ui: &mut egui::Ui, rows: &[wiki::BoxRow]) {
     let font = egui::TextStyle::Body.resolve(ui.style());
     let widest = rows
         .iter()
-        .filter_map(|r| if let wiki::BoxRow::Fact(k, _) = r { Some(k) } else { None })
-        .map(|k| ui.painter().layout_no_wrap(k.clone(), font.clone(), egui::Color32::WHITE).size().x)
+        .filter_map(|r| {
+            if let wiki::BoxRow::Fact(k, _) = r {
+                Some(k)
+            } else {
+                None
+            }
+        })
+        .map(|k| {
+            ui.painter()
+                .layout_no_wrap(k.clone(), font.clone(), egui::Color32::WHITE)
+                .size()
+                .x
+        })
         .fold(0.0f32, f32::max);
     let gap = 12.0;
     let name_w = widest.min(ui.available_width() * 0.4).ceil();
@@ -311,10 +449,14 @@ fn infobox(ui: &mut egui::Ui, rows: &[wiki::BoxRow]) {
             wiki::BoxRow::Fact(k, v) => {
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = gap;
-                    ui.allocate_ui_with_layout(egui::vec2(name_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                        ui.set_width(name_w);
-                        ui.add(egui::Label::new(egui::RichText::new(k).weak()).wrap());
-                    });
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(name_w, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_width(name_w);
+                            ui.add(egui::Label::new(egui::RichText::new(k).weak()).wrap());
+                        },
+                    );
                     ui.add(egui::Label::new(v).wrap());
                 });
                 ui.add_space(2.0);
@@ -340,7 +482,8 @@ fn sources(ui: &mut egui::Ui, pieces: &[Piece]) {
                     ui.label(egui::RichText::new(s).weak().size(12.0));
                 }
                 Piece::Link(s, url) => {
-                    ui.hyperlink_to(egui::RichText::new(s).size(12.0), url).on_hover_text(url);
+                    ui.hyperlink_to(egui::RichText::new(s).size(12.0), url)
+                        .on_hover_text(url);
                 }
             }
         }
@@ -363,12 +506,31 @@ pub enum Action {
 /// editions names the rest.
 fn edition_name(code: &str) -> String {
     const NAMES: &[(&str, &str)] = &[
-        ("en", "English"), ("de", "Deutsch"), ("fr", "Français"), ("es", "Español"), ("it", "Italiano"),
-        ("nl", "Nederlands"), ("pl", "Polski"), ("pt", "Português"), ("ru", "Русский"), ("sv", "Svenska"),
-        ("uk", "Українська"), ("cs", "Čeština"), ("da", "Dansk"), ("fi", "Suomi"), ("no", "Norsk bokmål"),
-        ("hu", "Magyar"), ("ro", "Română"), ("tr", "Türkçe"), ("el", "Ελληνικά"), ("ca", "Català"),
+        ("en", "English"),
+        ("de", "Deutsch"),
+        ("fr", "Français"),
+        ("es", "Español"),
+        ("it", "Italiano"),
+        ("nl", "Nederlands"),
+        ("pl", "Polski"),
+        ("pt", "Português"),
+        ("ru", "Русский"),
+        ("sv", "Svenska"),
+        ("uk", "Українська"),
+        ("cs", "Čeština"),
+        ("da", "Dansk"),
+        ("fi", "Suomi"),
+        ("no", "Norsk bokmål"),
+        ("hu", "Magyar"),
+        ("ro", "Română"),
+        ("tr", "Türkçe"),
+        ("el", "Ελληνικά"),
+        ("ca", "Català"),
     ];
-    NAMES.iter().find(|(c, _)| *c == code).map_or_else(|| code.to_string(), |(_, n)| n.to_string())
+    NAMES
+        .iter()
+        .find(|(c, _)| *c == code)
+        .map_or_else(|| code.to_string(), |(_, n)| n.to_string())
 }
 
 /// Opens an article in the browser. Only a plain Wikipedia address is passed on.
@@ -380,8 +542,15 @@ pub fn open_in_browser(url: &str) -> Result<(), String> {
 /// Whether an address is a plain web page: http or https, no spaces or control characters,
 /// and not overly long. Nothing else is handed to the browser.
 pub fn is_web_address(url: &str) -> bool {
-    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"));
-    rest.is_some_and(|r| !r.is_empty() && !r.starts_with('/') && url.len() <= 2048 && !url.chars().any(|c| c.is_whitespace() || c.is_control()))
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"));
+    rest.is_some_and(|r| {
+        !r.is_empty()
+            && !r.starts_with('/')
+            && url.len() <= 2048
+            && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+    })
 }
 
 /// Opens a web page from the interface, such as a source named in the credits.
@@ -618,7 +787,15 @@ mod tests {
     fn only_plain_web_addresses_are_opened() {
         assert!(is_web_address("https://openfreemap.org"));
         assert!(is_web_address("http://example.org/a?b=c"));
-        for bad in ["file:///etc/passwd", "javascript:alert(1)", "https://", "https:///x", "https://a b", "-https://x", "https://x\n"] {
+        for bad in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "https://",
+            "https:///x",
+            "https://a b",
+            "-https://x",
+            "https://x\n",
+        ] {
             assert!(!is_web_address(bad), "{bad}");
         }
     }
@@ -628,7 +805,10 @@ mod tests {
             lang: "en".into(),
             title: "Vienna".into(),
             description: "Capital and largest city of Austria".into(),
-            facts: vec![("Population".into(), "2,028,289 (2025)".into()), ("Country".into(), "Austria".into())],
+            facts: vec![
+                ("Population".into(), "2,028,289 (2025)".into()),
+                ("Country".into(), "Austria".into()),
+            ],
             text: text.into(),
             url: "https://en.wikipedia.org/wiki/Vienna".into(),
             item: Some("Q1741".into()),
@@ -638,21 +818,48 @@ mod tests {
     }
 
     fn model(content: Content) -> Model {
-        Model { title: "Vienna".into(), at: Some((48.2, 16.4)), content, note: None, data: None }
+        Model {
+            title: "Vienna".into(),
+            at: Some((48.2, 16.4)),
+            content,
+            note: None,
+            data: None,
+        }
     }
 
     #[test]
     fn the_article_address_is_known_while_it_is_shown() {
         let m = model(Content::Article(article("Text")));
-        assert_eq!(m.article_url(), Some("https://en.wikipedia.org/wiki/Vienna"));
+        assert_eq!(
+            m.article_url(),
+            Some("https://en.wikipedia.org/wiki/Vienna")
+        );
         assert_eq!(model(Content::Looking).article_url(), None);
     }
 
     #[test]
     fn the_sources_link_to_the_article_the_item_and_the_terms() {
         let m = model(Content::Article(article("Text")));
-        let links: Vec<_> = m.sources().into_iter().filter_map(|p| if let Piece::Link(_, u) = p { Some(u) } else { None }).collect();
-        assert_eq!(links, vec!["https://en.wikipedia.org/wiki/Vienna", CC_BY_SA, "https://www.wikidata.org/wiki/Q1741", CC0]);
+        let links: Vec<_> = m
+            .sources()
+            .into_iter()
+            .filter_map(|p| {
+                if let Piece::Link(_, u) = p {
+                    Some(u)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            links,
+            vec![
+                "https://en.wikipedia.org/wiki/Vienna",
+                CC_BY_SA,
+                "https://www.wikidata.org/wiki/Q1741",
+                CC0
+            ]
+        );
         assert!(links.iter().all(|u| is_web_address(u)));
         assert!(model(Content::Looking).sources().is_empty());
     }

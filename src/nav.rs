@@ -122,7 +122,10 @@ impl Nav {
 
     /// A view whose distance counts from the terrain, once that is known.
     pub fn starting_above_ground(cam: Camera, size: DVec2) -> Self {
-        Self { starting: true, ..Self::new(cam, size) }
+        Self {
+            starting: true,
+            ..Self::new(cam, size)
+        }
     }
 
     /// Ends the start phase; from here on the camera holds its height over changing ground.
@@ -177,7 +180,11 @@ impl Nav {
         let anchor = (mode == DragMode::Grab)
             .then(|| self.cam.pick(self.ndc(pos), self.aspect()))
             .flatten();
-        self.drag = Some(Drag { mode, anchor, last: pos });
+        self.drag = Some(Drag {
+            mode,
+            anchor,
+            last: pos,
+        });
     }
 
     pub fn moved(&mut self, pos: DVec2) {
@@ -275,7 +282,11 @@ impl Nav {
         } else {
             ArrowMode::Fly
         };
-        self.arrows.push(HeldArrow { arrow, mode, held: 0.0 });
+        self.arrows.push(HeldArrow {
+            arrow,
+            mode,
+            held: 0.0,
+        });
     }
 
     /// Takes the latest SpaceMouse axes. A moving device ends a flight, as a hand does.
@@ -303,7 +314,10 @@ impl Nav {
         let len = dir.length();
         if len > 0.0 {
             let angle = self.cam.distance * len / radius();
-            self.cam.apply_rotation(DQuat::from_axis_angle(up.cross(dir / len).normalize(), angle));
+            self.cam.apply_rotation(DQuat::from_axis_angle(
+                up.cross(dir / len).normalize(),
+                angle,
+            ));
         }
         self.cam.distance *= s.climb.exp();
         self.cam.heading += s.turn;
@@ -326,19 +340,30 @@ impl Nav {
     }
 
     fn level(&mut self, factor: f64) {
-        let to = Camera { distance: self.cam.distance * factor, ..self.cam };
+        let to = Camera {
+            distance: self.cam.distance * factor,
+            ..self.cam
+        };
         self.fly_to(to);
     }
 
     pub fn whole_body(&mut self) {
-        let to = Camera { distance: whole_body(), tilt: 0.0, sky: 0.0, ..self.cam };
+        let to = Camera {
+            distance: whole_body(),
+            tilt: 0.0,
+            sky: 0.0,
+            ..self.cam
+        };
         self.fly_to(to);
     }
 
     /// Turns the view to face north, keeping where it looks from and how it is tilted.
     pub fn face_north(&mut self) {
         if wrap(self.cam.heading).abs() > 1e-3 {
-            self.fly_to(Camera { heading: 0.0, ..self.cam });
+            self.fly_to(Camera {
+                heading: 0.0,
+                ..self.cam
+            });
         }
     }
 
@@ -349,9 +374,16 @@ impl Nav {
         let to = if wrap(c.heading).abs() > EPS {
             Camera { heading: 0.0, ..c }
         } else if c.total_tilt() > EPS {
-            Camera { tilt: 0.0, sky: 0.0, ..c }
+            Camera {
+                tilt: 0.0,
+                sky: 0.0,
+                ..c
+            }
         } else if c.distance < whole_body() * 0.99 {
-            Camera { distance: whole_body(), ..c }
+            Camera {
+                distance: whole_body(),
+                ..c
+            }
         } else {
             Camera { lat: 0.0, ..c }
         };
@@ -372,7 +404,16 @@ impl Nav {
         // Longer trips climb first, travel high and then sink.
         let cruise = (angle * radius() * 0.8).min(crate::body::scaled(1.5e7));
         let duration = (0.6 + angle * 1.5).min(4.0);
-        self.flight = Some(Flight { from_dir: a, arc, from, to, cruise, t: 0.0, duration, curve: None });
+        self.flight = Some(Flight {
+            from_dir: a,
+            arc,
+            from,
+            to,
+            cruise,
+            t: 0.0,
+            duration,
+            curve: None,
+        });
     }
 
     /// Flies to a view on the smooth path of `crate::flight`: out and in again over a long
@@ -382,16 +423,23 @@ impl Nav {
         to.clamp();
         self.fly_to(to);
         let Some(mut f) = self.flight else { return };
-        let angle = f.from_dir.dot(to.target().normalize()).clamp(-1.0, 1.0).acos();
+        let angle = f
+            .from_dir
+            .dot(to.target().normalize())
+            .clamp(-1.0, 1.0)
+            .acos();
         let k = crate::flight::WIDTH_PER_DISTANCE;
-        let curve = crate::flight::Curve::new(angle * radius(), f.from.distance * k, to.distance * k);
+        let curve =
+            crate::flight::Curve::new(angle * radius(), f.from.distance * k, to.distance * k);
         f.duration = curve.duration();
         f.curve = Some(curve);
         self.flight = Some(f);
     }
 
     fn step_flight(&mut self, dt: f64) {
-        let Some(mut f) = self.flight.filter(|_| !self.flight_frozen) else { return };
+        let Some(mut f) = self.flight.filter(|_| !self.flight_frozen) else {
+            return;
+        };
         f.t = (f.t + dt / f.duration).min(1.0);
         if let Some(curve) = f.curve {
             self.step_smooth(&mut f, &curve);
@@ -406,7 +454,8 @@ impl Nav {
         self.cam.lon = lon;
         self.cam.distance = (log_d.exp() + bump).min(max_distance());
         self.cam.heading = f.from.heading + wrap(f.to.heading - f.from.heading) * s;
-        self.cam.set_total_tilt(f.from.total_tilt() + (f.to.total_tilt() - f.from.total_tilt()) * s);
+        self.cam
+            .set_total_tilt(f.from.total_tilt() + (f.to.total_tilt() - f.from.total_tilt()) * s);
         if f.t >= 1.0 {
             self.cam.lat = f.to.lat;
             self.cam.lon = f.to.lon;
@@ -433,7 +482,10 @@ impl Nav {
         self.cam.distance = distance.min(max_distance());
         self.cam.heading = f.from.heading + wrap(f.to.heading - f.from.heading) * st.eased;
         // High above both ends the view turns towards straight down, and back again.
-        let rise = (distance / f.from.distance.max(f.to.distance)).ln().max(0.0) / 4f64.ln();
+        let rise = (distance / f.from.distance.max(f.to.distance))
+            .ln()
+            .max(0.0)
+            / 4f64.ln();
         let down = rise.min(1.0).powi(2) * (3.0 - 2.0 * rise.min(1.0));
         let tilt = f.from.total_tilt() + (f.to.total_tilt() - f.from.total_tilt()) * st.eased;
         self.cam.set_total_tilt(tilt * (1.0 - down));
@@ -467,7 +519,8 @@ impl Nav {
                         Arrow::Left => up.cross(f),
                     };
                     let angle = self.cam.distance * rate * 0.6 * dt / radius();
-                    self.cam.apply_rotation(DQuat::from_axis_angle(up.cross(dir).normalize(), angle));
+                    self.cam
+                        .apply_rotation(DQuat::from_axis_angle(up.cross(dir).normalize(), angle));
                 }
                 ArrowMode::Orbit => match arrow {
                     Arrow::Up => self.cam.add_tilt(rate * dt * 0.5),
@@ -516,7 +569,8 @@ impl Nav {
             self.glide = DVec3::ZERO;
             return;
         }
-        self.cam.apply_rotation(DQuat::from_axis_angle(self.glide / speed, speed * dt));
+        self.cam
+            .apply_rotation(DQuat::from_axis_angle(self.glide / speed, speed * dt));
         self.glide *= (-dt * 3.0).exp();
     }
 
@@ -528,7 +582,12 @@ impl Nav {
     /// Like `tick`, with a second height the camera must also stay above: `floor` is the surface
     /// as drawn, which can stand higher than the finest ground until finer tiles replace it. The
     /// view point and the start phase follow `ground`.
-    pub fn tick_over(&mut self, dt: f64, ground: &dyn Fn(f64, f64) -> Option<f64>, floor: &dyn Fn(f64, f64) -> Option<f64>) {
+    pub fn tick_over(
+        &mut self,
+        dt: f64,
+        ground: &dyn Fn(f64, f64) -> Option<f64>,
+        floor: &dyn Fn(f64, f64) -> Option<f64>,
+    ) {
         self.since_move += dt;
         self.lifted = 0.0;
         self.step_flight(dt);
@@ -540,7 +599,12 @@ impl Nav {
         self.follow_ground(dt, ground, floor);
     }
 
-    fn follow_ground(&mut self, dt: f64, ground: &dyn Fn(f64, f64) -> Option<f64>, floor: &dyn Fn(f64, f64) -> Option<f64>) {
+    fn follow_ground(
+        &mut self,
+        dt: f64,
+        ground: &dyn Fn(f64, f64) -> Option<f64>,
+        floor: &dyn Fn(f64, f64) -> Option<f64>,
+    ) {
         // The view point sits on the terrain, while the camera keeps its height.
         if let Some(h) = ground(self.cam.lat, self.cam.lon).filter(|_| self.starting) {
             self.cam.target_h = h;
@@ -589,7 +653,15 @@ mod tests {
     const NO_GROUND: &dyn Fn(f64, f64) -> Option<f64> = &|_, _| None;
 
     fn nav() -> Nav {
-        let cam = Camera { lat: 0.82, lon: 0.2, target_h: 0.0, distance: 200_000.0, heading: 0.3, tilt: 0.4, sky: 0.0 };
+        let cam = Camera {
+            lat: 0.82,
+            lon: 0.2,
+            target_h: 0.0,
+            distance: 200_000.0,
+            heading: 0.3,
+            tilt: 0.4,
+            sky: 0.0,
+        };
         Nav::new(cam, SIZE)
     }
 
@@ -609,12 +681,23 @@ mod tests {
         n.moved(DVec2::new(700.0, 350.0));
         n.moved(end);
         let now = n.cam.pick(n.ndc(end), n.aspect()).unwrap();
-        assert!((now - grabbed).length() < 2.0, "off by {} m", (now - grabbed).length());
+        assert!(
+            (now - grabbed).length() < 2.0,
+            "off by {} m",
+            (now - grabbed).length()
+        );
     }
 
     #[test]
     fn drag_follows_the_hand() {
-        let mut n = Nav::new(Camera { heading: 0.0, tilt: 0.0, ..nav().cam }, SIZE);
+        let mut n = Nav::new(
+            Camera {
+                heading: 0.0,
+                tilt: 0.0,
+                ..nav().cam
+            },
+            SIZE,
+        );
         let lon = n.cam.lon;
         n.press(Button::Left, DVec2::new(600.0, 400.0), Mods::default());
         n.moved(DVec2::new(700.0, 400.0));
@@ -655,7 +738,11 @@ mod tests {
         run(&mut n, 1.0);
         assert!(n.cam.distance < d);
         let after = n.cam.pick(n.ndc(pos), n.aspect()).unwrap();
-        assert!((after - before).length() < 5.0, "off by {} m", (after - before).length());
+        assert!(
+            (after - before).length() < 5.0,
+            "off by {} m",
+            (after - before).length()
+        );
         assert!(!n.is_animating());
     }
 
@@ -689,7 +776,10 @@ mod tests {
         n.moved(DVec2::new(0.0, 5000.0));
         assert_eq!(n.cam.tilt, MAX_TILT);
         assert!((n.cam.total_tilt() - std::f64::consts::PI).abs() < 1e-9);
-        assert!(n.cam.basis().look.dot(enu(n.cam.lat, n.cam.lon).2) > 0.99, "looks up");
+        assert!(
+            n.cam.basis().look.dot(enu(n.cam.lat, n.cam.lon).2) > 0.99,
+            "looks up"
+        );
         n.moved(DVec2::new(0.0, -5000.0));
         assert_eq!((n.cam.tilt, n.cam.sky), (0.0, 0.0));
     }
@@ -708,7 +798,14 @@ mod tests {
     fn shift_drag_up_climbs() {
         let mut n = nav();
         let d = n.cam.distance;
-        n.press(Button::Left, DVec2::new(600.0, 400.0), Mods { shift: true, ..Mods::default() });
+        n.press(
+            Button::Left,
+            DVec2::new(600.0, 400.0),
+            Mods {
+                shift: true,
+                ..Mods::default()
+            },
+        );
         n.moved(DVec2::new(600.0, 300.0));
         assert!(n.cam.distance > d);
     }
@@ -742,7 +839,13 @@ mod tests {
         let mut n = nav();
         let d = n.cam.distance;
         n.arrow_down(Arrow::Up, Mods::default());
-        n.arrow_down(Arrow::Up, Mods { shift: true, ..Mods::default() });
+        n.arrow_down(
+            Arrow::Up,
+            Mods {
+                shift: true,
+                ..Mods::default()
+            },
+        );
         run(&mut n, 0.5);
         assert_eq!(n.cam.distance, d, "still flying, not climbing");
     }
@@ -751,13 +854,24 @@ mod tests {
     fn ctrl_arrows_move_one_level() {
         let mut n = nav();
         let d = n.cam.distance;
-        n.arrow_down(Arrow::Up, Mods { ctrl: true, ..Mods::default() });
+        n.arrow_down(
+            Arrow::Up,
+            Mods {
+                ctrl: true,
+                ..Mods::default()
+            },
+        );
         run(&mut n, 2.0);
         assert!((n.cam.distance / (d * 0.5) - 1.0).abs() < 1e-6);
     }
 
     fn smooth_to(n: &mut Nav, lat: f64, lon: f64, distance: f64) {
-        let to = Camera { lat, lon, distance, ..n.cam };
+        let to = Camera {
+            lat,
+            lon,
+            distance,
+            ..n.cam
+        };
         n.fly_smoothly(to);
     }
 
@@ -783,7 +897,11 @@ mod tests {
         assert!(!n.is_animating() && n.flight_goal().is_none());
         assert!((n.cam.lat - 0.3).abs() < 1e-9 && (n.cam.lon - 1.0).abs() < 1e-9);
         assert!((n.cam.distance - 2.0e4).abs() < 1e-6);
-        assert_eq!((n.cam.tilt, n.cam.heading), (tilt, 0.4), "the user's heading and tilt come back");
+        assert_eq!(
+            (n.cam.tilt, n.cam.heading),
+            (tilt, 0.4),
+            "the user's heading and tilt come back"
+        );
     }
 
     #[test]
@@ -792,7 +910,11 @@ mod tests {
         short.cam.distance = 1.0e4;
         short.cam.tilt = 0.8;
         let d = short.cam.distance;
-        let to = Camera { lat: short.cam.lat + 1.0e3 / 6.4e6, distance: d, ..short.cam };
+        let to = Camera {
+            lat: short.cam.lat + 1.0e3 / 6.4e6,
+            distance: d,
+            ..short.cam
+        };
         short.fly_smoothly(to);
         let mut least = 1.0f64;
         let mut long = nav();
@@ -820,10 +942,17 @@ mod tests {
         while n.is_animating() {
             n.tick(1.0 / 60.0, NO_GROUND);
             let t = n.cam.target();
-            assert!((t - last).length() < 0.1 * n.cam.distance.max(1.0e5), "jump of {} m", (t - last).length());
+            assert!(
+                (t - last).length() < 0.1 * n.cam.distance.max(1.0e5),
+                "jump of {} m",
+                (t - last).length()
+            );
             last = t;
             let pos = n.cam.basis().pos;
-            assert!(pos.length() > crate::geo::radius() * 0.999, "inside the body");
+            assert!(
+                pos.length() > crate::geo::radius() * 0.999,
+                "inside the body"
+            );
             peak = peak.max(n.cam.distance);
         }
         assert!(peak > 5.0e6, "a long hop climbs, peak {peak}");
@@ -863,7 +992,10 @@ mod tests {
         let here = n.cam.target();
         smooth_to(&mut n, -0.5, 0.0, 1.0e4);
         n.tick(0.0, NO_GROUND);
-        assert!((n.cam.target() - here).length() < 1.0, "no jump at the start");
+        assert!(
+            (n.cam.target() - here).length() < 1.0,
+            "no jump at the start"
+        );
         n.press(Button::Left, DVec2::new(10.0, 10.0), Mods::default());
         assert!(!n.is_animating(), "a touch ends it at once");
         assert!((n.cam.target() - here).length() < 1.0);
@@ -913,7 +1045,11 @@ mod tests {
     #[test]
     fn long_flight_climbs_and_a_new_input_ends_it() {
         let mut n = nav();
-        let to = Camera { lat: -0.5, lon: 2.5, ..n.cam };
+        let to = Camera {
+            lat: -0.5,
+            lon: 2.5,
+            ..n.cam
+        };
         n.fly_to(to);
         let mut highest: f64 = 0.0;
         for _ in 0..60 {
@@ -928,20 +1064,32 @@ mod tests {
 
     #[test]
     fn camera_stays_over_the_drawn_surface_without_falling_when_it_drops() {
-        let cam = Camera { distance: 300.0, tilt: 1.2, ..nav().cam };
+        let cam = Camera {
+            distance: 300.0,
+            tilt: 1.2,
+            ..nav().cam
+        };
         let mut n = Nav::new(cam, SIZE);
         let fine: &dyn Fn(f64, f64) -> Option<f64> = &|_, _| Some(1000.0);
         let drawn: &dyn Fn(f64, f64) -> Option<f64> = &|_, _| Some(1300.0);
         let height = |n: &Nav| ecef_to_geodetic(n.cam.basis().pos).2;
         for _ in 0..120 {
             n.tick_over(1.0 / 60.0, fine, drawn);
-            assert!(height(&n) >= 1300.0 + GROUND_CLEARANCE - 1e-6, "under the drawn surface: {}", height(&n));
+            assert!(
+                height(&n) >= 1300.0 + GROUND_CLEARANCE - 1e-6,
+                "under the drawn surface: {}",
+                height(&n)
+            );
         }
         // Finer tiles arrive and the drawn surface drops to the real ground: no fall.
         let before = height(&n);
         for _ in 0..120 {
             n.tick_over(1.0 / 60.0, fine, fine);
-            assert!(height(&n) >= before - 1e-6, "fell from {before} to {}", height(&n));
+            assert!(
+                height(&n) >= before - 1e-6,
+                "fell from {before} to {}",
+                height(&n)
+            );
         }
         // And nothing keeps the camera up: it can come down to the ground by zooming.
         n.cam.distance = 5.0;
@@ -951,7 +1099,14 @@ mod tests {
 
     #[test]
     fn camera_keeps_clear_of_rising_ground() {
-        let mut n = Nav::new(Camera { distance: 300.0, tilt: 0.0, ..nav().cam }, SIZE);
+        let mut n = Nav::new(
+            Camera {
+                distance: 300.0,
+                tilt: 0.0,
+                ..nav().cam
+            },
+            SIZE,
+        );
         let ground: &dyn Fn(f64, f64) -> Option<f64> = &|_, _| Some(3000.0);
         for _ in 0..240 {
             n.tick(1.0 / 60.0, ground);
@@ -965,7 +1120,13 @@ mod tests {
 
     #[test]
     fn flat_ground_does_not_lift_the_camera() {
-        let mut n = Nav::new(Camera { tilt: 0.0, ..nav().cam }, SIZE);
+        let mut n = Nav::new(
+            Camera {
+                tilt: 0.0,
+                ..nav().cam
+            },
+            SIZE,
+        );
         let (_, _, before) = ecef_to_geodetic(n.cam.basis().pos);
         let ground: &dyn Fn(f64, f64) -> Option<f64> = &|_, _| Some(1500.0);
         run_with(&mut n, ground, 2.0);
@@ -975,7 +1136,11 @@ mod tests {
 
     #[test]
     fn the_start_distance_counts_from_the_ground() {
-        let cam = Camera { distance: 500.0, tilt: 0.0, ..nav().cam };
+        let cam = Camera {
+            distance: 500.0,
+            tilt: 0.0,
+            ..nav().cam
+        };
         let mut n = Nav::starting_above_ground(cam, SIZE);
         // First a coarse guess at the terrain, then the real height.
         let coarse: &dyn Fn(f64, f64) -> Option<f64> = &|_, _| Some(1800.0);
@@ -995,7 +1160,11 @@ mod tests {
 
     #[test]
     fn any_input_ends_the_start_phase() {
-        let cam = Camera { distance: 500.0, tilt: 0.0, ..nav().cam };
+        let cam = Camera {
+            distance: 500.0,
+            tilt: 0.0,
+            ..nav().cam
+        };
         let mut n = Nav::starting_above_ground(cam, SIZE);
         n.scroll(1.0, DVec2::new(600.0, 400.0), Mods::default());
         assert!(!n.starting);
@@ -1019,7 +1188,10 @@ mod tests {
         n.whole_body();
         assert!(n.flight.is_some());
         n.set_device([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.0);
-        assert!(n.flight.is_some(), "a resting device leaves the flight alone");
+        assert!(
+            n.flight.is_some(),
+            "a resting device leaves the flight alone"
+        );
         n.set_device([0.0, 0.5, 0.0, 0.0, 0.0, 0.0], 1.0);
         assert!(n.flight.is_none());
         assert!(n.is_animating());
@@ -1048,8 +1220,14 @@ mod tests {
         assert!((a.heading - b.heading).abs() < 1e-3);
         // Ten times lower, ten times less ground covered.
         let (hi, lo) = (go(100_000.0, 60), go(10_000.0, 60));
-        let moved = |c: Camera| ((c.lat - 0.82).powi(2) + ((c.lon - 0.2) * 0.82f64.cos()).powi(2)).sqrt();
-        assert!((moved(hi) / moved(lo) - 10.0).abs() < 1.5, "{} {}", moved(hi), moved(lo));
+        let moved =
+            |c: Camera| ((c.lat - 0.82).powi(2) + ((c.lon - 0.2) * 0.82f64.cos()).powi(2)).sqrt();
+        assert!(
+            (moved(hi) / moved(lo) - 10.0).abs() < 1.5,
+            "{} {}",
+            moved(hi),
+            moved(lo)
+        );
     }
 
     #[test]
@@ -1069,7 +1247,14 @@ mod tests {
 
     #[test]
     fn device_sinking_keeps_two_metres_above_ground() {
-        let mut n = Nav::new(Camera { distance: 500.0, tilt: 0.0, ..nav().cam }, SIZE);
+        let mut n = Nav::new(
+            Camera {
+                distance: 500.0,
+                tilt: 0.0,
+                ..nav().cam
+            },
+            SIZE,
+        );
         let ground = |_: f64, _: f64| Some(120.0);
         n.cam.target_h = 120.0;
         n.set_device([0.0, -1.0, 0.0, 0.0, 0.0, 0.0], 1.0);

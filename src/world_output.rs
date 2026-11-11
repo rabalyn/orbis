@@ -38,7 +38,9 @@ pub const PUMPED: usize = SOURCES;
 /// | Lignite, hard coal, gas, oil, other fossil | 0.95 | The same |
 /// | Nuclear | 0.95 | The same |
 /// | Pumped storage | 0.30 | Generation of a few hours a day |
-pub const MAX_FACTOR: [f32; KINDS] = [0.30, 0.55, 0.65, 0.90, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.30];
+pub const MAX_FACTOR: [f32; KINDS] = [
+    0.30, 0.55, 0.65, 0.90, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.30,
+];
 
 /// The source whose factor a plant's output takes: Ember's category, drawn as `MAPPING` draws it.
 pub fn group(s: Source) -> Source {
@@ -63,9 +65,21 @@ pub fn source_of(kind: usize) -> Source {
 /// those with a lower ceiling stopping at it; if even all at their ceilings cannot make the
 /// generation, each runs at its ceiling. 0 without capacity.
 pub fn factors(generation: f32, capacity: &[(usize, f32)]) -> Vec<f32> {
-    let made = |f: f32| capacity.iter().map(|&(k, c)| c.max(0.0) * f.min(MAX_FACTOR[k])).sum::<f32>();
-    let generation = if generation.is_finite() { generation.max(0.0) } else { 0.0 };
-    let top = capacity.iter().map(|&(k, _)| MAX_FACTOR[k]).fold(0.0, f32::max);
+    let made = |f: f32| {
+        capacity
+            .iter()
+            .map(|&(k, c)| c.max(0.0) * f.min(MAX_FACTOR[k]))
+            .sum::<f32>()
+    };
+    let generation = if generation.is_finite() {
+        generation.max(0.0)
+    } else {
+        0.0
+    };
+    let top = capacity
+        .iter()
+        .map(|&(k, _)| MAX_FACTOR[k])
+        .fold(0.0, f32::max);
     let f = if generation <= 0.0 {
         0.0
     } else if made(top) <= generation {
@@ -82,7 +96,10 @@ pub fn factors(generation: f32, capacity: &[(usize, f32)]) -> Vec<f32> {
         }
         (lo + hi) / 2.0
     };
-    capacity.iter().map(|&(k, c)| if c > 0.0 { f.min(MAX_FACTOR[k]) } else { 0.0 }).collect()
+    capacity
+        .iter()
+        .map(|&(k, c)| if c > 0.0 { f.min(MAX_FACTOR[k]) } else { 0.0 })
+        .collect()
 }
 
 /// One country's estimate for one month, in kW.
@@ -107,12 +124,20 @@ impl Estimate {
         let capacity = capacity.map(|c| c.max(0.0));
         let mut factor = [0.0; KINDS];
         for head in Source::ALL.into_iter().filter(|s| group(*s) == *s) {
-            let kinds: Vec<(usize, f32)> = (0..KINDS).filter(|&k| group(source_of(k)) == head).map(|k| (k, capacity[k])).collect();
+            let kinds: Vec<(usize, f32)> = (0..KINDS)
+                .filter(|&k| group(source_of(k)) == head)
+                .map(|k| (k, capacity[k]))
+                .collect();
             for (&(k, _), f) in kinds.iter().zip(factors(g[head as usize], &kinds)) {
                 factor[k] = f;
             }
         }
-        Estimate { basis, generation: g, capacity, factor }
+        Estimate {
+            basis,
+            generation: g,
+            capacity,
+            factor,
+        }
     }
 
     /// From a country's figures for the month.
@@ -194,17 +219,38 @@ mod tests {
         assert_eq!(one(100.0, k(Source::Gas), 0.0), 0.0);
         let e = Estimate::new(
             Basis::Month(2025, 6),
-            by(&[(Source::Nuclear, 700.0), (Source::Solar, 900.0), (Source::WindOnshore, 300.0), (Source::Gas, 50.0), (Source::Hydro, 1000.0)]),
+            by(&[
+                (Source::Nuclear, 700.0),
+                (Source::Solar, 900.0),
+                (Source::WindOnshore, 300.0),
+                (Source::Gas, 50.0),
+                (Source::Hydro, 1000.0),
+            ]),
             // Wind at sea shares Ember's wind; lignite and hard coal its coal; pumped storage its hydro.
-            kinds(&[(k(Source::Nuclear), 1000.0), (k(Source::Solar), 600.0), (k(Source::WindOnshore), 500.0), (k(Source::WindOffshore), 500.0), (k(Source::Lignite), 200.0), (k(Source::Hydro), 1000.0), (PUMPED, 1000.0)]),
+            kinds(&[
+                (k(Source::Nuclear), 1000.0),
+                (k(Source::Solar), 600.0),
+                (k(Source::WindOnshore), 500.0),
+                (k(Source::WindOffshore), 500.0),
+                (k(Source::Lignite), 200.0),
+                (k(Source::Hydro), 1000.0),
+                (PUMPED, 1000.0),
+            ]),
         );
         assert!((e.factor_of(k(Source::Nuclear)) - 0.7).abs() < 1e-5);
         assert_eq!(e.factor_of(k(Source::Solar)), 0.30, "capped");
         assert!((e.factor_of(k(Source::WindOffshore)) - 0.3).abs() < 1e-5);
-        assert_eq!(e.factor_of(k(Source::WindOnshore)), e.factor_of(k(Source::WindOffshore)));
+        assert_eq!(
+            e.factor_of(k(Source::WindOnshore)),
+            e.factor_of(k(Source::WindOffshore))
+        );
         // Hydro: pumped storage stops at its ceiling, the rest takes up the generation.
         assert_eq!(e.factor_of(PUMPED), 0.30);
-        assert!((e.factor_of(k(Source::Hydro)) - 0.70).abs() < 1e-4, "{}", e.factor_of(k(Source::Hydro)));
+        assert!(
+            (e.factor_of(k(Source::Hydro)) - 0.70).abs() < 1e-4,
+            "{}",
+            e.factor_of(k(Source::Hydro))
+        );
         // Coal plants without coal generation make nothing; gas without plants is all gap.
         assert_eq!(e.factor_of(k(Source::Lignite)), 0.0);
         let gap = e.gap();
@@ -218,19 +264,38 @@ mod tests {
         for s in 0..SOURCES {
             assert!((plants[s] + gap[s] - e.generation[s]).abs() < 1e-2, "{s}");
         }
-        assert!((e.plant_share().unwrap() - (700.0 + 180.0 + 300.0 + 1000.0) / 2950.0).abs() < 1e-4);
+        assert!(
+            (e.plant_share().unwrap() - (700.0 + 180.0 + 300.0 + 1000.0) / 2950.0).abs() < 1e-4
+        );
     }
 
     #[test]
     fn a_month_without_ember_months_takes_the_years_average() {
         let owid = Owid::bundled().unwrap();
-        let c = owid.countries().iter().find(|c| !c.has_monthly() && c.year(Series::Nuclear, 2020).is_some_and(|v| v > 0.0)).or_else(|| owid.countries().iter().find(|c| !c.has_monthly() && c.year(Series::Hydro, 2020).is_some_and(|v| v > 0.0))).unwrap();
+        let c = owid
+            .countries()
+            .iter()
+            .find(|c| !c.has_monthly() && c.year(Series::Nuclear, 2020).is_some_and(|v| v > 0.0))
+            .or_else(|| {
+                owid.countries().iter().find(|c| {
+                    !c.has_monthly() && c.year(Series::Hydro, 2020).is_some_and(|v| v > 0.0)
+                })
+            })
+            .unwrap();
         let f = Figures::of(c, (2020, 3)).unwrap();
         assert_eq!(f.basis, Basis::Year(2020));
-        let series = if c.year(Series::Nuclear, 2020).is_some_and(|v| v > 0.0) { (Series::Nuclear, Source::Nuclear) } else { (Series::Hydro, Source::Hydro) };
+        let series = if c.year(Series::Nuclear, 2020).is_some_and(|v| v > 0.0) {
+            (Series::Nuclear, Source::Nuclear)
+        } else {
+            (Series::Hydro, Source::Hydro)
+        };
         let average = year_kw(c.year(series.0, 2020).unwrap(), 2020);
         let e = Estimate::of(&f, kinds(&[(k(series.1), average * 4.0)]));
-        assert!((e.factor_of(k(series.1)) - 0.25).abs() < 1e-4, "{}", e.factor_of(k(series.1)));
+        assert!(
+            (e.factor_of(k(series.1)) - 0.25).abs() < 1e-4,
+            "{}",
+            e.factor_of(k(series.1))
+        );
         // With monthly figures, the month's own.
         let fr = owid.country("FRA").unwrap();
         let f = Figures::of(fr, (2025, 1)).unwrap();
@@ -243,6 +308,9 @@ mod tests {
     fn months_count_from_1900() {
         assert_eq!(year_month(0), (1900, 1));
         assert_eq!(year_month(month_index((2025, 12))), (2025, 12));
-        assert_eq!(month_index((2026, 9)), crate::energy::month_of(1_788_220_800.0));
+        assert_eq!(
+            month_index((2026, 9)),
+            crate::energy::month_of(1_788_220_800.0)
+        );
     }
 }

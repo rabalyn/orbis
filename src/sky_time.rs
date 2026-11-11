@@ -2,8 +2,8 @@
 //!
 //! Times are seconds since the Unix epoch (UTC, leap seconds ignored), as f64.
 
-use glam::DVec3;
 use crate::wtime::{SystemTime, UNIX_EPOCH};
+use glam::DVec3;
 use winit::keyboard::KeyCode;
 
 /// Sun directions closer than this (degrees) look the same, so no redraw is needed.
@@ -13,7 +13,17 @@ const SUN_DEG_PER_SECOND: f64 = 360.0 / 86_400.0;
 /// From this speed on, the picture changes fast enough to redraw every frame.
 const CONTINUOUS_RATE: f64 = 600.0;
 /// Speeds the faster and slower keys and the time dialog step through, in clock seconds per real second.
-pub const RATES: [f64; 9] = [1.0, 10.0, 60.0, 600.0, 3600.0, 21_600.0, 86_400.0, 604_800.0, 2_592_000.0];
+pub const RATES: [f64; 9] = [
+    1.0,
+    10.0,
+    60.0,
+    600.0,
+    3600.0,
+    21_600.0,
+    86_400.0,
+    604_800.0,
+    2_592_000.0,
+];
 
 /// How a speed of `RATES` reads in the time dialog.
 pub fn rate_name(rate: f64) -> String {
@@ -29,11 +39,16 @@ pub fn rate_name(rate: f64) -> String {
         (604_800.0, "1 week per second"),
         (2_592_000.0, "30 days per second"),
     ];
-    names.iter().find(|(r, _)| (r - rate).abs() < 1e-9).map_or_else(|| format!("x{rate}"), |(_, n)| n.to_string())
+    names
+        .iter()
+        .find(|(r, _)| (r - rate).abs() < 1e-9)
+        .map_or_else(|| format!("x{rate}"), |(_, n)| n.to_string())
 }
 
 pub fn wall_clock_now() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64())
 }
 
 /// Where the Sun stands: the direction to it in the Earth-fixed frame, and the point
@@ -56,7 +71,10 @@ impl Sun {
         let n = unix / 86_400.0 + 2_440_587.5 - 2_451_545.0;
         let gmst = (18.697_374_558 + 24.065_709_824_419_08 * n).rem_euclid(24.0) * 15.0;
         let longitude = wrap_pi(right_ascension - gmst.to_radians());
-        Self { declination, longitude }
+        Self {
+            declination,
+            longitude,
+        }
     }
 
     /// Unit vector towards the Sun in the Earth-fixed frame (x to 0° E on the equator, z north).
@@ -75,7 +93,8 @@ pub fn equatorial_of_date(unix: f64) -> (f64, f64) {
     let ecliptic_longitude =
         (mean_longitude + 1.915 * anomaly.sin() + 0.020 * (2.0 * anomaly).sin()).to_radians();
     let obliquity = (23.439 - 0.000_000_4 * n).to_radians();
-    let right_ascension = (obliquity.cos() * ecliptic_longitude.sin()).atan2(ecliptic_longitude.cos());
+    let right_ascension =
+        (obliquity.cos() * ecliptic_longitude.sin()).atan2(ecliptic_longitude.cos());
     let declination = (obliquity.sin() * ecliptic_longitude.sin()).asin();
     (right_ascension, declination)
 }
@@ -91,8 +110,12 @@ pub enum ClockKey {
     Faster,
     Slower,
     /// One hour, or a day when large.
-    StepBack { large: bool },
-    StepForward { large: bool },
+    StepBack {
+        large: bool,
+    },
+    StepForward {
+        large: bool,
+    },
     /// Back to the real time, running at normal speed.
     Now,
     /// Switches between sunlight and flat, always-lit imagery; the scene handles it.
@@ -113,7 +136,13 @@ pub struct Clock {
 
 impl Clock {
     pub fn new(time: f64, real: f64) -> Self {
-        Self { time, rate: 1.0, running: true, last_real: real, held: false }
+        Self {
+            time,
+            rate: 1.0,
+            running: true,
+            last_real: real,
+            held: false,
+        }
     }
 
     pub fn time(&self) -> f64 {
@@ -163,7 +192,11 @@ impl Clock {
 
     /// Runs forwards or backwards at the speed it had.
     pub fn play(&mut self, backwards: bool) {
-        self.rate = if backwards { -self.rate.abs() } else { self.rate.abs() };
+        self.rate = if backwards {
+            -self.rate.abs()
+        } else {
+            self.rate.abs()
+        };
         self.running = true;
     }
 
@@ -265,8 +298,15 @@ fn step_size(large: bool) -> f64 {
 }
 
 fn next_rate(rate: f64, faster: bool) -> f64 {
-    let at = RATES.iter().position(|r| *r >= rate.abs() - 1e-9).unwrap_or(0);
-    let at = if faster { (at + 1).min(RATES.len() - 1) } else { at.saturating_sub(1) };
+    let at = RATES
+        .iter()
+        .position(|r| *r >= rate.abs() - 1e-9)
+        .unwrap_or(0);
+    let at = if faster {
+        (at + 1).min(RATES.len() - 1)
+    } else {
+        at.saturating_sub(1)
+    };
     // The keys change the speed, not the direction.
     RATES[at].copysign(rate)
 }
@@ -342,7 +382,11 @@ pub fn parse_iso8601(text: &str) -> Option<f64> {
             Some(s) => s.parse().ok()?,
             None => 0.0,
         };
-        if f.next().is_some() || !(0.0..24.0).contains(&h) || !(0.0..60.0).contains(&min) || !(0.0..61.0).contains(&s) {
+        if f.next().is_some()
+            || !(0.0..24.0).contains(&h)
+            || !(0.0..60.0).contains(&min)
+            || !(0.0..61.0).contains(&s)
+        {
             return None;
         }
         seconds = h * 3600.0 + min * 60.0 + s;
@@ -352,7 +396,11 @@ pub fn parse_iso8601(text: &str) -> Option<f64> {
                 return None;
             }
             let zh: f64 = z[..2].parse().ok()?;
-            let zm: f64 = if z.len() == 4 { z[2..].parse().ok()? } else { 0.0 };
+            let zm: f64 = if z.len() == 4 {
+                z[2..].parse().ok()?
+            } else {
+                0.0
+            };
             offset = (zh * 3600.0 + zm * 60.0) * if sign == '+' { 1.0 } else { -1.0 };
         } else if !zone.is_empty() && !zone.eq_ignore_ascii_case("z") {
             return None;
@@ -379,7 +427,16 @@ mod tests {
         assert_eq!(at("2000-01-01T07:30-0430"), 946_728_000.0);
         assert_eq!(at("2000-01-01T12:00:00.5Z"), 946_728_000.5);
         assert_eq!(at("2024-02-29"), 1_709_164_800.0);
-        for bad in ["", "x", "2025-02-29", "2025-13-01", "2025-01-01T25:00", "2025-01-01T12", "2025-01-01T12:00Q", "2025-01"] {
+        for bad in [
+            "",
+            "x",
+            "2025-02-29",
+            "2025-13-01",
+            "2025-01-01T25:00",
+            "2025-01-01T12",
+            "2025-01-01T12:00Q",
+            "2025-01",
+        ] {
             assert!(parse_iso8601(bad).is_none(), "{bad}");
         }
     }
@@ -396,9 +453,17 @@ mod tests {
     fn sun_at_the_year_2000_epoch() {
         // Astronomical Almanac 2000: on 1 January at 12 UT the Sun's declination is -23.0°.
         let s = Sun::at(at("2000-01-01T12:00:00Z"));
-        assert!((s.declination.to_degrees() + 23.0).abs() < 0.1, "{}", s.declination.to_degrees());
+        assert!(
+            (s.declination.to_degrees() + 23.0).abs() < 0.1,
+            "{}",
+            s.declination.to_degrees()
+        );
         // Equation of time is about -3.2 minutes then: the Sun is 0.8° east of Greenwich.
-        assert!((s.longitude.to_degrees() - 0.8).abs() < 0.2, "{}", s.longitude.to_degrees());
+        assert!(
+            (s.longitude.to_degrees() - 0.8).abs() < 0.2,
+            "{}",
+            s.longitude.to_degrees()
+        );
     }
 
     #[test]
@@ -422,7 +487,11 @@ mod tests {
         // At 12:00 UTC the Sun is over Greenwich plus the equation of time: about -1.7 min on
         // 21 June (Sun 0.4° east of Greenwich), +1.9 min on 21 December (0.5° west), and
         // +16.4 min on 3 November (4.1° west).
-        for (when, lon) in [("2026-06-21T12:00:00Z", 0.43), ("2026-12-21T12:00:00Z", -0.47), ("2026-11-03T12:00:00Z", -4.1)] {
+        for (when, lon) in [
+            ("2026-06-21T12:00:00Z", 0.43),
+            ("2026-12-21T12:00:00Z", -0.47),
+            ("2026-11-03T12:00:00Z", -4.1),
+        ] {
             let l = Sun::at(at(when)).longitude.to_degrees();
             assert!((l - lon).abs() < 0.3, "{when}: {l}");
         }
@@ -494,7 +563,10 @@ mod tests {
         assert!(!c.is_running(), "stepping leaves a paused clock paused");
         c.set_rate(60.0);
         c.apply(ClockKey::Now, 5_000_000.0);
-        assert_eq!((c.time(), c.rate(), c.is_running()), (5_000_000.0, 1.0, true));
+        assert_eq!(
+            (c.time(), c.rate(), c.is_running()),
+            (5_000_000.0, 1.0, true)
+        );
     }
 
     #[test]
@@ -516,8 +588,14 @@ mod tests {
     #[test]
     fn keys_map_to_controls() {
         assert_eq!(key_for(KeyCode::Space, false), Some(ClockKey::PauseResume));
-        assert_eq!(key_for(KeyCode::Period, true), Some(ClockKey::StepForward { large: true }));
-        assert_eq!(key_for(KeyCode::Comma, false), Some(ClockKey::StepBack { large: false }));
+        assert_eq!(
+            key_for(KeyCode::Period, true),
+            Some(ClockKey::StepForward { large: true })
+        );
+        assert_eq!(
+            key_for(KeyCode::Comma, false),
+            Some(ClockKey::StepBack { large: false })
+        );
         assert_eq!(key_for(KeyCode::KeyS, false), Some(ClockKey::ToggleSun));
         assert_eq!(key_for(KeyCode::KeyT, false), Some(ClockKey::Now));
         assert_eq!(key_for(KeyCode::KeyX, false), None);
@@ -552,7 +630,11 @@ mod tests {
             c.release();
             assert_eq!((c.is_running(), c.rate()), (running, rate));
             c.advance(40.0);
-            assert_eq!(c.time(), 5000.0 + if running { 10.0 * rate } else { 0.0 }, "{before}");
+            assert_eq!(
+                c.time(),
+                5000.0 + if running { 10.0 * rate } else { 0.0 },
+                "{before}"
+            );
         }
     }
 

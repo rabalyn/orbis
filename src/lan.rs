@@ -5,11 +5,11 @@
 use crate::fetcher::{FetchError, Fetcher};
 use crate::geo::TileKey;
 use crate::sources::{self, TileSource};
+use crate::wtime::{Duration, Instant, SystemTime};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
-use crate::wtime::{Duration, Instant, SystemTime};
 
 pub const TCP_PORT: u16 = 47813;
 pub const DISCOVERY_PORT: u16 = 47814;
@@ -86,7 +86,11 @@ fn route(path: &str) -> Route {
     let (Some(z), Some(x), Some(y)) = (number(z), number(x), number(y)) else {
         return Route::NotFound;
     };
-    if z < source.min_z as u32 || z > source.max_z as u32 || x as u64 >= source.grid.columns(z as u8) || y as u64 >= source.grid.rows(z as u8) {
+    if z < source.min_z as u32
+        || z > source.max_z as u32
+        || x as u64 >= source.grid.columns(z as u8)
+        || y as u64 >= source.grid.rows(z as u8)
+    {
         return Route::NotFound;
     }
     Route::Tile(source, TileKey::new(z as u8, x, y))
@@ -121,15 +125,29 @@ fn handle(mut stream: TcpStream, peer: IpAddr, fetcher: &Fetcher, mode: Mode) {
     let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
     let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
     if !is_private(peer) {
-        respond(&mut stream, "403 Forbidden", "", b"private networks only\n", false);
+        respond(
+            &mut stream,
+            "403 Forbidden",
+            "",
+            b"private networks only\n",
+            false,
+        );
         return;
     }
-    let Some(head) = read_head(&mut stream) else { return };
+    let Some(head) = read_head(&mut stream) else {
+        return;
+    };
     let mut request = head.lines().next().unwrap_or("").split(' ');
     let (method, path) = (request.next().unwrap_or(""), request.next().unwrap_or(""));
     let head_only = method == "HEAD";
     if method != "GET" && !head_only {
-        respond(&mut stream, "405 Method Not Allowed", "Allow: GET, HEAD\r\n", b"", false);
+        respond(
+            &mut stream,
+            "405 Method Not Allowed",
+            "Allow: GET, HEAD\r\n",
+            b"",
+            false,
+        );
         return;
     }
     match route(path) {
@@ -160,10 +178,22 @@ fn handle(mut stream: TcpStream, peer: IpAddr, fetcher: &Fetcher, mode: Mode) {
                         .duration_since(SystemTime::now())
                         .map_or(1, |d| d.as_secs().max(1));
                     let headers = format!("Retry-After: {wait}\r\n");
-                    respond(&mut stream, "503 Service Unavailable", &headers, b"", head_only);
+                    respond(
+                        &mut stream,
+                        "503 Service Unavailable",
+                        &headers,
+                        b"",
+                        head_only,
+                    );
                 }
                 Some(Err(FetchError::Transient | FetchError::Busy(_))) => {
-                    respond(&mut stream, "503 Service Unavailable", "Retry-After: 5\r\n", b"", head_only);
+                    respond(
+                        &mut stream,
+                        "503 Service Unavailable",
+                        "Retry-After: 5\r\n",
+                        b"",
+                        head_only,
+                    );
                 }
                 None => respond(&mut stream, "504 Gateway Timeout", "", b"", head_only),
             }
@@ -188,7 +218,9 @@ pub fn serve(listener: TcpListener, fetcher: Arc<Fetcher>, mode: Mode) {
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
-                    let Ok(peer) = stream.peer_addr() else { continue };
+                    let Ok(peer) = stream.peer_addr() else {
+                        continue;
+                    };
                     if tx.send((stream, peer.ip())).is_err() {
                         return;
                     }
@@ -204,7 +236,11 @@ pub fn serve(listener: TcpListener, fetcher: Arc<Fetcher>, mode: Mode) {
 }
 
 fn beacon_text(id: u64, port: u16, mode: Mode) -> String {
-    let role = if mode == Mode::Dedicated { "dedicated" } else { "shared" };
+    let role = if mode == Mode::Dedicated {
+        "dedicated"
+    } else {
+        "shared"
+    };
     format!("orbis-cache/1 {id} {port} {role}")
 }
 
@@ -253,7 +289,9 @@ fn discovery_socket() -> std::io::Result<UdpSocket> {
 /// Announces this server on the LAN every few seconds.
 pub fn announce(id: u64, port: u16, mode: Mode) {
     std::thread::spawn(move || {
-        let Ok(socket) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) else { return };
+        let Ok(socket) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) else {
+            return;
+        };
         if socket.set_broadcast(true).is_err() {
             return;
         }
@@ -279,7 +317,9 @@ pub fn discover(id: u64, serving: Option<(u16, Mode)>, looking: Option<Arc<Fetch
     };
     if let Some(fetcher) = &looking {
         // Answers take a moment, and downloading meanwhile would waste the point of sharing.
-        fetcher.peers.hold_downloads_until(Instant::now() + DISCOVERY_GRACE);
+        fetcher
+            .peers
+            .hold_downloads_until(Instant::now() + DISCOVERY_GRACE);
         let _ = socket.send_to(QUERY.as_bytes(), (Ipv4Addr::BROADCAST, DISCOVERY_PORT));
     }
     std::thread::spawn(move || {
@@ -292,16 +332,22 @@ pub fn discover(id: u64, serving: Option<(u16, Mode)>, looking: Option<Arc<Fetch
             if !is_private(from.ip()) {
                 continue;
             }
-            let Some(text) = std::str::from_utf8(&buffer[..n]).ok() else { continue };
+            let Some(text) = std::str::from_utf8(&buffer[..n]).ok() else {
+                continue;
+            };
             if text == QUERY {
                 if let Some((port, mode)) = serving {
                     let _ = socket.send_to(beacon_text(id, port, mode).as_bytes(), from);
                 }
                 continue;
             }
-            let Some((sender, port, dedicated)) = parse_beacon(text) else { continue };
+            let Some((sender, port, dedicated)) = parse_beacon(text) else {
+                continue;
+            };
             if let Some(fetcher) = looking.as_ref().filter(|_| sender != id) {
-                fetcher.peers.heard(format!("{}:{port}", from.ip()), dedicated, Instant::now());
+                fetcher
+                    .peers
+                    .heard(format!("{}:{port}", from.ip()), dedicated, Instant::now());
             }
         }
     });
@@ -338,7 +384,9 @@ mod tests {
 
     #[test]
     fn paths_become_known_sources_and_numbers_only() {
-        let Route::Tile(s, k) = route("/tiles/eox/3/2/1") else { panic!() };
+        let Route::Tile(s, k) = route("/tiles/eox/3/2/1") else {
+            panic!()
+        };
         assert_eq!((s.id, k), ("eox", TileKey::new(3, 2, 1)));
         assert_eq!(route("/status"), Route::Status);
         assert!(matches!(route("/tiles/eox/3/2/1?x=y"), Route::Tile(..)));
@@ -365,7 +413,17 @@ mod tests {
 
     #[test]
     fn only_private_networks_are_answered() {
-        for ip in ["10.1.2.3", "172.16.0.1", "192.168.1.5", "127.0.0.1", "169.254.1.1", "::1", "fd00::1", "fe80::1", "::ffff:192.168.0.1"] {
+        for ip in [
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.5",
+            "127.0.0.1",
+            "169.254.1.1",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+            "::ffff:192.168.0.1",
+        ] {
             assert!(is_private(ip.parse().unwrap()), "{ip}");
         }
         for ip in ["8.8.8.8", "172.32.0.1", "2001:db8::1", "::ffff:8.8.8.8"] {
@@ -382,15 +440,26 @@ mod tests {
         let (daemon, port) = start(Mode::Dedicated, Peers::default(), "daemon");
         // Two machines on the LAN, each with an empty cache of its own, ask the daemon.
         for tag in ["lan-a", "lan-b"] {
-            let client = Fetcher::new(temp_cache(tag), Peers::new(vec![format!("127.0.0.1:{port}")]), false);
+            let client = Fetcher::new(
+                temp_cache(tag),
+                Peers::new(vec![format!("127.0.0.1:{port}")]),
+                false,
+            );
             assert_eq!(client.fetch(source, K).unwrap(), b"tile-bytes", "{tag}");
             let t = client.traffic();
-            assert_eq!((t.lan_hits, t.downloads), (1, 0), "{tag} got it from the LAN, not the server");
+            assert_eq!(
+                (t.lan_hits, t.downloads),
+                (1, 0),
+                "{tag} got it from the LAN, not the server"
+            );
         }
         // The daemon downloaded it once and answered the second machine from its cache.
         assert_eq!(server.count(), 1);
         assert_eq!(daemon.traffic().downloads, 1);
-        assert_eq!(daemon.cache().get(&source.cache_name(K)).as_deref(), Some(&b"tile-bytes"[..]));
+        assert_eq!(
+            daemon.cache().get(&source.cache_name(K)).as_deref(),
+            Some(&b"tile-bytes"[..])
+        );
     }
 
     /// Puts a tile into a machine's cache under a real source.
@@ -402,7 +471,11 @@ mod tests {
     fn clients_get_tiles_from_the_lan_instead_of_downloading() {
         let (daemon, port) = start(Mode::Dedicated, Peers::default(), "lan-server");
         seed(&daemon, &sources::TERRAIN, K, b"from-lan");
-        let client = Fetcher::new(temp_cache("lan-client"), Peers::new(vec![format!("127.0.0.1:{port}")]), false);
+        let client = Fetcher::new(
+            temp_cache("lan-client"),
+            Peers::new(vec![format!("127.0.0.1:{port}")]),
+            false,
+        );
         assert_eq!(client.fetch(&sources::TERRAIN, K).unwrap(), b"from-lan");
         let t = client.traffic();
         assert_eq!((t.lan_hits, t.downloads), (1, 0));
@@ -427,7 +500,10 @@ mod tests {
         let (full, full_port) = start(Mode::SharedApp, Peers::default(), "gap-b");
         seed(&full, &sources::TERRAIN, K, b"second");
         let _ = empty;
-        let peers = Peers::new(vec![format!("127.0.0.1:{empty_port}"), format!("127.0.0.1:{full_port}")]);
+        let peers = Peers::new(vec![
+            format!("127.0.0.1:{empty_port}"),
+            format!("127.0.0.1:{full_port}"),
+        ]);
         let client = Fetcher::new(temp_cache("gap-client"), peers, false);
         assert_eq!(client.fetch(&sources::TERRAIN, K).unwrap(), b"second");
     }
@@ -437,7 +513,11 @@ mod tests {
         let (daemon, port) = start(Mode::Dedicated, Peers::default(), "missing-server");
         daemon.cache().mark_missing(&sources::TERRAIN.cache_name(K));
         let cache = temp_cache("missing-client");
-        let client = Fetcher::new(cache.clone(), Peers::new(vec![format!("127.0.0.1:{port}")]), false);
+        let client = Fetcher::new(
+            cache.clone(),
+            Peers::new(vec![format!("127.0.0.1:{port}")]),
+            false,
+        );
         assert_eq!(client.fetch(&sources::TERRAIN, K), Err(FetchError::Missing));
         assert!(cache.is_known_missing(&sources::TERRAIN.cache_name(K)));
     }
@@ -450,10 +530,20 @@ mod tests {
         daemon.servers.failed(&host, f, SystemTime::now());
         let (status, whole) = get(port, "/tiles/mapterhorn/3/2/1");
         assert!(status.contains("503"), "{status}");
-        assert!(whole.to_ascii_lowercase().contains("retry-after: 8") || whole.contains("Retry-After: 89"), "{whole}");
-        let client = Fetcher::new(temp_cache("pause-client"), Peers::new(vec![format!("127.0.0.1:{port}")]), false);
+        assert!(
+            whole.to_ascii_lowercase().contains("retry-after: 8")
+                || whole.contains("Retry-After: 89"),
+            "{whole}"
+        );
+        let client = Fetcher::new(
+            temp_cache("pause-client"),
+            Peers::new(vec![format!("127.0.0.1:{port}")]),
+            false,
+        );
         let result = client.fetch(&sources::TERRAIN, K);
-        let Err(FetchError::Paused(until)) = result else { panic!("{result:?}") };
+        let Err(FetchError::Paused(until)) = result else {
+            panic!("{result:?}")
+        };
         assert!(until.duration_since(SystemTime::now()).unwrap() > Duration::from_secs(800));
     }
 
@@ -464,11 +554,18 @@ mod tests {
         drop(listener);
         let (alive, port) = start(Mode::SharedApp, Peers::default(), "skip-alive");
         seed(&alive, &sources::TERRAIN, K, b"alive");
-        let peers = Peers::new(vec![format!("127.0.0.1:{dead}"), format!("127.0.0.1:{port}")]);
+        let peers = Peers::new(vec![
+            format!("127.0.0.1:{dead}"),
+            format!("127.0.0.1:{port}"),
+        ]);
         let client = Fetcher::new(temp_cache("skip-client"), peers, false);
         assert_eq!(client.fetch(&sources::TERRAIN, K).unwrap(), b"alive");
         let list = client.peers_for_test();
-        assert_eq!(list, [format!("127.0.0.1:{port}")], "the dead one is left out");
+        assert_eq!(
+            list,
+            [format!("127.0.0.1:{port}")],
+            "the dead one is left out"
+        );
     }
 
     #[test]
@@ -478,7 +575,10 @@ mod tests {
         let (status, _) = raw(port, "POST /tiles/eox/3/2/1 HTTP/1.1\r\n\r\n");
         assert!(status.contains("405"), "{status}");
         let (status, whole) = raw(port, "HEAD /tiles/eox/3/2/1 HTTP/1.1\r\n\r\n");
-        assert!(status.contains("200") && !whole.contains("cached"), "{whole}");
+        assert!(
+            status.contains("200") && !whole.contains("cached"),
+            "{whole}"
+        );
     }
 
     #[test]
@@ -498,16 +598,31 @@ mod tests {
     fn status_page_answers_with_json() {
         let (_app, port) = start(Mode::SharedApp, Peers::default(), "statuspage");
         let (status, whole) = get(port, "/status");
-        assert!(status.contains("200") && whole.contains("\"traffic\""), "{whole}");
+        assert!(
+            status.contains("200") && whole.contains("\"traffic\""),
+            "{whole}"
+        );
     }
 
     #[test]
     fn beacons_round_trip_and_garbage_is_ignored() {
         let text = beacon_text(42, 47813, Mode::Dedicated);
         assert_eq!(parse_beacon(&text), Some((42, 47813, true)));
-        assert_eq!(parse_beacon(&beacon_text(7, 9, Mode::SharedApp)), Some((7, 9, false)));
-        for bad in ["", "hello", "orbis-cache/1", QUERY, "orbis-cache/1 x 1 shared", "orbis-cache/1 1 0 shared",
-            "orbis-cache/1 1 2 root", "orbis-cache/1 1 2 shared more", "orbis-cache/2 1 2 shared"] {
+        assert_eq!(
+            parse_beacon(&beacon_text(7, 9, Mode::SharedApp)),
+            Some((7, 9, false))
+        );
+        for bad in [
+            "",
+            "hello",
+            "orbis-cache/1",
+            QUERY,
+            "orbis-cache/1 x 1 shared",
+            "orbis-cache/1 1 0 shared",
+            "orbis-cache/1 1 2 root",
+            "orbis-cache/1 1 2 shared more",
+            "orbis-cache/2 1 2 shared",
+        ] {
             assert_eq!(parse_beacon(bad), None, "{bad}");
         }
     }
@@ -519,6 +634,8 @@ mod tests {
         peers.heard("10.0.0.9:1".into(), false, now);
         peers.heard("10.0.0.8:1".into(), true, now);
         assert_eq!(peers.list_for_test(now), ["10.0.0.8:1", "10.0.0.9:1"]);
-        assert!(peers.list_for_test(now + Duration::from_secs(30)).is_empty());
+        assert!(peers
+            .list_for_test(now + Duration::from_secs(30))
+            .is_empty());
     }
 }

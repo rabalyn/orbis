@@ -57,7 +57,12 @@ impl SavedPlace {
 }
 
 fn clean_name(name: &str) -> String {
-    name.chars().filter(|c| !c.is_control()).take(MAX_NAME_CHARS).collect::<String>().trim().to_string()
+    name.chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_NAME_CHARS)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// A name made from the position, for a place saved without one.
@@ -79,7 +84,11 @@ pub fn default_name(body_name: &str, earth: bool, lat: f64, lon: f64) -> String 
 
 /// The folder and file for the current user.
 pub fn default_path() -> Option<PathBuf> {
-    Some(crate::paths::config_dir()?.join("orbis").join("places.json"))
+    Some(
+        crate::paths::config_dir()?
+            .join("orbis")
+            .join("places.json"),
+    )
 }
 
 pub struct Store {
@@ -94,13 +103,23 @@ pub struct Store {
 impl Store {
     /// A store that is never written, for a machine without a configuration folder or for tests.
     pub fn in_memory() -> Self {
-        Self { path: None, places: Vec::new(), locked: false, notice: None }
+        Self {
+            path: None,
+            places: Vec::new(),
+            locked: false,
+            notice: None,
+        }
     }
 
     /// Reads the file. A missing file is an empty list; one that cannot be understood is moved
     /// to a `.bak` next to it and reported.
     pub fn load(path: PathBuf) -> Self {
-        let mut store = Self { path: Some(path.clone()), places: Vec::new(), locked: false, notice: None };
+        let mut store = Self {
+            path: Some(path.clone()),
+            places: Vec::new(),
+            locked: false,
+            notice: None,
+        };
         let bytes = match read_limited(&path) {
             Ok(Some(b)) => b,
             Ok(None) => return store,
@@ -115,10 +134,17 @@ impl Store {
 
     fn corrupt(mut self, path: &Path, why: &str) -> Self {
         let mut backup = path.to_path_buf();
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let mut chosen = None;
         for n in 0..10 {
-            backup.set_file_name(if n == 0 { format!("{name}.bak") } else { format!("{name}.bak.{n}") });
+            backup.set_file_name(if n == 0 {
+                format!("{name}.bak")
+            } else {
+                format!("{name}.bak.{n}")
+            });
             if !backup.exists() {
                 chosen = Some(backup.clone());
                 break;
@@ -167,13 +193,16 @@ impl Store {
 
     /// Writes the whole list to a temporary file and renames it over the real one.
     pub fn save(&self) -> Result<(), String> {
-        let Some(path) = &self.path else { return Ok(()) };
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
         if self.locked {
             return Err("Saved places are not written because the file could not be read.".into());
         }
         let doc = json!({ "version": VERSION, "places": self.places.iter().map(SavedPlace::to_json).collect::<Vec<_>>() });
         let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
-        write_atomically(path, text.as_bytes()).map_err(|e| format!("Saved places could not be written: {e}"))
+        write_atomically(path, text.as_bytes())
+            .map_err(|e| format!("Saved places could not be written: {e}"))
     }
 }
 
@@ -196,11 +225,16 @@ fn parse(bytes: &[u8]) -> Result<Vec<SavedPlace>, String> {
         Some(_) => return Err("written by a newer version".into()),
         None => return Err("no version".into()),
     }
-    let list = doc.get("places").and_then(Value::as_array).ok_or("no list of places")?;
+    let list = doc
+        .get("places")
+        .and_then(Value::as_array)
+        .ok_or("no list of places")?;
     if list.len() > MAX_PLACES {
         return Err("too many places".into());
     }
-    list.iter().map(|v| SavedPlace::from_json(v).ok_or_else(|| "an entry is damaged".to_string())).collect()
+    list.iter()
+        .map(|v| SavedPlace::from_json(v).ok_or_else(|| "an entry is damaged".to_string()))
+        .collect()
 }
 
 pub(crate) fn write_atomically(path: &Path, data: &[u8]) -> std::io::Result<()> {
@@ -284,7 +318,11 @@ impl Picker {
                 Pick::None
             }
             Key::Up | Key::Down if len > 0 => {
-                self.selected = if key == Key::Up { (self.selected + len - 1) % len } else { (self.selected + 1) % len };
+                self.selected = if key == Key::Up {
+                    (self.selected + len - 1) % len
+                } else {
+                    (self.selected + 1) % len
+                };
                 Pick::None
             }
             Key::Enter if self.selected < len => Pick::Fly(self.selected),
@@ -298,7 +336,14 @@ impl Picker {
     }
 
     /// The panel's text, for `len` rows that `row` makes on demand.
-    pub fn panel_text(&self, title: &str, len: usize, row: impl Fn(usize) -> String, empty: &str, hint: &str) -> String {
+    pub fn panel_text(
+        &self,
+        title: &str,
+        len: usize,
+        row: impl Fn(usize) -> String,
+        empty: &str,
+        hint: &str,
+    ) -> String {
         if !self.open {
             return String::new();
         }
@@ -308,7 +353,10 @@ impl Picker {
             s.push_str(empty);
         }
         // A window of rows that keeps the chosen one in view.
-        let first = self.selected.saturating_sub(ROWS - 1).min(len.saturating_sub(ROWS));
+        let first = self
+            .selected
+            .saturating_sub(ROWS - 1)
+            .min(len.saturating_sub(ROWS));
         for i in first..len.min(first + ROWS) {
             let mark = if i == self.selected { '>' } else { ' ' };
             s.push_str(&format!("\n{mark} {}", shorten(&row(i), NAME_COLUMNS)));
@@ -343,7 +391,15 @@ mod tests {
     }
 
     fn place(name: &str) -> SavedPlace {
-        SavedPlace { name: name.into(), body: "earth".into(), lat: 0.8, lon: 0.2, distance: 12_345.0, heading: 1.0, tilt: 0.5 }
+        SavedPlace {
+            name: name.into(),
+            body: "earth".into(),
+            lat: 0.8,
+            lon: 0.2,
+            distance: 12_345.0,
+            heading: 1.0,
+            tilt: 0.5,
+        }
     }
 
     #[test]
@@ -353,13 +409,24 @@ mod tests {
         let mut store = Store::load(path.clone());
         assert!(store.places().is_empty() && store.notice.is_none());
         store.add(place("Home")).unwrap();
-        store.add(SavedPlace { body: "moon".into(), ..place("Tycho") }).unwrap();
+        store
+            .add(SavedPlace {
+                body: "moon".into(),
+                ..place("Tycho")
+            })
+            .unwrap();
         let again = Store::load(path.clone());
         assert!(again.notice.is_none());
         assert_eq!(again.places().len(), 2);
         let p = &again.places()[0];
         assert_eq!(p.name, "Home");
-        for (a, b) in [(p.lat, 0.8), (p.lon, 0.2), (p.heading, 1.0), (p.tilt, 0.5), (p.distance, 12_345.0)] {
+        for (a, b) in [
+            (p.lat, 0.8),
+            (p.lon, 0.2),
+            (p.heading, 1.0),
+            (p.tilt, 0.5),
+            (p.distance, 12_345.0),
+        ] {
             assert!((a - b).abs() < 1e-9);
         }
         assert_eq!(again.places()[1].body, "moon");
@@ -371,17 +438,30 @@ mod tests {
 
     #[test]
     fn a_damaged_file_is_kept_and_reported() {
-        for (n, content) in ["{ not json", r#"{"version":1,"places":[{"name":"x"}]}"#, r#"{"version":7,"places":[]}"#].iter().enumerate() {
+        for (n, content) in [
+            "{ not json",
+            r#"{"version":1,"places":[{"name":"x"}]}"#,
+            r#"{"version":7,"places":[]}"#,
+        ]
+        .iter()
+        .enumerate()
+        {
             let d = dir(&format!("bad{n}"));
             let path = d.join("places.json");
             fs::write(&path, content).unwrap();
             let mut store = Store::load(path.clone());
             assert!(store.places().is_empty());
             assert!(store.notice.as_deref().unwrap().contains("places.json.bak"));
-            assert_eq!(fs::read_to_string(d.join("places.json.bak")).unwrap(), *content);
+            assert_eq!(
+                fs::read_to_string(d.join("places.json.bak")).unwrap(),
+                *content
+            );
             store.add(place("New")).unwrap();
             assert_eq!(Store::load(path).places().len(), 1);
-            assert_eq!(fs::read_to_string(d.join("places.json.bak")).unwrap(), *content);
+            assert_eq!(
+                fs::read_to_string(d.join("places.json.bak")).unwrap(),
+                *content
+            );
         }
     }
 
@@ -392,8 +472,14 @@ mod tests {
         fs::write(d.join("places.json.bak"), "first").unwrap();
         fs::write(&path, "second").unwrap();
         Store::load(path);
-        assert_eq!(fs::read_to_string(d.join("places.json.bak")).unwrap(), "first");
-        assert_eq!(fs::read_to_string(d.join("places.json.bak.1")).unwrap(), "second");
+        assert_eq!(
+            fs::read_to_string(d.join("places.json.bak")).unwrap(),
+            "first"
+        );
+        assert_eq!(
+            fs::read_to_string(d.join("places.json.bak.1")).unwrap(),
+            "second"
+        );
     }
 
     #[test]
@@ -407,7 +493,10 @@ mod tests {
     fn names_are_cleaned_and_defaults_are_made_from_the_position() {
         assert_eq!(clean_name("  a\nb\t "), "ab");
         assert_eq!(clean_name(&"x".repeat(500)).chars().count(), MAX_NAME_CHARS);
-        assert_eq!(default_name("Earth", true, 0.8_f64, -0.2_f64), "45.8366°N 11.4592°W");
+        assert_eq!(
+            default_name("Earth", true, 0.8_f64, -0.2_f64),
+            "45.8366°N 11.4592°W"
+        );
         assert!(default_name("Mars", false, 0.0, 0.0).starts_with("Mars 0.0000°N"));
     }
 
@@ -422,7 +511,11 @@ mod tests {
         assert_eq!(p.key(Key::Up, 3), Pick::None);
         assert_eq!(p.key(Key::Enter, 3), Pick::Fly(2), "wraps round");
         assert_eq!(p.key(Key::Delete, 3), Pick::Delete(2));
-        assert_eq!(p.key(Key::Enter, 2), Pick::Fly(1), "the choice stays inside the shorter list");
+        assert_eq!(
+            p.key(Key::Enter, 2),
+            Pick::Fly(1),
+            "the choice stays inside the shorter list"
+        );
         assert_eq!(p.key(Key::Enter, 0), Pick::None);
         p.key(Key::Escape, 2);
         assert!(!p.is_open());
@@ -440,6 +533,8 @@ mod tests {
         assert!(text.contains("> row 20"));
         assert!(!text.contains("row 0\n"));
         assert!(text.contains("(30 in all)") && text.ends_with("hint"));
-        assert!(p.panel_text("T", 0, |_| String::new(), "Nothing here.", "h").contains("Nothing here."));
+        assert!(p
+            .panel_text("T", 0, |_| String::new(), "Nothing here.", "h")
+            .contains("Nothing here."));
     }
 }

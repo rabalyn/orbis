@@ -4,7 +4,9 @@
 use crate::camera::{Basis, FOV_Y};
 use crate::geo::{ecef_to_geodetic, enu, geodetic_to_ecef, ray_ellipsoid};
 use crate::vector::{Label, LabelStyle, NATIONAL_CAPITAL_MARK, STATE_CAPITAL_MARK};
-use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, SwashCache, Weight};
+use cosmic_text::{
+    Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, SwashCache, Weight,
+};
 use glam::{DVec2, DVec3};
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -34,7 +36,13 @@ pub struct Appearance {
 
 pub fn appearance(style: LabelStyle) -> Appearance {
     const DARK: [f32; 3] = [0.02, 0.03, 0.05];
-    let a = |size, bold, italic, fill, halo| Appearance { size, bold, italic, fill, halo };
+    let a = |size, bold, italic, fill, halo| Appearance {
+        size,
+        bold,
+        italic,
+        fill,
+        halo,
+    };
     match style {
         LabelStyle::Country => a(17.0, true, false, [1.0, 1.0, 1.0], DARK),
         LabelStyle::State => a(13.0, false, false, [0.86, 0.84, 0.95], DARK),
@@ -106,7 +114,15 @@ fn rasterize(fonts: &mut FontSystem, cache: &mut SwashCache, key: TextKey) -> Op
             let big = size * 1.5;
             let mark = attrs.clone().metrics(Metrics::new(big, size * 1.25));
             let mut buf = [0u8; 4];
-            buffer.set_rich_text([(&*STATE_CAPITAL_MARK.encode_utf8(&mut buf), mark), (rest, attrs.clone())], &attrs, Shaping::Advanced, None);
+            buffer.set_rich_text(
+                [
+                    (&*STATE_CAPITAL_MARK.encode_utf8(&mut buf), mark),
+                    (rest, attrs.clone()),
+                ],
+                &attrs,
+                Shaping::Advanced,
+                None,
+            );
         }
         None => buffer.set_text(&key.text, &attrs, Shaping::Advanced, None),
     }
@@ -122,17 +138,22 @@ fn rasterize(fonts: &mut FontSystem, cache: &mut SwashCache, key: TextKey) -> Op
         return None;
     }
     let mut coverage = vec![0u8; width * height];
-    buffer.draw(fonts, cache, Color::rgb(255, 255, 255), |x, y, w, h, color| {
-        for py in y..y + h as i32 {
-            for px in x..x + w as i32 {
-                let (cx, cy) = (px + border, py + border);
-                if cx >= 0 && cy >= 0 && (cx as usize) < width && (cy as usize) < height {
-                    let cell = &mut coverage[cy as usize * width + cx as usize];
-                    *cell = (*cell).max(color.a());
+    buffer.draw(
+        fonts,
+        cache,
+        Color::rgb(255, 255, 255),
+        |x, y, w, h, color| {
+            for py in y..y + h as i32 {
+                for px in x..x + w as i32 {
+                    let (cx, cy) = (px + border, py + border);
+                    if cx >= 0 && cy >= 0 && (cx as usize) < width && (cy as usize) < height {
+                        let cell = &mut coverage[cy as usize * width + cx as usize];
+                        *cell = (*cell).max(color.a());
+                    }
                 }
             }
-        }
-    });
+        },
+    );
     Some(Mask {
         key,
         width: width as u32,
@@ -160,7 +181,9 @@ fn page_fonts() -> FontSystem {
         // Arrows and shapes, such as the mark before a peak's name.
         include_bytes!("../web/fonts/NotoSansSymbols2-Subset.ttf"),
     ];
-    let sources = fonts.into_iter().map(|f| cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(f)));
+    let sources = fonts
+        .into_iter()
+        .map(|f| cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(f)));
     let mut system = FontSystem::new_with_fonts(sources);
     system.db_mut().set_sans_serif_family("Noto Sans");
     system
@@ -177,7 +200,11 @@ pub struct TextWorker {
 #[cfg(target_arch = "wasm32")]
 impl TextWorker {
     pub fn new() -> Self {
-        Self { queue: Default::default(), fonts: None, cache: SwashCache::new() }
+        Self {
+            queue: Default::default(),
+            fonts: None,
+            cache: SwashCache::new(),
+        }
     }
 
     pub fn request(&mut self, key: TextKey) {
@@ -213,7 +240,11 @@ impl TextWorker {
                 }
             }
         });
-        Self { requests, results, pending: 0 }
+        Self {
+            requests,
+            results,
+            pending: 0,
+        }
     }
 
     pub fn request(&mut self, key: TextKey) {
@@ -244,7 +275,12 @@ pub struct Shelves {
 
 impl Shelves {
     pub fn new(size: u32) -> Self {
-        Self { size, x: 0, y: 0, row: 0 }
+        Self {
+            size,
+            x: 0,
+            y: 0,
+            row: 0,
+        }
     }
 
     pub fn alloc(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
@@ -322,7 +358,10 @@ impl Screen {
             rel.dot(self.basis.right) / (depth * t * aspect),
             rel.dot(self.basis.up) / (depth * t),
         );
-        Some(DVec2::new((ndc.x + 1.0) / 2.0 * self.size.x, (1.0 - ndc.y) / 2.0 * self.size.y))
+        Some(DVec2::new(
+            (ndc.x + 1.0) / 2.0 * self.size.x,
+            (1.0 - ndc.y) / 2.0 * self.size.y,
+        ))
     }
 
     /// The part of the segment from `a` to `b` that lies inside the view, widened by `margin`
@@ -343,7 +382,11 @@ impl Screen {
         let (mut s0, mut s1) = (0.0f64, 1.0f64);
         let (ra, rb) = (a - bs.pos, b - bs.pos);
         // In front of the camera by at least a metre, as `project` asks.
-        for (da, db) in planes.iter().map(|n| (ra.dot(*n), rb.dot(*n))).chain([(ra.dot(bs.look) - 1.0, rb.dot(bs.look) - 1.0)]) {
+        for (da, db) in planes
+            .iter()
+            .map(|n| (ra.dot(*n), rb.dot(*n)))
+            .chain([(ra.dot(bs.look) - 1.0, rb.dot(bs.look) - 1.0)])
+        {
             if da < 0.0 && db < 0.0 {
                 return None;
             }
@@ -412,8 +455,14 @@ pub fn max_distance(label: &Label) -> f64 {
         LabelStyle::Town => 1.5e5,
         LabelStyle::Village => 5.0e4,
         LabelStyle::Local => 1.5e4,
-        LabelStyle::Country | LabelStyle::Sea | LabelStyle::Lake | LabelStyle::Peak | LabelStyle::Road => f64::INFINITY,
-        LabelStyle::Region | LabelStyle::Feature => crate::planet_names::reach(label) * crate::body::EARTH.a / crate::body::current().a,
+        LabelStyle::Country
+        | LabelStyle::Sea
+        | LabelStyle::Lake
+        | LabelStyle::Peak
+        | LabelStyle::Road => f64::INFINITY,
+        LabelStyle::Region | LabelStyle::Feature => {
+            crate::planet_names::reach(label) * crate::body::EARTH.a / crate::body::current().a
+        }
     }
 }
 
@@ -468,7 +517,12 @@ impl View for GlobeView<'_> {
     }
     fn fits(&self, label: &Label, corners: &[DVec2; 4]) -> bool {
         // Text must not hang over the edge of the globe or stick out into the sky.
-        corners.iter().all(|c| self.screen.over_ground(*c)) && !hidden_by_terrain(self.screen.basis.pos, anchor(label, self.ground), self.ground)
+        corners.iter().all(|c| self.screen.over_ground(*c))
+            && !hidden_by_terrain(
+                self.screen.basis.pos,
+                anchor(label, self.ground),
+                self.ground,
+            )
     }
 }
 
@@ -494,7 +548,9 @@ impl View for FlatView<'_> {
     }
     fn may_show(&self, label: &Label) -> bool {
         self.map.distance_for_scale() <= crate::body::scaled(max_distance(label))
-            && self.point(label.lat, label.lon).is_some_and(|p| self.on_screen(p))
+            && self
+                .point(label.lat, label.lon)
+                .is_some_and(|p| self.on_screen(p))
     }
     fn center(&self, label: &Label) -> Option<DVec2> {
         self.point(label.lat, label.lon)
@@ -505,7 +561,9 @@ impl View for FlatView<'_> {
     }
     fn fits(&self, _label: &Label, corners: &[DVec2; 4]) -> bool {
         // Text must not hang over the edge of the map.
-        corners.iter().all(|c| self.map.lat_lon_at(c.x, c.y).is_some())
+        corners
+            .iter()
+            .all(|c| self.map.lat_lon_at(c.x, c.y).is_some())
     }
 }
 
@@ -514,7 +572,16 @@ impl View for FlatView<'_> {
 pub fn place(view: &dyn View, candidates: &[(&Label, DVec2)]) -> Vec<Placed> {
     let size = view.size();
     let mut placed = Vec::new();
-    let mut taken: Vec<Bounds> = view.reserved().iter().map(|r| Bounds { x0: r[0], y0: r[1], x1: r[2], y1: r[3] }).collect();
+    let mut taken: Vec<Bounds> = view
+        .reserved()
+        .iter()
+        .map(|r| Bounds {
+            x0: r[0],
+            y0: r[1],
+            x1: r[2],
+            y1: r[3],
+        })
+        .collect();
     let mut seen: HashMap<&str, Vec<DVec2>> = HashMap::new();
     for (index, (label, text_size)) in candidates.iter().enumerate() {
         if placed.len() >= MAX_PLACED {
@@ -523,7 +590,9 @@ pub fn place(view: &dyn View, candidates: &[(&Label, DVec2)]) -> Vec<Placed> {
         if !view.may_show(label) {
             continue;
         }
-        let Some(center) = view.center(label) else { continue };
+        let Some(center) = view.center(label) else {
+            continue;
+        };
         let half = *text_size / 2.0;
 
         let mut angle = 0.0;
@@ -583,7 +652,11 @@ pub fn place(view: &dyn View, candidates: &[(&Label, DVec2)]) -> Vec<Placed> {
         } else {
             center
         };
-        placed.push(Placed { index, center, angle });
+        placed.push(Placed {
+            index,
+            center,
+            angle,
+        });
     }
     placed
 }
@@ -607,16 +680,39 @@ mod tests {
     const LON: f64 = 0.2;
 
     fn screen(distance: f64, tilt: f64) -> Screen {
-        let cam = Camera { lat: LAT, lon: LON, target_h: 0.0, distance, heading: 0.0, tilt, sky: 0.0 };
-        Screen { basis: cam.basis(), size: DVec2::new(1200.0, 800.0), reserved: Vec::new() }
+        let cam = Camera {
+            lat: LAT,
+            lon: LON,
+            target_h: 0.0,
+            distance,
+            heading: 0.0,
+            tilt,
+            sky: 0.0,
+        };
+        Screen {
+            basis: cam.basis(),
+            size: DVec2::new(1200.0, 800.0),
+            reserved: Vec::new(),
+        }
     }
 
     fn label(text: &str, lat: f64, lon: f64) -> Label {
-        Label { text: text.into(), style: LabelStyle::City, priority: 0, lat, lon, along: None }
+        Label {
+            text: text.into(),
+            style: LabelStyle::City,
+            priority: 0,
+            lat,
+            lon,
+            along: None,
+        }
     }
 
     fn flat_map(distance: f64) -> crate::atlas::AtlasView {
-        let mut v = crate::atlas::AtlasView::whole(crate::atlas::Projection::EqualEarth, 0.0, (1200.0, 800.0));
+        let mut v = crate::atlas::AtlasView::whole(
+            crate::atlas::Projection::EqualEarth,
+            0.0,
+            (1200.0, 800.0),
+        );
         v.match_globe(LAT, LON, distance);
         v
     }
@@ -624,7 +720,10 @@ mod tests {
     #[test]
     fn the_flat_map_names_places_where_they_are_drawn() {
         let map = flat_map(3.0e5);
-        let view = FlatView { map: &map, reserved: Vec::new() };
+        let view = FlatView {
+            map: &map,
+            reserved: Vec::new(),
+        };
         let a = label("Here", LAT, LON);
         let placed = place(&view, &[(&a, DVec2::new(40.0, 16.0))]);
         assert_eq!(placed.len(), 1);
@@ -632,17 +731,44 @@ mod tests {
         assert!(placed[0].center.distance(DVec2::new(x, y)) < 1.0);
         // Overlapping names: only the first, more important one is kept.
         let b = label("There", LAT, LON + 0.00001);
-        assert_eq!(place(&view, &[(&a, DVec2::new(40.0, 16.0)), (&b, DVec2::new(40.0, 16.0))]).len(), 1);
+        assert_eq!(
+            place(
+                &view,
+                &[(&a, DVec2::new(40.0, 16.0)), (&b, DVec2::new(40.0, 16.0))]
+            )
+            .len(),
+            1
+        );
     }
 
     #[test]
     fn the_flat_map_leaves_out_small_places_when_zoomed_out() {
-        let village = Label { style: LabelStyle::Village, ..label("Dorf", LAT, LON) };
+        let village = Label {
+            style: LabelStyle::Village,
+            ..label("Dorf", LAT, LON)
+        };
         let size = DVec2::new(40.0, 16.0);
         let far = flat_map(2.0e6);
-        assert!(place(&FlatView { map: &far, reserved: Vec::new() }, &[(&village, size)]).is_empty());
+        assert!(place(
+            &FlatView {
+                map: &far,
+                reserved: Vec::new()
+            },
+            &[(&village, size)]
+        )
+        .is_empty());
         let near = flat_map(2.0e4);
-        assert_eq!(place(&FlatView { map: &near, reserved: Vec::new() }, &[(&village, size)]).len(), 1);
+        assert_eq!(
+            place(
+                &FlatView {
+                    map: &near,
+                    reserved: Vec::new()
+                },
+                &[(&village, size)]
+            )
+            .len(),
+            1
+        );
     }
 
     #[test]
@@ -668,7 +794,13 @@ mod tests {
         let (a, b) = (label("First", LAT, LON), label("Second", LAT, LON + 0.0001));
         let far = label("Far", LAT + 0.005, LON);
         let size = DVec2::new(80.0, 20.0);
-        let placed = place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&a, size), (&b, size), (&far, size)]);
+        let placed = place(
+            &GlobeView {
+                screen: &s,
+                ground: NO_GROUND,
+            },
+            &[(&a, size), (&b, size), (&far, size)],
+        );
         let chosen: Vec<_> = placed.iter().map(|p| p.index).collect();
         assert_eq!(chosen, [0, 2]);
     }
@@ -678,11 +810,35 @@ mod tests {
         let mut s = screen(100_000.0, 0.0);
         let a = label("A", LAT, LON);
         let size = DVec2::new(40.0, 20.0);
-        assert_eq!(place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&a, size)]).len(), 1);
+        assert_eq!(
+            place(
+                &GlobeView {
+                    screen: &s,
+                    ground: NO_GROUND
+                },
+                &[(&a, size)]
+            )
+            .len(),
+            1
+        );
         s.reserved.push([500.0, 350.0, 700.0, 450.0]);
-        assert!(place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&a, size)]).is_empty());
+        assert!(place(
+            &GlobeView {
+                screen: &s,
+                ground: NO_GROUND
+            },
+            &[(&a, size)]
+        )
+        .is_empty());
         s.reserved.clear();
-        assert!(place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&a, DVec2::new(1300.0, 20.0))]).is_empty());
+        assert!(place(
+            &GlobeView {
+                screen: &s,
+                ground: NO_GROUND
+            },
+            &[(&a, DVec2::new(1300.0, 20.0))]
+        )
+        .is_empty());
     }
 
     #[test]
@@ -698,7 +854,10 @@ mod tests {
     #[test]
     fn from_afar_only_countries_states_and_capitals_are_named() {
         let s = screen(7.0e5, 0.0);
-        let with = |style, text: &str| Label { style, ..label(text, LAT, LON) };
+        let with = |style, text: &str| Label {
+            style,
+            ..label(text, LAT, LON)
+        };
         assert!(may_show(&s, &with(LabelStyle::Country, "Germany")));
         assert!(may_show(&s, &with(LabelStyle::State, "Bavaria")));
         assert!(may_show(&s, &with(LabelStyle::City, "\u{2605} Berlin")));
@@ -711,7 +870,10 @@ mod tests {
         assert!(!may_show(&close, &with(LabelStyle::Village, "Hof")));
         let globe = screen(2.0e7, 0.0);
         assert!(may_show(&globe, &with(LabelStyle::City, "\u{2605} Berlin")));
-        assert!(!may_show(&globe, &with(LabelStyle::City, "\u{2b51} Munich")));
+        assert!(!may_show(
+            &globe,
+            &with(LabelStyle::City, "\u{2b51} Munich")
+        ));
     }
 
     #[test]
@@ -719,12 +881,32 @@ mod tests {
         let s = screen(2.2e7, 0.0);
         let size = DVec2::new(160.0, 20.0);
         // Far to the east of the view point, so close to the globe's right-hand edge.
-        let country = |text: &str, lat, lon| Label { style: LabelStyle::Country, ..label(text, lat, lon) };
+        let country = |text: &str, lat, lon| Label {
+            style: LabelStyle::Country,
+            ..label(text, lat, lon)
+        };
         let near_edge = country("Edge", LAT - 0.4, LON + 1.45);
         assert!(may_show(&s, &near_edge), "the place itself is in view");
-        assert!(place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&near_edge, size)]).is_empty());
+        assert!(place(
+            &GlobeView {
+                screen: &s,
+                ground: NO_GROUND
+            },
+            &[(&near_edge, size)]
+        )
+        .is_empty());
         let middle = country("Middle", LAT, LON);
-        assert_eq!(place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&middle, size)]).len(), 1);
+        assert_eq!(
+            place(
+                &GlobeView {
+                    screen: &s,
+                    ground: NO_GROUND
+                },
+                &[(&middle, size)]
+            )
+            .len(),
+            1
+        );
     }
 
     #[test]
@@ -732,7 +914,17 @@ mod tests {
         let s = screen(100_000.0, 0.0);
         let (a, b) = (label("Inn", LAT, LON), label("Inn", LAT, LON + 0.002));
         let size = DVec2::new(30.0, 16.0);
-        assert_eq!(place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&a, size), (&b, size)]).len(), 1);
+        assert_eq!(
+            place(
+                &GlobeView {
+                    screen: &s,
+                    ground: NO_GROUND
+                },
+                &[(&a, size), (&b, size)]
+            )
+            .len(),
+            1
+        );
     }
 
     #[test]
@@ -740,11 +932,33 @@ mod tests {
         let s = screen(20_000.0, 1.3);
         let a = label("Valley", LAT, LON);
         let size = DVec2::new(40.0, 16.0);
-        assert_eq!(place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&a, size)]).len(), 1);
+        assert_eq!(
+            place(
+                &GlobeView {
+                    screen: &s,
+                    ground: NO_GROUND
+                },
+                &[(&a, size)]
+            )
+            .len(),
+            1
+        );
         // A wall between the label and the camera, which stands to the south.
-        let wall: &dyn Fn(f64, f64) -> Option<f64> =
-            &|lat, _| Some(if lat < LAT - 0.0002 && lat > LAT - 0.01 { 9000.0 } else { 0.0 });
-        assert!(place(&GlobeView { screen: &s, ground: wall }, &[(&a, size)]).is_empty());
+        let wall: &dyn Fn(f64, f64) -> Option<f64> = &|lat, _| {
+            Some(if lat < LAT - 0.0002 && lat > LAT - 0.01 {
+                9000.0
+            } else {
+                0.0
+            })
+        };
+        assert!(place(
+            &GlobeView {
+                screen: &s,
+                ground: wall
+            },
+            &[(&a, size)]
+        )
+        .is_empty());
     }
 
     fn road_label(a: (f64, f64), b: (f64, f64)) -> Label {
@@ -763,12 +977,28 @@ mod tests {
         let s = screen(5_000.0, 0.0);
         // North-east going, seen north up, so rising to the right.
         let l = road_label((LAT - 0.0005, LON - 0.0005), (LAT + 0.0005, LON + 0.0005));
-        let p = place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&l, DVec2::new(30.0, 12.0))]);
+        let p = place(
+            &GlobeView {
+                screen: &s,
+                ground: NO_GROUND,
+            },
+            &[(&l, DVec2::new(30.0, 12.0))],
+        );
         assert_eq!(p.len(), 1);
-        assert!(p[0].angle < 0.0 && p[0].angle > -std::f64::consts::FRAC_PI_2, "{}", p[0].angle);
+        assert!(
+            p[0].angle < 0.0 && p[0].angle > -std::f64::consts::FRAC_PI_2,
+            "{}",
+            p[0].angle
+        );
         // The same road described in the opposite direction gets the same angle.
         let r = road_label((LAT + 0.0005, LON + 0.0005), (LAT - 0.0005, LON - 0.0005));
-        let q = place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&r, DVec2::new(30.0, 12.0))]);
+        let q = place(
+            &GlobeView {
+                screen: &s,
+                ground: NO_GROUND,
+            },
+            &[(&r, DVec2::new(30.0, 12.0))],
+        );
         assert!((q[0].angle - p[0].angle).abs() < 1e-9);
     }
 
@@ -776,7 +1006,14 @@ mod tests {
     fn road_labels_longer_than_the_road_are_dropped() {
         let s = screen(100_000.0, 0.0);
         let l = road_label((LAT, LON), (LAT, LON + 0.00001));
-        assert!(place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&l, DVec2::new(100.0, 12.0))]).is_empty());
+        assert!(place(
+            &GlobeView {
+                screen: &s,
+                ground: NO_GROUND
+            },
+            &[(&l, DVec2::new(100.0, 12.0))]
+        )
+        .is_empty());
     }
 
     #[test]
@@ -784,7 +1021,13 @@ mod tests {
         let s = screen(100_000.0, 0.0);
         let a = label("A", LAT + 0.001, LON + 0.001);
         let size = DVec2::new(41.0, 17.0);
-        let p = place(&GlobeView { screen: &s, ground: NO_GROUND }, &[(&a, size)])[0];
+        let p = place(
+            &GlobeView {
+                screen: &s,
+                ground: NO_GROUND,
+            },
+            &[(&a, size)],
+        )[0];
         let corner = p.center - size / 2.0;
         assert_eq!(corner, corner.round());
     }
@@ -794,7 +1037,11 @@ mod tests {
         let mut s = Shelves::new(100);
         assert_eq!(s.alloc(60, 10), Some((0, 0)));
         assert_eq!(s.alloc(30, 20), Some((60, 0)));
-        assert_eq!(s.alloc(30, 10), Some((0, 20)), "next row starts below the tallest");
+        assert_eq!(
+            s.alloc(30, 10),
+            Some((0, 20)),
+            "next row starts below the tallest"
+        );
         assert_eq!(s.alloc(101, 1), None);
         assert_eq!(s.alloc(90, 80), None);
         s.clear();
@@ -817,22 +1064,33 @@ mod tests {
     fn long_and_empty_text() {
         assert_eq!(usable_text("   "), None);
         assert_eq!(usable_text(" Wien ").as_deref(), Some("Wien"));
-        assert_eq!(usable_text(&"ä".repeat(100)).unwrap().chars().count(), MAX_TEXT_CHARS);
+        assert_eq!(
+            usable_text(&"ä".repeat(100)).unwrap().chars().count(),
+            MAX_TEXT_CHARS
+        );
     }
 
     #[test]
     fn real_text_rasterises_with_system_fonts() {
         let mut fonts = FontSystem::new();
         let mut cache = SwashCache::new();
-        for text in ["Innsbruck", "東京", "القاهرة", "Москва", "▲ Olperer 3476 m"] {
-            let key = TextKey { text: text.into(), style: LabelStyle::City, scale: 1 };
+        for text in ["Innsbruck", "東京", "القاهرة", "Москва", "▲ Olperer 3476 m"]
+        {
+            let key = TextKey {
+                text: text.into(),
+                style: LabelStyle::City,
+                scale: 1,
+            };
             let Some(mask) = rasterize(&mut fonts, &mut cache, key) else {
                 // A machine without fonts can show no labels, which is not an error here.
                 assert!(fonts.db().is_empty(), "{text} produced nothing");
                 continue;
             };
             assert_eq!(mask.pixels.len(), (mask.width * mask.height * 2) as usize);
-            assert!(mask.pixels.chunks(2).any(|p| p[0] > 128), "{text} has no visible pixels");
+            assert!(
+                mask.pixels.chunks(2).any(|p| p[0] > 128),
+                "{text} has no visible pixels"
+            );
         }
     }
 }

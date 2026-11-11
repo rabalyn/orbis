@@ -49,7 +49,11 @@ pub struct AtlasStep {
 
 pub fn atlas_step(a: &Axes, sensitivity: f64, dt: f64) -> AtlasStep {
     let k = sensitivity * dt;
-    AtlasStep { dx: -a[0] * ATLAS_PAN * k, dy: a[2] * -ATLAS_PAN * k, zoom: (-a[1] * ATLAS_ZOOM * k).exp() }
+    AtlasStep {
+        dx: -a[0] * ATLAS_PAN * k,
+        dy: a[2] * -ATLAS_PAN * k,
+        zoom: (-a[1] * ATLAS_ZOOM * k).exp(),
+    }
 }
 
 pub fn is_at_rest(a: &Axes) -> bool {
@@ -91,14 +95,26 @@ mod tests {
     #[test]
     fn sensitivity_scales() {
         let a = [0.0, 0.5, 0.0, 0.0, 0.0, 0.0];
-        assert!((globe_step(&a, 2.0, 0.1).climb - 2.0 * globe_step(&a, 1.0, 0.1).climb).abs() < 1e-12);
+        assert!(
+            (globe_step(&a, 2.0, 0.1).climb - 2.0 * globe_step(&a, 1.0, 0.1).climb).abs() < 1e-12
+        );
     }
 
     #[test]
     fn atlas_uses_pan_and_zoom_only() {
         let s = atlas_step(&[0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 1.0, 0.1);
-        assert_eq!((s.dx, s.dy, s.zoom), (0.0, 0.0, 1.0), "tilt, twist and roll do nothing");
-        assert!(atlas_step(&[0.0, 1.0, 0.0, 0.0, 0.0, 0.0], 1.0, 0.1).zoom < 1.0, "up zooms out");
-        assert!(atlas_step(&[0.0, 0.0, -1.0, 0.0, 0.0, 0.0], 1.0, 0.1).dy > 0.0, "pushing away moves the view north");
+        assert_eq!(
+            (s.dx, s.dy, s.zoom),
+            (0.0, 0.0, 1.0),
+            "tilt, twist and roll do nothing"
+        );
+        assert!(
+            atlas_step(&[0.0, 1.0, 0.0, 0.0, 0.0, 0.0], 1.0, 0.1).zoom < 1.0,
+            "up zooms out"
+        );
+        assert!(
+            atlas_step(&[0.0, 0.0, -1.0, 0.0, 0.0, 0.0], 1.0, 0.1).dy > 0.0,
+            "pushing away moves the view north"
+        );
     }
 }

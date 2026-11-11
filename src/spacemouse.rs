@@ -10,6 +10,7 @@
 //! raw layout used by open drivers such as spacenavd and `hidapi` examples (report 1 is
 //! translation, 2 rotation, 3 buttons, little-endian i16).
 
+use crate::wtime::Duration;
 use std::fs::File;
 use std::io::{self, Read};
 #[cfg(unix)]
@@ -18,7 +19,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
-use crate::wtime::Duration;
 
 pub const SOCKET: &str = "/var/run/spnav.sock";
 /// How long to wait before looking for the device again.
@@ -66,8 +66,14 @@ pub fn parse_spnav(rec: &[u8]) -> Option<SpnavEvent> {
         .map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     match v[0] {
-        0 => Some(SpnavEvent::Motion { axes: [v[1], v[2], v[3], v[4], v[5], v[6]], period: v[7] }),
-        1 | 2 => Some(SpnavEvent::Button { n: u32::try_from(v[1]).ok()?, press: v[0] == 1 }),
+        0 => Some(SpnavEvent::Motion {
+            axes: [v[1], v[2], v[3], v[4], v[5], v[6]],
+            period: v[7],
+        }),
+        1 | 2 => Some(SpnavEvent::Button {
+            n: u32::try_from(v[1]).ok()?,
+            press: v[0] == 1,
+        }),
         _ => None,
     }
 }
@@ -126,10 +132,14 @@ pub fn hid_to_frame(t: [f64; 3], r: [f64; 3]) -> [f64; 6] {
 /// Whether a `HID_ID` line from sysfs names a 3Dconnexion device (0003:VVVVVVVV:PPPPPPPP).
 pub fn is_3dconnexion(hid_id: &str) -> bool {
     let mut it = hid_id.trim().split(':');
-    let (Some(bus), Some(v), Some(p)) = (it.next(), it.next(), it.next()) else { return false };
-    let (Ok(bus), Ok(v), Ok(p)) =
-        (u32::from_str_radix(bus, 16), u32::from_str_radix(v, 16), u32::from_str_radix(p, 16))
-    else {
+    let (Some(bus), Some(v), Some(p)) = (it.next(), it.next(), it.next()) else {
+        return false;
+    };
+    let (Ok(bus), Ok(v), Ok(p)) = (
+        u32::from_str_radix(bus, 16),
+        u32::from_str_radix(v, 16),
+        u32::from_str_radix(p, 16),
+    ) else {
         return false;
     };
     bus == 3 && (v == 0x256f || (v == 0x046d && (0xc603..=0xc63f).contains(&p)))
@@ -137,7 +147,9 @@ pub fn is_3dconnexion(hid_id: &str) -> bool {
 
 /// The /dev/hidrawN files of 3Dconnexion devices, found through sysfs.
 pub fn find_hidraw(sys: &Path, dev: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(sys) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(sys) else {
+        return Vec::new();
+    };
     let mut found: Vec<PathBuf> = entries
         .flatten()
         .filter_map(|e| {
@@ -175,7 +187,11 @@ impl Shared {
     pub fn drain(&self) -> Update {
         self.pending.store(false, Ordering::SeqCst);
         let mut i = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        Update { axes: i.axes, actions: std::mem::take(&mut i.actions), notice: i.notice.take() }
+        Update {
+            axes: i.axes,
+            actions: std::mem::take(&mut i.actions),
+            notice: i.notice.take(),
+        }
     }
 }
 
@@ -194,7 +210,14 @@ pub struct Sink {
 
 impl Sink {
     pub fn new(shared: Arc<Shared>, wake: Wake) -> Self {
-        Self { shared, wake, raw: [0.0; 6], hid_t: [0.0; 3], hid_r: [0.0; 3], buttons: 0 }
+        Self {
+            shared,
+            wake,
+            raw: [0.0; 6],
+            hid_t: [0.0; 3],
+            hid_r: [0.0; 3],
+            buttons: 0,
+        }
     }
 
     fn publish(&self, f: impl FnOnce(&mut Inner) -> bool) {
@@ -337,16 +360,21 @@ pub fn spawn(cfg: Config, wake: Wake) -> Handle {
     let shared = Arc::new(Shared::default());
     let (stop, rx) = mpsc::channel::<()>();
     let mut sink = Sink::new(shared.clone(), wake);
-    let spawned = std::thread::Builder::new().name("spacemouse".into()).spawn(move || loop {
-        connect_once(&cfg, &mut sink);
-        // Waiting here is the only idle activity. Dropping the handle ends the wait.
-        if !matches!(rx.recv_timeout(cfg.retry), Err(RecvTimeoutError::Timeout)) {
-            return;
-        }
-    });
+    let spawned = std::thread::Builder::new()
+        .name("spacemouse".into())
+        .spawn(move || loop {
+            connect_once(&cfg, &mut sink);
+            // Waiting here is the only idle activity. Dropping the handle ends the wait.
+            if !matches!(rx.recv_timeout(cfg.retry), Err(RecvTimeoutError::Timeout)) {
+                return;
+            }
+        });
     // Without a thread there is simply no SpaceMouse.
     drop(spawned);
-    Handle { shared, _stop: stop }
+    Handle {
+        shared,
+        _stop: stop,
+    }
 }
 
 /// One try at each source. Every failure is quiet: no device is the usual case.
@@ -393,9 +421,21 @@ mod tests {
     #[test]
     fn spnav_records_parse() {
         let m = parse_spnav(&rec([0, 10, -20, 30, 1, 2, 3, 16])).unwrap();
-        assert_eq!(m, SpnavEvent::Motion { axes: [10, -20, 30, 1, 2, 3], period: 16 });
-        assert_eq!(parse_spnav(&rec([1, 1, 0, 0, 0, 0, 0, 0])), Some(SpnavEvent::Button { n: 1, press: true }));
-        assert_eq!(parse_spnav(&rec([2, 0, 0, 0, 0, 0, 0, 0])), Some(SpnavEvent::Button { n: 0, press: false }));
+        assert_eq!(
+            m,
+            SpnavEvent::Motion {
+                axes: [10, -20, 30, 1, 2, 3],
+                period: 16
+            }
+        );
+        assert_eq!(
+            parse_spnav(&rec([1, 1, 0, 0, 0, 0, 0, 0])),
+            Some(SpnavEvent::Button { n: 1, press: true })
+        );
+        assert_eq!(
+            parse_spnav(&rec([2, 0, 0, 0, 0, 0, 0, 0])),
+            Some(SpnavEvent::Button { n: 0, press: false })
+        );
     }
 
     #[test]
@@ -434,7 +474,10 @@ mod tests {
         assert_eq!(shape(DEAD_ZONE * 0.9), 0.0);
         assert_eq!(shape(-DEAD_ZONE * 0.9), 0.0);
         assert!((shape(1.0) - 1.0).abs() < 1e-12);
-        assert!((shape(-3.0) + 1.0).abs() < 1e-12, "beyond full scale is clamped");
+        assert!(
+            (shape(-3.0) + 1.0).abs() < 1e-12,
+            "beyond full scale is clamped"
+        );
         assert_eq!(shape(f64::NAN), 0.0);
         assert!(shape(0.5) < 0.5, "small pushes are finer than linear");
         let mut last = 0.0;
@@ -451,7 +494,10 @@ mod tests {
         assert!(is_3dconnexion("0003:0000046D:0000C626"));
         assert!(is_3dconnexion("0003:0000256F:0000C635\n"));
         assert!(is_3dconnexion("0003:0000256F:00000001"));
-        assert!(!is_3dconnexion("0003:0000046D:0000C52B"), "a Logitech mouse receiver");
+        assert!(
+            !is_3dconnexion("0003:0000046D:0000C52B"),
+            "a Logitech mouse receiver"
+        );
         assert!(!is_3dconnexion("0005:0000046D:0000C626"), "not USB");
         assert!(!is_3dconnexion("nonsense"));
         assert!(!is_3dconnexion(""));
@@ -460,20 +506,48 @@ mod tests {
     #[test]
     fn sink_wakes_only_for_changes() {
         let (mut s, shared, wakes) = sink();
-        let still = SpnavEvent::Motion { axes: [0; 6], period: 1 };
+        let still = SpnavEvent::Motion {
+            axes: [0; 6],
+            period: 1,
+        };
         for _ in 0..50 {
             s.spnav(still);
         }
-        assert_eq!(wakes.load(Ordering::SeqCst), 0, "an idle stream wakes nothing");
-        s.spnav(SpnavEvent::Motion { axes: [200, 0, 0, 0, 0, 0], period: 1 });
-        s.spnav(SpnavEvent::Motion { axes: [210, 0, 0, 0, 0, 0], period: 1 });
-        assert_eq!(wakes.load(Ordering::SeqCst), 1, "one wake until the window takes the state");
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            0,
+            "an idle stream wakes nothing"
+        );
+        s.spnav(SpnavEvent::Motion {
+            axes: [200, 0, 0, 0, 0, 0],
+            period: 1,
+        });
+        s.spnav(SpnavEvent::Motion {
+            axes: [210, 0, 0, 0, 0, 0],
+            period: 1,
+        });
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            1,
+            "one wake until the window takes the state"
+        );
         let u = shared.drain();
         assert!(u.axes[0] > 0.0);
-        s.spnav(SpnavEvent::Motion { axes: [210, 0, 0, 0, 0, 0], period: 1 });
-        assert_eq!(wakes.load(Ordering::SeqCst), 1, "same reading again changes nothing");
+        s.spnav(SpnavEvent::Motion {
+            axes: [210, 0, 0, 0, 0, 0],
+            period: 1,
+        });
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            1,
+            "same reading again changes nothing"
+        );
         s.spnav(still);
-        assert_eq!(wakes.load(Ordering::SeqCst), 2, "coming to rest is a change");
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            2,
+            "coming to rest is a change"
+        );
         assert_eq!(shared.drain().axes, [0.0; 6]);
     }
 
@@ -484,12 +558,18 @@ mod tests {
         s.spnav(SpnavEvent::Button { n: 0, press: false });
         s.spnav(SpnavEvent::Button { n: 1, press: true });
         s.spnav(SpnavEvent::Button { n: 7, press: true });
-        assert_eq!(shared.drain().actions, vec![Action::WholeBody, Action::Straighten]);
+        assert_eq!(
+            shared.drain().actions,
+            vec![Action::WholeBody, Action::Straighten]
+        );
         s.hid(HidReport::Buttons(0b10));
         s.hid(HidReport::Buttons(0b10));
         s.hid(HidReport::Buttons(0));
         s.hid(HidReport::Buttons(0b11));
-        assert_eq!(shared.drain().actions, vec![Action::Straighten, Action::WholeBody, Action::Straighten]);
+        assert_eq!(
+            shared.drain().actions,
+            vec![Action::Straighten, Action::WholeBody, Action::Straighten]
+        );
     }
 
     #[test]
@@ -498,8 +578,14 @@ mod tests {
         s.hid(HidReport::Translation([350, 0, 0]));
         s.hid(HidReport::Rotation([0, 0, 350]));
         let a = shared.drain().axes;
-        assert!((a[0] - 1.0).abs() < 1e-9, "x kept after the rotation report");
-        assert!((a[4] + 1.0).abs() < 1e-9, "twist taken from the rotation report");
+        assert!(
+            (a[0] - 1.0).abs() < 1e-9,
+            "x kept after the rotation report"
+        );
+        assert!(
+            (a[4] + 1.0).abs() < 1e-9,
+            "twist taken from the rotation report"
+        );
     }
 
     #[test]
@@ -521,7 +607,12 @@ mod tests {
     #[test]
     fn nothing_found_is_quiet() {
         let d = temp_dir("none");
-        let cfg = Config { socket: d.join("no.sock"), sys_hidraw: d.join("sys"), dev: d.clone(), retry: Duration::from_millis(5) };
+        let cfg = Config {
+            socket: d.join("no.sock"),
+            sys_hidraw: d.join("sys"),
+            dev: d.clone(),
+            retry: Duration::from_millis(5),
+        };
         let (mut s, shared, wakes) = sink();
         connect_once(&cfg, &mut s);
         assert_eq!(wakes.load(Ordering::SeqCst), 0);
@@ -529,7 +620,11 @@ mod tests {
         // A matching device that cannot be opened is skipped without a sound.
         let node = d.join("sys/hidraw0/device");
         std::fs::create_dir_all(&node).unwrap();
-        std::fs::write(node.join("uevent"), "DRIVER=hid\nHID_ID=0003:0000256F:0000C635\n").unwrap();
+        std::fs::write(
+            node.join("uevent"),
+            "DRIVER=hid\nHID_ID=0003:0000256F:0000C635\n",
+        )
+        .unwrap();
         assert_eq!(find_hidraw(&d.join("sys"), &d), vec![d.join("hidraw0")]);
         connect_once(&cfg, &mut s);
         assert_eq!(wakes.load(Ordering::SeqCst), 0);
@@ -556,12 +651,28 @@ mod tests {
         let listener = UnixListener::bind(&path).unwrap();
         let wakes = Arc::new(AtomicUsize::new(0));
         let w = wakes.clone();
-        let cfg = Config { socket: path, sys_hidraw: d.join("sys"), dev: d.clone(), retry: Duration::from_millis(20) };
-        let handle = spawn(cfg, Arc::new(move || {
-            w.fetch_add(1, Ordering::SeqCst);
-        }));
+        let cfg = Config {
+            socket: path,
+            sys_hidraw: d.join("sys"),
+            dev: d.clone(),
+            retry: Duration::from_millis(20),
+        };
+        let handle = spawn(
+            cfg,
+            Arc::new(move || {
+                w.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
 
-        let mut cam = Camera { lat: 0.8, lon: 0.2, target_h: 0.0, distance: 100_000.0, heading: 0.0, tilt: 0.0, sky: 0.0 };
+        let mut cam = Camera {
+            lat: 0.8,
+            lon: 0.2,
+            target_h: 0.0,
+            distance: 100_000.0,
+            heading: 0.0,
+            tilt: 0.0,
+            sky: 0.0,
+        };
         cam.clamp();
         let mut nav = Nav::new(cam, DVec2::new(1200.0, 800.0));
 

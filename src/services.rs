@@ -7,8 +7,6 @@
 //! OGC 01-068r3 (WMS 1.1.1). Tile numbering for XYZ is the usual "slippy map" one, and TMS
 //! counts rows from the south.
 
-
-
 use crate::capabilities::{Document, MatrixSet, Wms, WmsLayer, Wmts, WmtsLayer};
 use crate::sources::ABSOLUTE_MAX_Z;
 use serde_json::{json, Value};
@@ -24,7 +22,13 @@ const MAX_TEXT_CHARS: usize = 120;
 const WMS_DEFAULT_MAX_Z: u8 = 18;
 const XYZ_DEFAULT_MAX_Z: u8 = 19;
 /// The names of web-mercator coordinate systems, in the order they are preferred.
-const MERCATOR_CRS: [&str; 5] = ["EPSG:3857", "EPSG:900913", "EPSG:3785", "EPSG:102100", "EPSG:102113"];
+const MERCATOR_CRS: [&str; 5] = [
+    "EPSG:3857",
+    "EPSG:900913",
+    "EPSG:3785",
+    "EPSG:102100",
+    "EPSG:102113",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -96,7 +100,13 @@ impl Service {
         let slug: String = self
             .name
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
             .collect::<String>()
             .split('-')
             .filter(|p| !p.is_empty())
@@ -104,7 +114,11 @@ impl Service {
             .join("-");
         let slug: String = slug.chars().take(24).collect();
         let hash = fnv(&format!("{}\n{}\n{}", self.tiles, self.layer, self.format));
-        self.id = if slug.is_empty() { format!("{hash:08x}") } else { format!("{slug}-{hash:08x}") };
+        self.id = if slug.is_empty() {
+            format!("{hash:08x}")
+        } else {
+            format!("{slug}-{hash:08x}")
+        };
     }
 
     pub fn to_json(&self) -> Value {
@@ -120,10 +134,22 @@ impl Service {
     /// is the user's, but may have been edited or damaged.
     pub fn from_json(v: &Value) -> Result<Self, String> {
         let text = |k: &str| v.get(k).and_then(Value::as_str).map(clean);
-        let need = |k: &str| text(k).filter(|t| !t.is_empty()).ok_or_else(|| format!("no {k}"));
-        let num = |k: &str| v.get(k).and_then(Value::as_u64).ok_or_else(|| format!("no {k}"));
+        let need = |k: &str| {
+            text(k)
+                .filter(|t| !t.is_empty())
+                .ok_or_else(|| format!("no {k}"))
+        };
+        let num = |k: &str| {
+            v.get(k)
+                .and_then(Value::as_u64)
+                .ok_or_else(|| format!("no {k}"))
+        };
         let kind = Kind::from_name(&need("kind")?).ok_or("unknown kind")?;
-        let tiles = v.get("tiles").and_then(Value::as_str).ok_or("no tiles address")?.to_string();
+        let tiles = v
+            .get("tiles")
+            .and_then(Value::as_str)
+            .ok_or("no tiles address")?
+            .to_string();
         check_url(&tiles)?;
         let bounds = match v.get("bounds") {
             Some(Value::Array(a)) if a.len() == 4 => {
@@ -136,7 +162,11 @@ impl Service {
             id: String::new(),
             name: need("name")?,
             kind,
-            url: v.get("url").and_then(Value::as_str).unwrap_or("").to_string(),
+            url: v
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
             tiles,
             layer: text("layer").unwrap_or_default(),
             format: text("format").unwrap_or_default(),
@@ -155,7 +185,12 @@ impl Service {
         }
         // The stored id names a folder, so it is only used if it is plain.
         let stored = text("id").unwrap_or_default();
-        if !stored.is_empty() && stored.len() <= 64 && stored.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+        if !stored.is_empty()
+            && stored.len() <= 64
+            && stored
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
             s.id = stored;
         } else {
             s.assign_id();
@@ -165,18 +200,29 @@ impl Service {
 }
 
 fn fnv(s: &str) -> u32 {
-    s.bytes().fold(0x811c_9dc5u32, |h, b| (h ^ b as u32).wrapping_mul(0x0100_0193))
+    s.bytes().fold(0x811c_9dc5u32, |h, b| {
+        (h ^ b as u32).wrapping_mul(0x0100_0193)
+    })
 }
 
 /// Text from a file or a service, without control characters and not too long.
 pub fn clean(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).take(MAX_TEXT_CHARS).collect::<String>().trim().to_string()
+    s.chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_TEXT_CHARS)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 fn has_tile_fields(tiles: &str, kind: Kind) -> bool {
     match kind {
         Kind::Wms => tiles.contains("{bbox}"),
-        _ => (tiles.contains("{z}") || tiles.contains("{z02}")) && tiles.contains("{x}") && (tiles.contains("{y}") || tiles.contains("{-y}")),
+        _ => {
+            (tiles.contains("{z}") || tiles.contains("{z02}"))
+                && tiles.contains("{x}")
+                && (tiles.contains("{y}") || tiles.contains("{-y}"))
+        }
     }
 }
 
@@ -210,7 +256,13 @@ pub fn check_url(url: &str) -> Result<(), String> {
     if authority.contains('@') {
         return Err("addresses with a user name or password are not used".into());
     }
-    let host = authority.rsplit_once(':').map_or(authority, |(h, port)| if port.chars().all(|c| c.is_ascii_digit()) { h } else { authority });
+    let host = authority.rsplit_once(':').map_or(authority, |(h, port)| {
+        if port.chars().all(|c| c.is_ascii_digit()) {
+            h
+        } else {
+            authority
+        }
+    });
     if host.is_empty() || host.contains(['{', '}']) {
         return Err("the address has no host name".into());
     }
@@ -234,12 +286,17 @@ pub fn append_query(base: &str, query: &str) -> String {
 pub fn xyz_service(template: &str, tms: bool) -> Result<Service, String> {
     let mut tiles = template.trim().replace("{s}", "a").replace("{S}", "a");
     check_url(&tiles)?;
-    tiles = tiles.replace("{Z}", "{z}").replace("{X}", "{x}").replace("{Y}", "{y}");
+    tiles = tiles
+        .replace("{Z}", "{z}")
+        .replace("{X}", "{x}")
+        .replace("{Y}", "{y}");
     if tms {
         tiles = tiles.replace("{y}", "{-y}");
     }
     if tiles.contains("{bbox}") || !has_tile_fields(&tiles, Kind::Xyz) {
-        return Err("an XYZ address needs {z}, {x} and {y} (or {-y}) where the tile numbers go".into());
+        return Err(
+            "an XYZ address needs {z}, {x} and {y} (or {-y}) where the tile numbers go".into(),
+        );
     }
     let mut s = Service {
         id: String::new(),
@@ -285,13 +342,25 @@ pub fn looks_like_template(url: &str) -> bool {
 /// The layers a description offers, as (identifier, title).
 pub fn layer_list(doc: &Document) -> Vec<(String, String)> {
     match doc {
-        Document::Wmts(d) => d.layers.iter().map(|l| (l.id.clone(), l.title.clone())).collect(),
-        Document::Wms(d) => d.layers.iter().map(|l| (l.name.clone(), l.title.clone())).collect(),
+        Document::Wmts(d) => d
+            .layers
+            .iter()
+            .map(|l| (l.id.clone(), l.title.clone()))
+            .collect(),
+        Document::Wms(d) => d
+            .layers
+            .iter()
+            .map(|l| (l.name.clone(), l.title.clone()))
+            .collect(),
     }
 }
 
 /// A service from a capabilities document, for the named layer or else the first usable one.
-pub fn from_capabilities(doc: &Document, url: &str, layer: Option<&str>) -> Result<Service, String> {
+pub fn from_capabilities(
+    doc: &Document,
+    url: &str,
+    layer: Option<&str>,
+) -> Result<Service, String> {
     let mut s = match doc {
         Document::Wmts(d) => wmts_service(d, url, layer)?,
         Document::Wms(d) => wms_service(d, url, layer)?,
@@ -302,7 +371,12 @@ pub fn from_capabilities(doc: &Document, url: &str, layer: Option<&str>) -> Resu
     Ok(s)
 }
 
-fn pick<'a, T>(items: &'a [T], wanted: Option<&str>, id: impl Fn(&T) -> &str, title: impl Fn(&T) -> &str) -> Result<Vec<&'a T>, String> {
+fn pick<'a, T>(
+    items: &'a [T],
+    wanted: Option<&str>,
+    id: impl Fn(&T) -> &str,
+    title: impl Fn(&T) -> &str,
+) -> Result<Vec<&'a T>, String> {
     match wanted {
         None => Ok(items.iter().collect()),
         Some(w) => {
@@ -310,7 +384,10 @@ fn pick<'a, T>(items: &'a [T], wanted: Option<&str>, id: impl Fn(&T) -> &str, ti
             if !exact.is_empty() {
                 return Ok(exact);
             }
-            let loose: Vec<_> = items.iter().filter(|i| id(i).eq_ignore_ascii_case(w) || title(i).eq_ignore_ascii_case(w)).collect();
+            let loose: Vec<_> = items
+                .iter()
+                .filter(|i| id(i).eq_ignore_ascii_case(w) || title(i).eq_ignore_ascii_case(w))
+                .collect();
             if loose.is_empty() {
                 Err(format!("the service has no layer called {w}"))
             } else {
@@ -322,19 +399,25 @@ fn pick<'a, T>(items: &'a [T], wanted: Option<&str>, id: impl Fn(&T) -> &str, ti
 
 fn best_format<'a>(offered: impl Iterator<Item = &'a str>) -> Option<String> {
     let all: Vec<&str> = offered.collect();
-    ["image/png", "image/jpeg", "image/jpg", "image/webp"].into_iter().find_map(|want| {
-        all.iter().find(|f| f.trim().to_ascii_lowercase().starts_with(want)).map(|f| {
-            // The base type only: parameters such as "; mode=8bit" are not part of a request.
-            f.split(';').next().unwrap_or(f).trim().to_string()
+    ["image/png", "image/jpeg", "image/jpg", "image/webp"]
+        .into_iter()
+        .find_map(|want| {
+            all.iter()
+                .find(|f| f.trim().to_ascii_lowercase().starts_with(want))
+                .map(|f| {
+                    // The base type only: parameters such as "; mode=8bit" are not part of a request.
+                    f.split(';').next().unwrap_or(f).trim().to_string()
+                })
         })
-    })
 }
 
 // ---- WMTS ----
 
 fn is_mercator_name(crs: &str) -> bool {
     let c = crs.to_ascii_uppercase();
-    ["3857", "900913", "3785", "102100", "102113"].iter().any(|code| c.ends_with(code))
+    ["3857", "900913", "3785", "102100", "102113"]
+        .iter()
+        .any(|code| c.ends_with(code))
 }
 
 /// The levels of a matrix set that match web-mercator tiling, as (level, matrix).
@@ -347,7 +430,8 @@ fn mercator_levels(set: &MatrixSet) -> Vec<(u8, &crate::capabilities::Matrix)> {
         .filter_map(|m| {
             let square = m.tile.0 == m.tile.1 && (128..=1024).contains(&m.tile.0);
             let whole = m.size.0 == m.size.1 && m.size.0.is_power_of_two();
-            let corner = (m.top_left.0.abs() - MERCATOR_EDGE).abs() < 1.0 && (m.top_left.1.abs() - MERCATOR_EDGE).abs() < 1.0;
+            let corner = (m.top_left.0.abs() - MERCATOR_EDGE).abs() < 1.0
+                && (m.top_left.1.abs() - MERCATOR_EDGE).abs() < 1.0;
             let z = m.size.0.trailing_zeros() as u8;
             (square && whole && corner && z <= ABSOLUTE_MAX_Z).then_some((z, m))
         })
@@ -359,7 +443,9 @@ fn describe_sets(d: &Wmts, l: &WmtsLayer) -> String {
         .sets
         .iter()
         .map(|id| match d.sets.iter().find(|s| &s.id == id) {
-            Some(s) if !s.crs.is_empty() => format!("{id} ({})", s.crs.rsplit("::").next().unwrap_or(&s.crs)),
+            Some(s) if !s.crs.is_empty() => {
+                format!("{id} ({})", s.crs.rsplit("::").next().unwrap_or(&s.crs))
+            }
             _ => id.clone(),
         })
         .collect();
@@ -380,7 +466,10 @@ fn wmts_service(d: &Wmts, url: &str, wanted: Option<&str>) -> Result<Service, St
         }
     }
     if wanted.is_none() && candidates.len() > 1 {
-        return Err(format!("none of the {} layers can be used. For example, {last}", candidates.len()));
+        return Err(format!(
+            "none of the {} layers can be used. For example, {last}",
+            candidates.len()
+        ));
     }
     Err(last)
 }
@@ -391,9 +480,18 @@ fn wmts_layer_service(d: &Wmts, l: &WmtsLayer, url: &str) -> Result<Service, Str
     // The first linked set that has web-mercator levels.
     let mut chosen = None;
     for set_id in &l.sets {
-        let Some(set) = d.sets.iter().find(|s| &s.id == set_id) else { continue };
-        let allowed = l.limits.iter().find(|(s, _)| s == set_id).map(|(_, ids)| ids);
-        let levels: Vec<_> = mercator_levels(set).into_iter().filter(|(_, m)| allowed.is_none_or(|ids| ids.contains(&m.id))).collect();
+        let Some(set) = d.sets.iter().find(|s| &s.id == set_id) else {
+            continue;
+        };
+        let allowed = l
+            .limits
+            .iter()
+            .find(|(s, _)| s == set_id)
+            .map(|(_, ids)| ids);
+        let levels: Vec<_> = mercator_levels(set)
+            .into_iter()
+            .filter(|(_, m)| allowed.is_none_or(|ids| ids.contains(&m.id)))
+            .collect();
         if !levels.is_empty() {
             chosen = Some((set, levels));
             break;
@@ -407,12 +505,22 @@ fn wmts_layer_service(d: &Wmts, l: &WmtsLayer, url: &str) -> Result<Service, Str
         ));
     };
     // The template can only count levels from their numbers, so identifiers must end in them.
-    let prefix = levels[0].1.id.trim_end_matches(|c: char| c.is_ascii_digit()).to_string();
+    let prefix = levels[0]
+        .1
+        .id
+        .trim_end_matches(|c: char| c.is_ascii_digit())
+        .to_string();
     let levels = &levels;
     // Some services pad the level to two digits ("00", "01", ... "18").
-    let padded = levels.iter().all(|(z, m)| m.id == format!("{prefix}{z:02}"));
+    let padded = levels
+        .iter()
+        .all(|(z, m)| m.id == format!("{prefix}{z:02}"));
     let follows = padded || levels.iter().all(|(z, m)| m.id == format!("{prefix}{z}"));
-    let level_token = if padded && levels.iter().any(|(z, _)| *z < 10) { "{z02}" } else { "{z}" };
+    let level_token = if padded && levels.iter().any(|(z, _)| *z < 10) {
+        "{z02}"
+    } else {
+        "{z}"
+    };
     if !follows {
         // Name the first matrix that breaks the pattern, which is the one to look at.
         let (z, odd) = levels
@@ -424,18 +532,31 @@ fn wmts_layer_service(d: &Wmts, l: &WmtsLayer, url: &str) -> Result<Service, Str
             l.id, odd.id
         ));
     }
-    let (min_z, max_z) = (levels.iter().map(|x| x.0).min().unwrap_or(0), levels.iter().map(|x| x.0).max().unwrap_or(0));
+    let (min_z, max_z) = (
+        levels.iter().map(|x| x.0).min().unwrap_or(0),
+        levels.iter().map(|x| x.0).max().unwrap_or(0),
+    );
     let style = l.styles.first().map_or("default", String::as_str);
     let matrix = format!("{prefix}{level_token}");
     let resource = l
         .resources
         .iter()
         .find(|r| r.format.eq_ignore_ascii_case(&format))
-        .or_else(|| l.resources.first().filter(|r| best_format(std::iter::once(r.format.as_str())).is_some()));
+        .or_else(|| {
+            l.resources
+                .first()
+                .filter(|r| best_format(std::iter::once(r.format.as_str())).is_some())
+        });
     let (tiles, format) = match resource {
-        Some(r) => (rest_template(&r.template, l, &set.id, style, &matrix)?, best_format(std::iter::once(r.format.as_str())).unwrap_or(format)),
+        Some(r) => (
+            rest_template(&r.template, l, &set.id, style, &matrix)?,
+            best_format(std::iter::once(r.format.as_str())).unwrap_or(format),
+        ),
         None => {
-            let base = d.get_tile_url.clone().unwrap_or_else(|| url.split(['?', '#']).next().unwrap_or(url).to_string());
+            let base = d
+                .get_tile_url
+                .clone()
+                .unwrap_or_else(|| url.split(['?', '#']).next().unwrap_or(url).to_string());
             let mut q = format!(
                 "SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER={}&STYLE={}&TILEMATRIXSET={}&TILEMATRIX={}&TILEROW={{y}}&TILECOL={{x}}&FORMAT={}",
                 pct(&l.id),
@@ -452,7 +573,11 @@ fn wmts_layer_service(d: &Wmts, l: &WmtsLayer, url: &str) -> Result<Service, Str
     };
     Ok(Service {
         id: String::new(),
-        name: clean(&if d.title.is_empty() || d.title == l.title { l.title.clone() } else { format!("{}: {}", d.title, l.title) }),
+        name: clean(&if d.title.is_empty() || d.title == l.title {
+            l.title.clone()
+        } else {
+            format!("{}: {}", d.title, l.title)
+        }),
         kind: Kind::Wmts,
         url: String::new(),
         tiles,
@@ -468,12 +593,21 @@ fn wmts_layer_service(d: &Wmts, l: &WmtsLayer, url: &str) -> Result<Service, Str
 }
 
 /// A RESTful template with its parts filled in, leaving only the tile numbers.
-fn rest_template(template: &str, l: &WmtsLayer, set: &str, style: &str, matrix: &str) -> Result<String, String> {
+fn rest_template(
+    template: &str,
+    l: &WmtsLayer,
+    set: &str,
+    style: &str,
+    matrix: &str,
+) -> Result<String, String> {
     let mut out = String::new();
     let mut rest = template;
     while let Some(open) = rest.find('{') {
         out.push_str(&rest[..open]);
-        let close = rest[open..].find('}').ok_or("the tile address template is damaged")? + open;
+        let close = rest[open..]
+            .find('}')
+            .ok_or("the tile address template is damaged")?
+            + open;
         let name = &rest[open + 1..close];
         let value = match name {
             "TileMatrixSet" => pct(set),
@@ -483,7 +617,12 @@ fn rest_template(template: &str, l: &WmtsLayer, set: &str, style: &str, matrix: 
             "Style" => pct(style),
             other => match l.dimensions.iter().find(|d| d.0 == other) {
                 Some((_, v)) => pct(v),
-                None => return Err(format!("layer {} needs a value for {other}, which has no default", l.id)),
+                None => {
+                    return Err(format!(
+                        "layer {} needs a value for {other}, which has no default",
+                        l.id
+                    ))
+                }
             },
         };
         out.push_str(&value);
@@ -496,29 +635,52 @@ fn rest_template(template: &str, l: &WmtsLayer, set: &str, style: &str, matrix: 
 // ---- WMS ----
 
 fn mercator_crs(l: &WmsLayer) -> Option<&str> {
-    MERCATOR_CRS.iter().find_map(|want| l.crs.iter().find(|c| c.eq_ignore_ascii_case(want)).map(String::as_str))
+    MERCATOR_CRS.iter().find_map(|want| {
+        l.crs
+            .iter()
+            .find(|c| c.eq_ignore_ascii_case(want))
+            .map(String::as_str)
+    })
 }
 
 /// The highest zoom whose pictures are not finer than the layer's smallest scale allows.
 pub fn max_zoom_for_scale(min_scale_denominator: f64) -> u8 {
-    (SCALE_AT_ZOOM_0 / min_scale_denominator).log2().floor().clamp(0.0, ABSOLUTE_MAX_Z as f64) as u8
+    (SCALE_AT_ZOOM_0 / min_scale_denominator)
+        .log2()
+        .floor()
+        .clamp(0.0, ABSOLUTE_MAX_Z as f64) as u8
 }
 
 fn wms_service(d: &Wms, url: &str, wanted: Option<&str>) -> Result<Service, String> {
     let crs_param = match d.version.as_str() {
         "1.3.0" => "CRS",
         "1.1.1" => "SRS",
-        other => return Err(format!("WMS version {} is not supported (1.1.1 and 1.3.0 are)", if other.is_empty() { "unknown" } else { other })),
+        other => {
+            return Err(format!(
+                "WMS version {} is not supported (1.1.1 and 1.3.0 are)",
+                if other.is_empty() { "unknown" } else { other }
+            ))
+        }
     };
     let candidates = pick(&d.layers, wanted, |l| &l.name, |l| &l.title)?;
-    let usable: Vec<_> = candidates.iter().filter(|l| mercator_crs(l).is_some()).collect();
+    let usable: Vec<_> = candidates
+        .iter()
+        .filter(|l| mercator_crs(l).is_some())
+        .collect();
     let Some(l) = usable.first() else {
-        let offered = candidates.first().map(|l| l.crs.join(", ")).unwrap_or_default();
+        let offered = candidates
+            .first()
+            .map(|l| l.crs.join(", "))
+            .unwrap_or_default();
         return Err(format!("no layer is offered in EPSG:3857 (web mercator), which is what is asked for. The first offers: {}", if offered.is_empty() { "no coordinate systems".into() } else { offered }));
     };
     let crs = mercator_crs(l).unwrap_or("EPSG:3857");
-    let format = best_format(d.formats.iter().map(String::as_str)).ok_or("the service offers no PNG, JPEG or WebP pictures")?;
-    let base = d.get_map_url.clone().unwrap_or_else(|| url.split(['?', '#']).next().unwrap_or(url).to_string());
+    let format = best_format(d.formats.iter().map(String::as_str))
+        .ok_or("the service offers no PNG, JPEG or WebP pictures")?;
+    let base = d
+        .get_map_url
+        .clone()
+        .unwrap_or_else(|| url.split(['?', '#']).next().unwrap_or(url).to_string());
     // EPSG:3857 is east then north in both versions; 1.3.0 swaps only for coordinate systems
     // (such as EPSG:4326) whose own axis order is latitude first, which are never asked for.
     let mut q = format!(
@@ -533,7 +695,11 @@ fn wms_service(d: &Wms, url: &str, wanted: Option<&str>) -> Result<Service, Stri
     }
     Ok(Service {
         id: String::new(),
-        name: clean(&if d.title.is_empty() || d.title == l.title { l.title.clone() } else { format!("{}: {}", d.title, l.title) }),
+        name: clean(&if d.title.is_empty() || d.title == l.title {
+            l.title.clone()
+        } else {
+            format!("{}: {}", d.title, l.title)
+        }),
         kind: Kind::Wms,
         url: String::new(),
         tiles: append_query(&base, &q),
@@ -541,7 +707,9 @@ fn wms_service(d: &Wms, url: &str, wanted: Option<&str>) -> Result<Service, Stri
         format,
         tile_size: 256,
         min_z: 0,
-        max_z: l.min_scale_denominator.map_or(WMS_DEFAULT_MAX_Z, max_zoom_for_scale),
+        max_z: l
+            .min_scale_denominator
+            .map_or(WMS_DEFAULT_MAX_Z, max_zoom_for_scale),
         bounds: l.bounds,
         attribution: l.attribution.as_deref().map(clean).unwrap_or_default(),
         credit: String::new(),
@@ -559,7 +727,12 @@ mod tests {
         assert_eq!(s.tiles, "https://a.tile.example.org/{z}/{x}/{y}.png");
         assert_eq!(s.name, "a.tile.example.org");
         assert_eq!(s.kind, Kind::Xyz);
-        assert_eq!(xyz_service("https://t.example/{z}/{x}/{y}.png", true).unwrap().tiles, "https://t.example/{z}/{x}/{-y}.png");
+        assert_eq!(
+            xyz_service("https://t.example/{z}/{x}/{y}.png", true)
+                .unwrap()
+                .tiles,
+            "https://t.example/{z}/{x}/{-y}.png"
+        );
         assert!(xyz_service("https://t.example/{z}/{x}/{-y}.png", false).is_ok());
         assert!(xyz_service("https://t.example/{z}/{x}.png", false).is_err());
         assert!(xyz_service("https://t.example/tiles.png", false).is_err());
@@ -581,16 +754,28 @@ mod tests {
             assert!(xyz_service(bad, false).is_err(), "{bad}");
         }
         assert!(check_url("HTTPS://T.example:8080/{z}/{x}/{y}").is_ok());
-        assert!(check_url("http://t.example/x?a=b@c").is_ok(), "an @ after the host is not credentials");
+        assert!(
+            check_url("http://t.example/x?a=b@c").is_ok(),
+            "an @ after the host is not credentials"
+        );
         assert!(check_url(&format!("https://t.example/{}", "a".repeat(MAX_URL_CHARS))).is_err());
     }
 
     #[test]
     fn capabilities_requests_are_built_from_plain_addresses() {
-        assert_eq!(capabilities_request("https://h.example/wms"), "https://h.example/wms?SERVICE=WMS&REQUEST=GetCapabilities&VERSION=1.3.0");
-        assert_eq!(capabilities_request("https://h.example/wms?map=a"), "https://h.example/wms?map=a&SERVICE=WMS&REQUEST=GetCapabilities&VERSION=1.3.0");
+        assert_eq!(
+            capabilities_request("https://h.example/wms"),
+            "https://h.example/wms?SERVICE=WMS&REQUEST=GetCapabilities&VERSION=1.3.0"
+        );
+        assert_eq!(
+            capabilities_request("https://h.example/wms?map=a"),
+            "https://h.example/wms?map=a&SERVICE=WMS&REQUEST=GetCapabilities&VERSION=1.3.0"
+        );
         assert!(capabilities_request("https://h.example/WMTS/service").contains("SERVICE=WMTS"));
-        assert_eq!(capabilities_request("https://h.example/x/WMTSCapabilities.xml"), "https://h.example/x/WMTSCapabilities.xml");
+        assert_eq!(
+            capabilities_request("https://h.example/x/WMTSCapabilities.xml"),
+            "https://h.example/x/WMTSCapabilities.xml"
+        );
         let given = "https://h.example/wms?service=WMS&request=GetCapabilities";
         assert_eq!(capabilities_request(given), given);
         assert!(looks_like_template("https://t/{z}/{x}/{y}") && !looks_like_template(given));
@@ -601,8 +786,15 @@ mod tests {
         let doc = parse(fixtures::WMTS).unwrap();
         let s = from_capabilities(&doc, "https://t.example/wmts?x=1", None).unwrap();
         assert_eq!(s.kind, Kind::Wmts);
-        assert_eq!(s.tiles, "https://t.example/rest/relief/default/GoogleMapsCompatible/{z}/{y}/{x}.png");
-        assert_eq!((s.min_z, s.max_z), (0, 2), "the layer's limits stop at level 2");
+        assert_eq!(
+            s.tiles,
+            "https://t.example/rest/relief/default/GoogleMapsCompatible/{z}/{y}/{x}.png"
+        );
+        assert_eq!(
+            (s.min_z, s.max_z),
+            (0, 2),
+            "the layer's limits stop at level 2"
+        );
         assert_eq!(s.format, "image/png");
         assert_eq!(s.bounds, Some([5.0, 45.0, 11.0, 48.0]));
         assert_eq!(s.name, "Test WMTS: Relief");
@@ -612,22 +804,46 @@ mod tests {
 
     #[test]
     fn wmts_with_two_digit_matrix_names_uses_a_padded_level() {
-        let xml = fixtures::WMTS.replace("<ows:Identifier>0</ows:Identifier>", "<ows:Identifier>00</ows:Identifier>")
-            .replace("<ows:Identifier>1</ows:Identifier>", "<ows:Identifier>01</ows:Identifier>")
-            .replace("<ows:Identifier>2</ows:Identifier>", "<ows:Identifier>02</ows:Identifier>")
-            .replace("<ows:Identifier>3</ows:Identifier>", "<ows:Identifier>03</ows:Identifier>")
+        let xml = fixtures::WMTS
+            .replace(
+                "<ows:Identifier>0</ows:Identifier>",
+                "<ows:Identifier>00</ows:Identifier>",
+            )
+            .replace(
+                "<ows:Identifier>1</ows:Identifier>",
+                "<ows:Identifier>01</ows:Identifier>",
+            )
+            .replace(
+                "<ows:Identifier>2</ows:Identifier>",
+                "<ows:Identifier>02</ows:Identifier>",
+            )
+            .replace(
+                "<ows:Identifier>3</ows:Identifier>",
+                "<ows:Identifier>03</ows:Identifier>",
+            )
             .replace("<TileMatrix>0</TileMatrix>", "<TileMatrix>00</TileMatrix>")
             .replace("<TileMatrix>1</TileMatrix>", "<TileMatrix>01</TileMatrix>")
             .replace("<TileMatrix>2</TileMatrix>", "<TileMatrix>02</TileMatrix>");
-        let s = from_capabilities(&parse(&xml).unwrap(), "https://t.example/cap", Some("relief")).unwrap();
-        assert!(s.tiles.contains("GoogleMapsCompatible/{z02}/{y}/{x}.png"), "{}", s.tiles);
+        let s = from_capabilities(
+            &parse(&xml).unwrap(),
+            "https://t.example/cap",
+            Some("relief"),
+        )
+        .unwrap();
+        assert!(
+            s.tiles.contains("GoogleMapsCompatible/{z02}/{y}/{x}.png"),
+            "{}",
+            s.tiles
+        );
         let k = crate::geo::TileKey::new(3, 5, 2);
         assert!(crate::sources::TileSource::url_from(&s.tiles, k).contains("/03/2/5.png"));
     }
 
     #[test]
     fn wmts_falls_back_to_key_value_requests() {
-        let xml = fixtures::WMTS.replace("<ResourceURL", "<Gone").replace("</ResourceURL>", "</Gone>");
+        let xml = fixtures::WMTS
+            .replace("<ResourceURL", "<Gone")
+            .replace("</ResourceURL>", "</Gone>");
         let xml = xml.replace(r#"<Gone format="image/png" resourceType="tile" template="https://t.example/rest/relief/{Style}/{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.png"/>"#, "");
         let doc = parse(&xml).unwrap();
         let s = from_capabilities(&doc, "https://t.example/cap", Some("relief")).unwrap();
@@ -641,18 +857,27 @@ mod tests {
     fn wmts_says_clearly_when_only_other_sets_are_offered() {
         let doc = parse(fixtures::WMTS).unwrap();
         let e = from_capabilities(&doc, "https://t.example/cap", Some("polar")).unwrap_err();
-        assert!(e.contains("not web mercator") && e.contains("EPSG:4326 (4326)"), "{e}");
+        assert!(
+            e.contains("not web mercator") && e.contains("EPSG:4326 (4326)"),
+            "{e}"
+        );
         let e = from_capabilities(&doc, "https://t.example/cap", Some("nothing")).unwrap_err();
         assert!(e.contains("no layer called nothing"), "{e}");
     }
 
     #[test]
     fn wmts_matrix_names_must_follow_the_levels() {
-        let xml = fixtures::WMTS.replace("<ows:Identifier>1</ows:Identifier>", "<ows:Identifier>one</ows:Identifier>");
+        let xml = fixtures::WMTS.replace(
+            "<ows:Identifier>1</ows:Identifier>",
+            "<ows:Identifier>one</ows:Identifier>",
+        );
         let xml = xml.replace("<TileMatrix>1</TileMatrix>", "<TileMatrix>one</TileMatrix>");
         let doc = parse(&xml).unwrap();
         let e = from_capabilities(&doc, "https://t.example/cap", Some("relief")).unwrap_err();
-        assert!(e.ends_with("do not follow the zoom levels: level 1 is called one"), "{e}");
+        assert!(
+            e.ends_with("do not follow the zoom levels: level 1 is called one"),
+            "{e}"
+        );
     }
 
     #[test]
@@ -669,10 +894,16 @@ mod tests {
         assert_eq!(s.max_z, WMS_DEFAULT_MAX_Z);
         // The box for the whole world is the same square in both versions.
         let url = crate::sources::TileSource::url_from(&s.tiles, crate::geo::TileKey::new(0, 0, 0));
-        assert!(url.contains("BBOX=-20037508.343,-20037508.343,20037508.343,20037508.343"), "{url}");
+        assert!(
+            url.contains("BBOX=-20037508.343,-20037508.343,20037508.343,20037508.343"),
+            "{url}"
+        );
         // Zoom 1, tile x=1, y=0 is the north-east quarter: east and north come last.
         let url = crate::sources::TileSource::url_from(&s.tiles, crate::geo::TileKey::new(1, 1, 0));
-        assert!(url.contains("BBOX=0.000,0.000,20037508.343,20037508.343"), "{url}");
+        assert!(
+            url.contains("BBOX=0.000,0.000,20037508.343,20037508.343"),
+            "{url}"
+        );
     }
 
     #[test]
@@ -688,8 +919,11 @@ mod tests {
         let doc = parse(&fixtures::WMS130.replace("<CRS>EPSG:3857</CRS>", "")).unwrap();
         let e = from_capabilities(&doc, "https://w.example/wms", None).unwrap_err();
         assert!(e.contains("EPSG:3857") && e.contains("EPSG:4326"), "{e}");
-        let doc = parse(&fixtures::WMS130.replace("version=\"1.3.0\"", "version=\"1.1.0\"")).unwrap();
-        assert!(from_capabilities(&doc, "https://w.example/wms", None).unwrap_err().contains("1.1.0"));
+        let doc =
+            parse(&fixtures::WMS130.replace("version=\"1.3.0\"", "version=\"1.1.0\"")).unwrap();
+        assert!(from_capabilities(&doc, "https://w.example/wms", None)
+            .unwrap_err()
+            .contains("1.1.0"));
     }
 
     #[test]
@@ -698,7 +932,12 @@ mod tests {
         assert_eq!(max_zoom_for_scale(2183.0), 17);
         assert_eq!(max_zoom_for_scale(1.0), ABSOLUTE_MAX_Z);
         let doc = parse(fixtures::WMS130).unwrap();
-        assert_eq!(from_capabilities(&doc, "https://w.example/wms", Some("dem")).unwrap().max_z, 17);
+        assert_eq!(
+            from_capabilities(&doc, "https://w.example/wms", Some("dem"))
+                .unwrap()
+                .max_z,
+            17
+        );
     }
 
     #[test]
@@ -720,8 +959,17 @@ mod tests {
         v["id"] = json!("../../etc");
         let back = Service::from_json(&v).unwrap();
         assert_ne!(back.id, "../../etc");
-        assert!(back.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
-        for (key, value) in [("tiles", json!("file:///x/{z}/{x}/{y}")), ("tiles", json!("https://u:p@h/{z}/{x}/{y}")), ("kind", json!("ftp")), ("max_zoom", json!(60)), ("tile_size", json!(5))] {
+        assert!(back
+            .id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
+        for (key, value) in [
+            ("tiles", json!("file:///x/{z}/{x}/{y}")),
+            ("tiles", json!("https://u:p@h/{z}/{x}/{y}")),
+            ("kind", json!("ftp")),
+            ("max_zoom", json!(60)),
+            ("tile_size", json!(5)),
+        ] {
             let mut v = s.to_json();
             v[key] = value;
             assert!(Service::from_json(&v).is_err(), "{key}");
@@ -743,8 +991,14 @@ mod tests {
     fn queries_are_appended_in_the_right_form() {
         assert_eq!(append_query("https://a/b", "x=1"), "https://a/b?x=1");
         assert_eq!(append_query("https://a/b?", "x=1"), "https://a/b?x=1");
-        assert_eq!(append_query("https://a/b?k=v", "x=1"), "https://a/b?k=v&x=1");
-        assert_eq!(append_query("https://a/b?k=v&", "x=1"), "https://a/b?k=v&x=1");
+        assert_eq!(
+            append_query("https://a/b?k=v", "x=1"),
+            "https://a/b?k=v&x=1"
+        );
+        assert_eq!(
+            append_query("https://a/b?k=v&", "x=1"),
+            "https://a/b?k=v&x=1"
+        );
         assert_eq!(pct("image/png"), "image%2Fpng");
         assert_eq!(pct("EPSG:3857"), "EPSG:3857");
     }

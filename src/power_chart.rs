@@ -7,9 +7,9 @@
 //! its years where Ember has no months.
 
 use crate::energy::{Palette, Source};
-use crate::power_feed::{Moment, FILTERS};
 use crate::gui::{self, Gui};
 use crate::owid::{Country, Series, CREDIT};
+use crate::power_feed::{Moment, FILTERS};
 use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -78,8 +78,18 @@ fn layers(palette: Palette) -> [(usize, [u8; 3], &'static str, bool); 12] {
 
 /// The chart for a day of quarter hours, `None` where SMARD has none, with the marker at
 /// `marker` (0 to 1) if the clock is in the day.
-pub fn chart(moments: &[Option<Moment>], intensity: Option<Vec<Option<f32>>>, marker: Option<f64>, palette: Palette) -> Chart {
-    let values = |i: usize| moments.iter().map(|m| m.as_ref().map(|m| m.mw[i])).collect::<Vec<_>>();
+pub fn chart(
+    moments: &[Option<Moment>],
+    intensity: Option<Vec<Option<f32>>>,
+    marker: Option<f64>,
+    palette: Palette,
+) -> Chart {
+    let values = |i: usize| {
+        moments
+            .iter()
+            .map(|m| m.as_ref().map(|m| m.mw[i]))
+            .collect::<Vec<_>>()
+    };
     // Series SMARD does not have for the day are left out of the legend.
     let layers = layers(palette)
         .into_iter()
@@ -87,7 +97,10 @@ pub fn chart(moments: &[Option<Moment>], intensity: Option<Vec<Option<f32>>>, ma
         .filter(|l| l.2.iter().flatten().any(|&v| v > 0.0))
         .collect();
     let intensity = intensity.filter(|v| v.iter().flatten().any(|&g| g > 0.0));
-    let labels = (0..=24).step_by(3).map(|h| (h as f64 / 24.0, format!("{h:02}"))).collect();
+    let labels = (0..=24)
+        .step_by(3)
+        .map(|h| (h as f64 / 24.0, format!("{h:02}")))
+        .collect();
     Chart {
         layers,
         line: ("Consumption".to_string(), values(FILTERS.len() - 1)),
@@ -122,11 +135,18 @@ pub fn span(c: Option<&Country>, (year, month): (i32, u32)) -> Span {
     let Some(c) = c else { return Span::Nothing };
     let g = Series::Generation;
     if c.has_monthly() {
-        if let Some(((y, m), _)) = c.latest_month(g, year, month).or_else(|| c.latest_month(g, 9999, 12)) {
+        if let Some(((y, m), _)) = c
+            .latest_month(g, year, month)
+            .or_else(|| c.latest_month(g, 9999, 12))
+        {
             return Span::Months(y, m);
         }
     }
-    match c.latest_year(g, year).map(|(y, _)| y).or_else(|| c.years(g).map(|(_, last)| last)) {
+    match c
+        .latest_year(g, year)
+        .map(|(y, _)| y)
+        .or_else(|| c.years(g).map(|(_, last)| last))
+    {
         Some(y) => Span::Years(y),
         None => Span::Nothing,
     }
@@ -150,7 +170,9 @@ const REST_LAYER: usize = 3;
 /// The rest counts once it is this share of the total; below, it is rounding.
 const REST_SHARE: f64 = 0.005;
 
-const MONTH_NAMES: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTH_NAMES: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 /// A step from 1, 2 or 5 times a power of ten that puts about four lines under `top`.
 fn nice_tick(top: f32) -> f32 {
@@ -159,28 +181,59 @@ fn nice_tick(top: f32) -> f32 {
     }
     let raw = top / 4.0;
     let pow = 10f32.powf(raw.log10().floor());
-    [1.0, 2.0, 5.0, 10.0].into_iter().map(|k| k * pow).find(|&t| t >= raw).unwrap_or(10.0 * pow)
+    [1.0, 2.0, 5.0, 10.0]
+        .into_iter()
+        .map(|k| k * pow)
+        .find(|&t| t >= raw)
+        .unwrap_or(10.0 * pow)
 }
 
 /// A country's chart over `span` in TWh: generation stacked by source as bars, demand as the line
 /// and the carbon intensity at the right, with the marker on the clock's month or year.
 /// `None` for [`Span::Nothing`].
-pub fn country_chart(c: &Country, span: Span, (year, month): (i32, u32), palette: Palette) -> Option<Chart> {
+pub fn country_chart(
+    c: &Country,
+    span: Span,
+    (year, month): (i32, u32),
+    palette: Palette,
+) -> Option<Chart> {
     // The steps as (year, month), month 0 for a whole year.
     let steps: Vec<(i32, u32)> = match span {
         Span::Months(y, m) => {
             let end = y * 12 + m as i32 - 1;
-            (end - MONTHS_SHOWN + 1..=end).map(|t| (t.div_euclid(12), t.rem_euclid(12) as u32 + 1)).collect()
+            (end - MONTHS_SHOWN + 1..=end)
+                .map(|t| (t.div_euclid(12), t.rem_euclid(12) as u32 + 1))
+                .collect()
         }
         Span::Years(y) => (y - YEARS_SHOWN + 1..=y).map(|y| (y, 0)).collect(),
         Span::Nothing => return None,
     };
-    let get = |s: Series, (y, m): (i32, u32)| if m == 0 { c.year(s, y) } else { c.month(s, y, m) };
+    let get = |s: Series, (y, m): (i32, u32)| {
+        if m == 0 {
+            c.year(s, y)
+        } else {
+            c.month(s, y, m)
+        }
+    };
     let all = layers(palette);
-    let mut values: Vec<Vec<Option<f32>>> = COUNTRY_LAYERS.iter().map(|&(s, _, _)| steps.iter().map(|&t| get(s, t).map(|v| v.max(0.0) as f32)).collect()).collect();
+    let mut values: Vec<Vec<Option<f32>>> = COUNTRY_LAYERS
+        .iter()
+        .map(|&(s, _, _)| {
+            steps
+                .iter()
+                .map(|&t| get(s, t).map(|v| v.max(0.0) as f32))
+                .collect()
+        })
+        .collect();
     for (k, &t) in steps.iter().enumerate() {
-        let Some(total) = get(Series::Generation, t) else { continue };
-        let sum: f64 = COUNTRY_LAYERS.iter().filter_map(|&(s, _, _)| get(s, t)).map(|v| v.max(0.0)).sum();
+        let Some(total) = get(Series::Generation, t) else {
+            continue;
+        };
+        let sum: f64 = COUNTRY_LAYERS
+            .iter()
+            .filter_map(|&(s, _, _)| get(s, t))
+            .map(|v| v.max(0.0))
+            .sum();
         let rest = total - sum;
         if rest > REST_SHARE * total {
             let v = &mut values[REST_LAYER][k];
@@ -193,17 +246,28 @@ pub fn country_chart(c: &Country, span: Span, (year, month): (i32, u32), palette
         .map(|(&(_, i, name), v)| (all[i].1, name.to_string(), v, all[i].3))
         .filter(|l| l.2.iter().flatten().any(|&v| v > 0.0))
         .collect();
-    let line: Vec<Option<f32>> = steps.iter().map(|&t| get(Series::Demand, t).map(|v| v as f32)).collect();
-    let intensity: Vec<Option<f32>> = steps.iter().map(|&t| get(Series::CarbonIntensity, t).map(|v| v as f32)).collect();
+    let line: Vec<Option<f32>> = steps
+        .iter()
+        .map(|&t| get(Series::Demand, t).map(|v| v as f32))
+        .collect();
+    let intensity: Vec<Option<f32>> = steps
+        .iter()
+        .map(|&t| get(Series::CarbonIntensity, t).map(|v| v as f32))
+        .collect();
     let n = steps.len() as f64;
     let centre = |k: usize| (k as f64 + 0.5) / n;
-    let now = if matches!(span, Span::Years(_)) { (year, 0) } else { (year, month) };
+    let now = if matches!(span, Span::Years(_)) {
+        (year, 0)
+    } else {
+        (year, month)
+    };
     let marker = steps.iter().position(|&t| t == now).map(centre);
     let labels = steps
         .iter()
         .enumerate()
         .filter_map(|(k, &(y, m))| match m {
-            0 => ((steps.len() - 1 - k).is_multiple_of(2) || steps.len() <= 6).then(|| (centre(k), y.to_string())),
+            0 => ((steps.len() - 1 - k).is_multiple_of(2) || steps.len() <= 6)
+                .then(|| (centre(k), y.to_string())),
             1 => Some((centre(k), y.to_string())),
             7 => Some((centre(k), MONTH_NAMES[6].to_string())),
             _ => None,
@@ -229,7 +293,12 @@ pub fn country_chart(c: &Country, span: Span, (year, month): (i32, u32), palette
 
 /// The window's content for a selected country other than Germany: its months, or its years
 /// where Ember has no months, or a word that there is nothing.
-pub fn country_model(c: Option<&Country>, name: &str, clock: (i32, u32), palette: Palette) -> Model {
+pub fn country_model(
+    c: Option<&Country>,
+    name: &str,
+    clock: (i32, u32),
+    palette: Palette,
+) -> Model {
     let span = span(c, clock);
     let chart = c.and_then(|c| country_chart(c, span, clock, palette));
     let (title, note) = match span {
@@ -298,14 +367,33 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Option<Event> 
 fn plot(ui: &mut egui::Ui, c: &Chart, size: Vec2) {
     let (r, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let v = ui.visuals();
-    let (ink, weak, grid) = (v.text_color(), v.weak_text_color(), v.widgets.noninteractive.bg_stroke.color);
+    let (ink, weak, grid) = (
+        v.text_color(),
+        v.weak_text_color(),
+        v.widgets.noninteractive.bg_stroke.color,
+    );
     let small = egui::FontId::proportional(11.0);
     let right = if c.intensity.is_some() { 30.0 } else { 4.0 };
-    let plot = Rect::from_min_max(Pos2::new(r.left() + 28.0, r.top() + 6.0), Pos2::new(r.right() - right, r.bottom() - 18.0));
+    let plot = Rect::from_min_max(
+        Pos2::new(r.left() + 28.0, r.top() + 6.0),
+        Pos2::new(r.right() - right, r.bottom() - 18.0),
+    );
     let p = ui.painter().with_clip_rect(r);
-    let steps = c.line.1.len().max(c.layers.iter().map(|l| l.2.len()).max().unwrap_or(0)).max(1);
-    let stack = |i: usize| c.layers.iter().map(|l| l.2.get(i).copied().flatten().unwrap_or(0.0)).sum::<f32>();
-    let top = (0..steps).map(|i| stack(i).max(c.line.1.get(i).copied().flatten().unwrap_or(0.0))).fold(0.0f32, f32::max);
+    let steps = c
+        .line
+        .1
+        .len()
+        .max(c.layers.iter().map(|l| l.2.len()).max().unwrap_or(0))
+        .max(1);
+    let stack = |i: usize| {
+        c.layers
+            .iter()
+            .map(|l| l.2.get(i).copied().flatten().unwrap_or(0.0))
+            .sum::<f32>()
+    };
+    let top = (0..steps)
+        .map(|i| stack(i).max(c.line.1.get(i).copied().flatten().unwrap_or(0.0)))
+        .fold(0.0f32, f32::max);
     let tick = c.tick.max(f32::MIN_POSITIVE);
     let max = (top / tick).ceil().max(1.0) * tick;
     // As many decimals as the step needs.
@@ -316,19 +404,42 @@ fn plot(ui: &mut egui::Ui, c: &Chart, size: Vec2) {
     let mut t = 0.0;
     while t <= max + 1.0 {
         let y = y_of(t);
-        p.line_segment([Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)], Stroke::new(1.0, grid));
-        p.text(Pos2::new(plot.left() - 4.0, y), egui::Align2::RIGHT_CENTER, format!("{:.*}", decimals, t / c.unit.1), small.clone(), weak);
+        p.line_segment(
+            [Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)],
+            Stroke::new(1.0, grid),
+        );
+        p.text(
+            Pos2::new(plot.left() - 4.0, y),
+            egui::Align2::RIGHT_CENTER,
+            format!("{:.*}", decimals, t / c.unit.1),
+            small.clone(),
+            weak,
+        );
         t += tick;
     }
     // The areas, or the bars, one step at a time.
-    let gap = if c.bars { (plot.width() / steps as f32 * 0.12).min(3.0) } else { 0.0 };
+    let gap = if c.bars {
+        (plot.width() / steps as f32 * 0.12).min(3.0)
+    } else {
+        0.0
+    };
     for i in 0..steps {
-        let (x0, x1) = if c.bars { (x_of(i as f32) + gap, x_of(i as f32 + 1.0) - gap) } else { (x_of(i as f32), x_of(i as f32 + 1.0) + 0.5) };
+        let (x0, x1) = if c.bars {
+            (x_of(i as f32) + gap, x_of(i as f32 + 1.0) - gap)
+        } else {
+            (x_of(i as f32), x_of(i as f32 + 1.0) + 0.5)
+        };
         let mut base = 0.0f32;
         for (colour, _, values, hatched) in &c.layers {
-            let Some(v) = values.get(i).copied().flatten() else { continue };
+            let Some(v) = values.get(i).copied().flatten() else {
+                continue;
+            };
             let cell = Rect::from_min_max(Pos2::new(x0, y_of(base + v)), Pos2::new(x1, y_of(base)));
-            p.rect_filled(cell, 0.0, Color32::from_rgb(colour[0], colour[1], colour[2]));
+            p.rect_filled(
+                cell,
+                0.0,
+                Color32::from_rgb(colour[0], colour[1], colour[2]),
+            );
             if *hatched {
                 gui::hatch(&p.with_clip_rect(cell), cell, *colour);
             }
@@ -339,7 +450,10 @@ fn plot(ui: &mut egui::Ui, c: &Chart, size: Vec2) {
     let mut run: Vec<Pos2> = Vec::new();
     let flush = |run: &mut Vec<Pos2>| {
         if run.len() > 1 {
-            p.add(egui::Shape::line(std::mem::take(run), Stroke::new(2.0, ink)));
+            p.add(egui::Shape::line(
+                std::mem::take(run),
+                Stroke::new(2.0, ink),
+            ));
         }
         run.clear();
     };
@@ -359,20 +473,35 @@ fn plot(ui: &mut egui::Ui, c: &Chart, size: Vec2) {
         let gy = |v: f32| plot.bottom() - v / gmax * plot.height();
         for k in 0..=ticks as usize {
             let v = k as f32 * step;
-            p.text(Pos2::new(plot.right() + 3.0, gy(v)), egui::Align2::LEFT_CENTER, format!("{v:.0}"), small.clone(), INTENSITY.gamma_multiply(0.85));
+            p.text(
+                Pos2::new(plot.right() + 3.0, gy(v)),
+                egui::Align2::LEFT_CENTER,
+                format!("{v:.0}"),
+                small.clone(),
+                INTENSITY.gamma_multiply(0.85),
+            );
         }
         let mut run: Vec<Pos2> = Vec::new();
         let flush = |run: &mut Vec<Pos2>| {
             if run.len() > 1 {
                 // A dark edge keeps the thin line apart from the areas under it.
-                p.add(egui::Shape::line(run.clone(), Stroke::new(3.0, Color32::from_black_alpha(150))));
-                p.add(egui::Shape::line(std::mem::take(run), Stroke::new(1.4, INTENSITY)));
+                p.add(egui::Shape::line(
+                    run.clone(),
+                    Stroke::new(3.0, Color32::from_black_alpha(150)),
+                ));
+                p.add(egui::Shape::line(
+                    std::mem::take(run),
+                    Stroke::new(1.4, INTENSITY),
+                ));
             }
             run.clear();
         };
         for i in 0..g.len() {
             match g[i] {
-                Some(v) => run.push(Pos2::new(plot.left() + (i as f32 + 0.5) / g.len() as f32 * plot.width(), gy(v))),
+                Some(v) => run.push(Pos2::new(
+                    plot.left() + (i as f32 + 0.5) / g.len() as f32 * plot.width(),
+                    gy(v),
+                )),
                 None => flush(&mut run),
             }
         }
@@ -380,11 +509,20 @@ fn plot(ui: &mut egui::Ui, c: &Chart, size: Vec2) {
     }
     if let Some(m) = c.marker {
         let x = plot.left() + m.clamp(0.0, 1.0) as f32 * plot.width();
-        p.line_segment([Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())], Stroke::new(1.5, Color32::from_rgb(255, 214, 70)));
+        p.line_segment(
+            [Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())],
+            Stroke::new(1.5, Color32::from_rgb(255, 214, 70)),
+        );
     }
     for (at, text) in &c.labels {
         let x = plot.left() + plot.width() * *at as f32;
-        p.text(Pos2::new(x, plot.bottom() + 3.0), egui::Align2::CENTER_TOP, text, small.clone(), weak);
+        p.text(
+            Pos2::new(x, plot.bottom() + 3.0),
+            egui::Align2::CENTER_TOP,
+            text,
+            small.clone(),
+            weak,
+        );
     }
 }
 
@@ -393,12 +531,18 @@ fn legend(ui: &mut egui::Ui, c: &Chart) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(4.0, 2.0);
         let (r, _) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), egui::Sense::hover());
-        ui.painter().line_segment([r.left_center(), r.right_center()], Stroke::new(2.0, ui.visuals().text_color()));
+        ui.painter().line_segment(
+            [r.left_center(), r.right_center()],
+            Stroke::new(2.0, ui.visuals().text_color()),
+        );
         ui.label(egui::RichText::new(&c.line.0).small());
         ui.add_space(8.0);
         if c.intensity.is_some() {
             let (r, _) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), egui::Sense::hover());
-            ui.painter().line_segment([r.left_center(), r.right_center()], Stroke::new(1.2, INTENSITY));
+            ui.painter().line_segment(
+                [r.left_center(), r.right_center()],
+                Stroke::new(1.2, INTENSITY),
+            );
             ui.label(egui::RichText::new("g CO\u{2082}/kWh, right").small());
             ui.add_space(8.0);
         }
@@ -423,18 +567,31 @@ mod tests {
 
     #[test]
     fn the_chart_holds_the_sources_that_ran_and_the_consumption() {
-        let day: Vec<Option<Moment>> = (0..96).map(|i| (i < 60).then(|| moment(i as f32 * 100.0, 40_000.0))).collect();
+        let day: Vec<Option<Moment>> = (0..96)
+            .map(|i| (i < 60).then(|| moment(i as f32 * 100.0, 40_000.0)))
+            .collect();
         let c = chart(&day, None, Some(0.5), Palette::Standard);
         let names: Vec<&str> = c.layers.iter().map(|l| l.1.as_str()).collect();
-        assert_eq!(names, ["Lignite", "Solar"], "stacked steady first, and only what ran");
+        assert_eq!(
+            names,
+            ["Lignite", "Solar"],
+            "stacked steady first, and only what ran"
+        );
         assert_eq!(c.line.1.len(), 96);
         assert_eq!(c.line.1[10], Some(40_000.0));
         assert_eq!(c.line.1[80], None);
         assert_eq!(c.layers[1].2[10], Some(1000.0));
         assert!(c.intensity.is_none());
-        let g: Vec<Option<f32>> = day.iter().map(|m| m.as_ref().and_then(|m| m.intensity())).collect();
+        let g: Vec<Option<f32>> = day
+            .iter()
+            .map(|m| m.as_ref().and_then(|m| m.intensity()))
+            .collect();
         let c = chart(&day, Some(g), Some(0.5), Palette::Standard);
-        assert_eq!(c.intensity.as_ref().unwrap()[0], Some(820.0), "lignite alone at midnight");
+        assert_eq!(
+            c.intensity.as_ref().unwrap()[0],
+            Some(820.0),
+            "lignite alone at midnight"
+        );
     }
 
     use crate::owid::Owid;
@@ -449,7 +606,9 @@ mod tests {
         let (de, af) = (o.country("DEU").unwrap(), o.country("AFG").unwrap());
         assert_eq!(span(Some(de), (2025, 6)), Span::Months(2025, 6));
         // Past the last month, the latest; before the first, the latest too.
-        let Span::Months(y, m) = span(Some(de), (2100, 1)) else { panic!() };
+        let Span::Months(y, m) = span(Some(de), (2100, 1)) else {
+            panic!()
+        };
         assert!(y > 2025 && (1..=12).contains(&m));
         assert_eq!(span(Some(de), (1900, 1)), Span::Months(y, m));
         assert_eq!(span(Some(af), (2024, 6)), Span::Years(2024));
@@ -472,12 +631,18 @@ mod tests {
         // The colours are those of the day chart.
         let solar = c.layers.iter().find(|l| l.1 == "Solar").unwrap();
         assert_eq!(solar.0, Palette::Standard.colour(Source::Solar));
-        assert!(c.layers.iter().find(|l| l.1 == "Coal").unwrap().3, "fossil hatched");
+        assert!(
+            c.layers.iter().find(|l| l.1 == "Coal").unwrap().3,
+            "fossil hatched"
+        );
         // The last step is December 2025: the sources sum to the month's generation.
         let stack: f32 = c.layers.iter().filter_map(|l| l.2[23]).sum();
         let total = de.month(Series::Generation, 2025, 12).unwrap() as f32;
         assert!((stack - total).abs() < 0.01 * total, "{stack} {total}");
-        assert_eq!(c.line.1[23], de.month(Series::Demand, 2025, 12).map(|v| v as f32));
+        assert_eq!(
+            c.line.1[23],
+            de.month(Series::Demand, 2025, 12).map(|v| v as f32)
+        );
         assert!(c.intensity.as_ref().unwrap()[23].unwrap() > 100.0);
         // June 2025 is the 18th of the 24 months from January 2024.
         assert_eq!(c.marker, Some(17.5 / 24.0));

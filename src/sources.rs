@@ -173,7 +173,14 @@ const PNG: &str = "image/png";
 /// A finer layer of NASA Trek over part or all of a body, read from its capabilities document
 /// (`.../<layer>/1.0.0/WMTSCapabilities.xml`): 256-pixel PNG tiles in the same plate carrée
 /// matrix set as the base layers. Its deepest level was found by asking for tiles.
-const fn trek(id: &'static str, url: &'static str, cache: &'static str, min_z: u8, max_z: u8, bounds: &'static [[f64; 4]]) -> TileSource {
+const fn trek(
+    id: &'static str,
+    url: &'static str,
+    cache: &'static str,
+    min_z: u8,
+    max_z: u8,
+    bounds: &'static [[f64; 4]],
+) -> TileSource {
     TileSource {
         id,
         kind: Kind::Imagery,
@@ -566,13 +573,21 @@ impl TileSource {
 
     /// Which of this source's images holds a tile. Its images may be coarser than the tile.
     pub fn source_key(&self, k: TileKey) -> TileKey {
-        let same_detail = if self.pixels > 256 { k.z.saturating_sub(1) } else { k.z };
+        let same_detail = if self.pixels > 256 {
+            k.z.saturating_sub(1)
+        } else {
+            k.z
+        };
         k.ancestor(same_detail.min(self.max_z))
     }
 
     /// The finest tile that still gets new detail from this source.
     pub fn detail_z(&self) -> u8 {
-        if self.pixels > 256 { self.max_z + 1 } else { self.max_z }
+        if self.pixels > 256 {
+            self.max_z + 1
+        } else {
+            self.max_z
+        }
     }
 
     /// A tile's URL, from this source's own template or one looked up for it.
@@ -605,15 +620,34 @@ fn mercator_bbox(k: TileKey) -> String {
     let size = 2.0 * MERCATOR_EDGE / (1u64 << k.z) as f64;
     let west = -MERCATOR_EDGE + k.x as f64 * size;
     let north = MERCATOR_EDGE - k.y as f64 * size;
-    format!("{:.3},{:.3},{:.3},{:.3}", west, north - size, west + size, north)
+    format!(
+        "{:.3},{:.3},{:.3},{:.3}",
+        west,
+        north - size,
+        west + size,
+        north
+    )
 }
 
 /// All sources a cache server can serve.
 pub fn all() -> impl Iterator<Item = &'static TileSource> {
-    [&EOX, &TERRAIN, &MAP, &MOON_WAC, &MARS_VIKING, &MERCURY_MDIS, &CERES_FC, &VESTA_FC]
-        .into_iter()
-        .chain(DETAIL.iter())
-        .chain(crate::body::all().iter().flat_map(|b| b.detail.iter().copied()))
+    [
+        &EOX,
+        &TERRAIN,
+        &MAP,
+        &MOON_WAC,
+        &MARS_VIKING,
+        &MERCURY_MDIS,
+        &CERES_FC,
+        &VESTA_FC,
+    ]
+    .into_iter()
+    .chain(DETAIL.iter())
+    .chain(
+        crate::body::all()
+            .iter()
+            .flat_map(|b| b.detail.iter().copied()),
+    )
 }
 
 pub fn by_id(id: &str) -> Option<&'static TileSource> {
@@ -626,7 +660,12 @@ pub fn imagery_for(k: TileKey) -> Vec<(&'static TileSource, TileKey)> {
     let body = crate::body::current();
     if !body.surface_data {
         // The finer layers first, each where it has pictures, then the base.
-        let mut out: Vec<_> = body.detail.iter().filter(|s| k.z >= s.min_z && s.covers(k)).map(|s| (*s, s.source_key(k))).collect();
+        let mut out: Vec<_> = body
+            .detail
+            .iter()
+            .filter(|s| k.z >= s.min_z && s.covers(k))
+            .map(|s| (*s, s.source_key(k)))
+            .collect();
         out.push((body.imagery, body.imagery.source_key(k)));
         return out;
     }
@@ -646,14 +685,21 @@ pub fn imagery_for(k: TileKey) -> Vec<(&'static TileSource, TileKey)> {
 
 /// The chosen map service, if it has a picture for this tile.
 fn serving(k: TileKey) -> Option<&'static TileSource> {
-    crate::service_lib::active().base.filter(|b| k.z >= b.min_z && b.covers(k))
+    crate::service_lib::active()
+        .base
+        .filter(|b| k.z >= b.min_z && b.covers(k))
 }
 
 /// How far a tile may be split at this place, given the imagery available there.
 pub fn max_tile_z(k: TileKey) -> u8 {
     let body = crate::body::current();
     if !body.surface_data {
-        return body.detail.iter().filter(|s| s.covers(k)).map(|s| s.detail_z()).fold(body.imagery.detail_z(), u8::max);
+        return body
+            .detail
+            .iter()
+            .filter(|s| s.covers(k))
+            .map(|s| s.detail_z())
+            .fold(body.imagery.detail_z(), u8::max);
     }
     if k.z < BASE_TILE_MAX_Z {
         return BASE_TILE_MAX_Z;
@@ -685,18 +731,36 @@ mod tests {
     fn far_views_use_only_the_base() {
         assert_eq!(ids(key_at(47.27, 11.4, 10)), ["eox"]);
         assert_eq!(ids(key_at(47.27, 11.4, 12)), ["eox"]);
-        assert_eq!(ids(key_at(47.27, 11.4, 13)), ["basemap-at", "versatiles", "eox"]);
+        assert_eq!(
+            ids(key_at(47.27, 11.4, 13)),
+            ["basemap-at", "versatiles", "eox"]
+        );
     }
 
     #[test]
     fn close_views_prefer_detail_with_the_base_as_fallback() {
-        assert_eq!(ids(key_at(47.27, 11.4, 16)), ["basemap-at", "versatiles", "eox"]);
-        assert_eq!(ids(key_at(48.14, 11.58, 16)), ["bavaria", "versatiles", "eox"]);
-        assert_eq!(ids(key_at(46.02, 7.75, 16)), ["swisstopo", "versatiles", "eox"]);
+        assert_eq!(
+            ids(key_at(47.27, 11.4, 16)),
+            ["basemap-at", "versatiles", "eox"]
+        );
+        assert_eq!(
+            ids(key_at(48.14, 11.58, 16)),
+            ["bavaria", "versatiles", "eox"]
+        );
+        assert_eq!(
+            ids(key_at(46.02, 7.75, 16)),
+            ["swisstopo", "versatiles", "eox"]
+        );
         assert_eq!(ids(key_at(48.86, 2.35, 16)), ["ign", "versatiles", "eox"]);
         assert_eq!(ids(key_at(52.37, 4.90, 16)), ["pdok", "versatiles", "eox"]);
-        assert_eq!(ids(key_at(51.23, 6.78, 16)), ["nrw", "pdok", "versatiles", "eox"]);
-        assert_eq!(ids(key_at(52.52, 13.40, 16)), ["berlin", "versatiles", "eox"]);
+        assert_eq!(
+            ids(key_at(51.23, 6.78, 16)),
+            ["nrw", "pdok", "versatiles", "eox"]
+        );
+        assert_eq!(
+            ids(key_at(52.52, 13.40, 16)),
+            ["berlin", "versatiles", "eox"]
+        );
         assert_eq!(ids(key_at(40.42, -3.70, 16)), ["pnoa", "eox"]);
         assert_eq!(ids(key_at(50.11, 8.68, 16)), ["versatiles", "eox"]);
         assert_eq!(ids(key_at(35.68, 139.76, 16)), ["eox"]);
@@ -731,7 +795,12 @@ mod tests {
         ] {
             assert_eq!(ids(key_at(lat, lon, 18)), ["pnoa", "eox"], "{name}");
         }
-        for (name, lat, lon, expected) in [("Biarritz", 43.48, -1.56, "ign"), ("Perpignan", 42.70, 2.90, "ign"), ("Lisbon", 38.72, -9.14, "versatiles"), ("Porto", 41.15, -8.61, "versatiles")] {
+        for (name, lat, lon, expected) in [
+            ("Biarritz", 43.48, -1.56, "ign"),
+            ("Perpignan", 42.70, 2.90, "ign"),
+            ("Lisbon", 38.72, -9.14, "versatiles"),
+            ("Porto", 41.15, -8.61, "versatiles"),
+        ] {
             assert_eq!(ids(key_at(lat, lon, 18))[0], expected, "{name}");
         }
         for (name, lat, lon) in [
@@ -754,7 +823,15 @@ mod tests {
         ] {
             assert_eq!(ids(key_at(lat, lon, 18)), ["versatiles", "eox"], "{name}");
         }
-        for (name, lat, lon) in [("Cologne", 50.94, 6.96), ("Aachen", 50.78, 6.08), ("Muenster", 51.96, 7.63), ("Siegen", 50.87, 8.02), ("Bielefeld", 52.02, 8.53), ("Minden", 52.29, 8.92), ("Hoexter", 51.77, 9.38)] {
+        for (name, lat, lon) in [
+            ("Cologne", 50.94, 6.96),
+            ("Aachen", 50.78, 6.08),
+            ("Muenster", 51.96, 7.63),
+            ("Siegen", 50.87, 8.02),
+            ("Bielefeld", 52.02, 8.53),
+            ("Minden", 52.29, 8.92),
+            ("Hoexter", 51.77, 9.38),
+        ] {
             assert_eq!(ids(key_at(lat, lon, 18))[0], "nrw", "{name}");
         }
         for (name, lat, lon) in [
@@ -768,16 +845,41 @@ mod tests {
             ("Lueneburg", 53.25, 10.41),
             ("Luechow", 52.97, 11.15),
         ] {
-            assert_eq!(ids(key_at(lat, lon, 18)), ["lgln", "versatiles", "eox"], "{name}");
+            assert_eq!(
+                ids(key_at(lat, lon, 18)),
+                ["lgln", "versatiles", "eox"],
+                "{name}"
+            );
         }
-        for (name, lat, lon) in [("Hamburg", 53.55, 9.99), ("Kassel", 51.31, 9.49), ("Magdeburg", 52.13, 11.63), ("Erfurt", 50.98, 11.03)] {
+        for (name, lat, lon) in [
+            ("Hamburg", 53.55, 9.99),
+            ("Kassel", 51.31, 9.49),
+            ("Magdeburg", 52.13, 11.63),
+            ("Erfurt", 50.98, 11.03),
+        ] {
             assert_eq!(ids(key_at(lat, lon, 18)), ["versatiles", "eox"], "{name}");
         }
-        assert_eq!(ids(key_at(51.72, 8.75, 18)), ["nrw", "versatiles", "eox"], "Paderborn");
+        assert_eq!(
+            ids(key_at(51.72, 8.75, 18)),
+            ["nrw", "versatiles", "eox"],
+            "Paderborn"
+        );
         // On the Austrian border, so Austria's service is asked first and finds nothing.
-        assert_eq!(ids(key_at(48.15, 17.11, 18)), ["basemap-at", "versatiles", "eox"]);
-        for (name, lat, lon) in [("Warsaw", 52.23, 21.01), ("Rome", 41.90, 12.50), ("London", 51.50, -0.12), ("Tokyo", 35.68, 139.76)] {
-            assert_eq!(ids(key_at(lat, lon, 18)), ["eox"], "{name} has no service yet");
+        assert_eq!(
+            ids(key_at(48.15, 17.11, 18)),
+            ["basemap-at", "versatiles", "eox"]
+        );
+        for (name, lat, lon) in [
+            ("Warsaw", 52.23, 21.01),
+            ("Rome", 41.90, 12.50),
+            ("London", 51.50, -0.12),
+            ("Tokyo", 35.68, 139.76),
+        ] {
+            assert_eq!(
+                ids(key_at(lat, lon, 18)),
+                ["eox"],
+                "{name} has no service yet"
+            );
         }
     }
 
@@ -798,13 +900,20 @@ mod tests {
         }
         let k = key_at(50.11, 8.68, 19);
         assert_eq!(v.source_key(k), k.ancestor(17));
-        assert_eq!(TileSource::url_from(v.url, TileKey::new(17, 69_760, 45_445)), "https://tiles.versatiles.org/tiles/satellite/17/69760/45445");
+        assert_eq!(
+            TileSource::url_from(v.url, TileKey::new(17, 69_760, 45_445)),
+            "https://tiles.versatiles.org/tiles/satellite/17/69760/45445"
+        );
     }
 
     #[test]
     fn tiles_split_further_only_where_detail_exists() {
         assert_eq!(max_tile_z(key_at(50.11, 8.68, 16)), 18);
-        assert_eq!(max_tile_z(key_at(53.55, 9.99, 16)), 18, "no finer service covers Hamburg");
+        assert_eq!(
+            max_tile_z(key_at(53.55, 9.99, 16)),
+            18,
+            "no finer service covers Hamburg"
+        );
         assert_eq!(max_tile_z(key_at(52.10, 9.28, 16)), 19);
         assert_eq!(max_tile_z(key_at(47.27, 11.4, 16)), 19);
         assert_eq!(max_tile_z(key_at(48.14, 11.58, 16)), 18);
@@ -826,7 +935,9 @@ mod tests {
         );
         assert!(TileSource::url_from(EOX.url, k).ends_with("/g/18/91000/139000.jpg"));
         let ign = by_id("ign").unwrap();
-        assert!(TileSource::url_from(ign.url, k).contains("TILEMATRIX=18&TILEROW=91000&TILECOL=139000"));
+        assert!(
+            TileSource::url_from(ign.url, k).contains("TILEMATRIX=18&TILEROW=91000&TILECOL=139000")
+        );
     }
 
     #[test]
@@ -896,8 +1007,14 @@ mod tests {
         assert_eq!(MOON_WAC.grid, Grid::Equirect);
         assert_eq!(by_id("moon-wac").map(|s| s.max_z), Some(8));
         // A tile deeper than the service has is taken from its level 8 ancestor.
-        assert_eq!(MOON_WAC.source_key(TileKey::new(10, 4, 4)), TileKey::new(8, 1, 1));
+        assert_eq!(
+            MOON_WAC.source_key(TileKey::new(10, 4, 4)),
+            TileKey::new(8, 1, 1)
+        );
         // Its host is not Earth's, so server pacing is kept apart too.
-        assert_ne!(crate::fetcher::host_of(MOON_WAC.url), crate::fetcher::host_of(EOX.url));
+        assert_ne!(
+            crate::fetcher::host_of(MOON_WAC.url),
+            crate::fetcher::host_of(EOX.url)
+        );
     }
 }

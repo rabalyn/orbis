@@ -48,13 +48,28 @@ impl Curve {
         let u = ground.max(0.0);
         // Too short a hop to pan; the formulas divide by it.
         if u < 1e-4 * w0.min(w1) {
-            return Self { ground: 0.0, w0, w1, r0: 0.0, length: (w1 / w0).ln().abs() / RHO, zoom_only: true };
+            return Self {
+                ground: 0.0,
+                w0,
+                w1,
+                r0: 0.0,
+                length: (w1 / w0).ln().abs() / RHO,
+                zoom_only: true,
+            };
         }
         let r2 = RHO * RHO;
-        let b = |w: f64, sign: f64| (w1 * w1 - w0 * w0 + sign * r2 * r2 * u * u) / (2.0 * w * r2 * u);
+        let b =
+            |w: f64, sign: f64| (w1 * w1 - w0 * w0 + sign * r2 * r2 * u * u) / (2.0 * w * r2 * u);
         let r = |b: f64| (-b + (b * b + 1.0).sqrt()).ln();
         let (r0, r1) = (r(b(w0, 1.0)), r(b(w1, -1.0)));
-        Self { ground: u, w0, w1, r0, length: (r1 - r0) / RHO, zoom_only: false }
+        Self {
+            ground: u,
+            w0,
+            w1,
+            r0,
+            length: (r1 - r0) / RHO,
+            zoom_only: false,
+        }
     }
 
     /// How long the flight takes, longer for a longer path.
@@ -68,7 +83,10 @@ impl Curve {
         let eased = f * f * (3.0 - 2.0 * f);
         let s = eased * self.length;
         let (along, w) = if self.zoom_only {
-            (0.0, self.w0 * (if self.w1 >= self.w0 { 1.0 } else { -1.0 } * RHO * s).exp())
+            (
+                0.0,
+                self.w0 * (if self.w1 >= self.w0 { 1.0 } else { -1.0 } * RHO * s).exp(),
+            )
         } else {
             let r2 = RHO * RHO;
             let a = RHO * s + self.r0;
@@ -81,7 +99,11 @@ impl Curve {
             f if f >= 1.0 => (if self.zoom_only { 0.0 } else { 1.0 }, self.w1),
             _ => (along.clamp(0.0, 1.0), w),
         };
-        State { along, width: w, eased }
+        State {
+            along,
+            width: w,
+            eased,
+        }
     }
 }
 
@@ -104,14 +126,24 @@ mod tests {
 
     #[test]
     fn progress_is_monotonic_and_distance_continuous() {
-        for (g, d0, d1) in [(1.0e7, 1.0e6, 3.0e4), (2.0e3, 1.0e4, 5.0e3), (5.0e5, 2.0e5, 2.0e5)] {
+        for (g, d0, d1) in [
+            (1.0e7, 1.0e6, 3.0e4),
+            (2.0e3, 1.0e4, 5.0e3),
+            (5.0e5, 2.0e5, 2.0e5),
+        ] {
             let c = Curve::new(g, d0, d1);
             let s = samples(&c, 2000);
             for w in s.windows(2) {
                 assert!(w[1].along >= w[0].along - 1e-12, "{g}: going backwards");
                 // No jumps: the log distance changes by little between close samples.
-                assert!((w[1].width / w[0].width).ln().abs() < 0.05, "{g}: distance jumps");
-                assert!((w[1].along - w[0].along).abs() < 0.02, "{g}: position jumps");
+                assert!(
+                    (w[1].width / w[0].width).ln().abs() < 0.05,
+                    "{g}: distance jumps"
+                );
+                assert!(
+                    (w[1].along - w[0].along).abs() < 0.02,
+                    "{g}: position jumps"
+                );
             }
         }
     }
@@ -131,10 +163,16 @@ mod tests {
     #[test]
     fn long_hops_rise_and_short_ones_do_not() {
         let long = Curve::new(1.0e7, 1.0e5, 1.0e5);
-        let peak = samples(&long, 200).iter().map(|s| s.width).fold(0.0, f64::max);
+        let peak = samples(&long, 200)
+            .iter()
+            .map(|s| s.width)
+            .fold(0.0, f64::max);
         assert!(peak > 3.0 * 1.0e5, "peak {peak}");
         let short = Curve::new(2.0e4, 1.0e5, 1.0e5);
-        let peak = samples(&short, 200).iter().map(|s| s.width).fold(0.0, f64::max);
+        let peak = samples(&short, 200)
+            .iter()
+            .map(|s| s.width)
+            .fold(0.0, f64::max);
         assert!(peak < 1.5 * 1.0e5, "peak {peak}");
     }
 
@@ -144,7 +182,10 @@ mod tests {
             let c = Curve::new(0.0, d0, d1);
             let s = samples(&c, 100);
             assert!(s.iter().all(|s| s.along == 0.0));
-            assert!(s.windows(2).all(|w| (w[1].width - w[0].width).signum() == (d1 - d0).signum() || w[1].width == w[0].width));
+            assert!(s
+                .windows(2)
+                .all(|w| (w[1].width - w[0].width).signum() == (d1 - d0).signum()
+                    || w[1].width == w[0].width));
             assert!((s[100].width - d1).abs() < 1e-6);
         }
     }
@@ -155,7 +196,10 @@ mod tests {
         assert_eq!(tiny.duration(), MIN_SECONDS);
         let huge = Curve::new(2.0e7, 30.0, 30.0);
         assert_eq!(huge.duration(), MAX_SECONDS);
-        let (a, b) = (Curve::new(1.0e5, 1.0e5, 1.0e5), Curve::new(3.0e6, 1.0e5, 1.0e5));
+        let (a, b) = (
+            Curve::new(1.0e5, 1.0e5, 1.0e5),
+            Curve::new(3.0e6, 1.0e5, 1.0e5),
+        );
         assert!(b.duration() > a.duration());
     }
 }

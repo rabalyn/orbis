@@ -177,7 +177,9 @@ pub fn current() -> &'static Body {
 }
 
 pub fn by_id(id: &str) -> Option<&'static Body> {
-    ALL.iter().copied().find(|b| b.id == id.to_ascii_lowercase())
+    ALL.iter()
+        .copied()
+        .find(|b| b.id == id.to_ascii_lowercase())
 }
 
 /// Every body that can be chosen, Earth first.
@@ -202,7 +204,10 @@ pub fn max_zoom() -> u8 {
     if b.surface_data {
         sources::ABSOLUTE_MAX_Z
     } else {
-        b.detail.iter().map(|s| s.detail_z()).fold(b.imagery.detail_z(), u8::max)
+        b.detail
+            .iter()
+            .map(|s| s.detail_z())
+            .fold(b.imagery.detail_z(), u8::max)
     }
 }
 
@@ -235,7 +240,11 @@ mod tests {
 
     #[test]
     fn the_new_bodies_have_published_radii_and_their_own_imagery() {
-        for (id, a, b) in [("mars", 3_396_190.0, 3_376_200.0), ("mercury", 2_439_400.0, 2_439_400.0), ("ceres", 487_300.0, 446_000.0)] {
+        for (id, a, b) in [
+            ("mars", 3_396_190.0, 3_376_200.0),
+            ("mercury", 2_439_400.0, 2_439_400.0),
+            ("ceres", 487_300.0, 446_000.0),
+        ] {
             let body = by_id(id).unwrap();
             assert_eq!((body.a, body.b), (a, b));
             assert!((body.e2 - (1.0 - (b / a) * (b / a))).abs() < 1e-12);
@@ -260,7 +269,11 @@ mod tests {
             let sun = (b.sun)(t);
             assert!((sun.length() - 1.0).abs() < 1e-9, "{}", b.id);
             let names: Vec<_> = (b.sky_bodies)(t).iter().map(|p| p.name).collect();
-            assert!(!names.contains(&b.name) || b.id == "moon", "{}: {names:?}", b.id);
+            assert!(
+                !names.contains(&b.name) || b.id == "moon",
+                "{}: {names:?}",
+                b.id
+            );
             assert!(names.len() >= 5, "{}: {names:?}", b.id);
         }
     }

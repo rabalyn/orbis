@@ -56,7 +56,8 @@ impl Countries {
     /// The outlines built into the program.
     pub fn bundled() -> Option<&'static Countries> {
         static DATA: std::sync::OnceLock<Option<Countries>> = std::sync::OnceLock::new();
-        DATA.get_or_init(|| Countries::parse(include_bytes!("../data/countries.bin"))).as_ref()
+        DATA.get_or_init(|| Countries::parse(include_bytes!("../data/countries.bin")))
+            .as_ref()
     }
 
     pub fn parse(data: &[u8]) -> Option<Countries> {
@@ -85,24 +86,41 @@ impl Countries {
                     lat += r.varint()?;
                     lon += r.varint()?;
                     let p = [deg(lat), deg(lon)];
-                    bounds = [bounds[0].min(p[0]), bounds[1].min(p[1]), bounds[2].max(p[0]), bounds[3].max(p[1])];
+                    bounds = [
+                        bounds[0].min(p[0]),
+                        bounds[1].min(p[1]),
+                        bounds[2].max(p[0]),
+                        bounds[3].max(p[1]),
+                    ];
                     ring.push(p);
                 }
                 rings.push(ring);
             }
-            list.push(Outline { code, name, wikidata, label: [deg(lat0), deg(lon0)], rings, bounds });
+            list.push(Outline {
+                code,
+                name,
+                wikidata,
+                label: [deg(lat0), deg(lon0)],
+                rings,
+                bounds,
+            });
         }
         list.sort_by(|a, b| a.code.cmp(&b.code));
         Some(Countries { list })
     }
 
     pub fn get(&self, code: &str) -> Option<&Outline> {
-        let i = self.list.binary_search_by(|c| c.code.as_str().cmp(code)).ok()?;
+        let i = self
+            .list
+            .binary_search_by(|c| c.code.as_str().cmp(code))
+            .ok()?;
         Some(&self.list[i])
     }
 
     pub fn by_wikidata(&self, item: &str) -> Option<&Outline> {
-        self.list.iter().find(|c| !c.wikidata.is_empty() && c.wikidata == item)
+        self.list
+            .iter()
+            .find(|c| !c.wikidata.is_empty() && c.wikidata == item)
     }
 
     /// The country a point lies in.
@@ -165,12 +183,16 @@ mod tests {
         assert_eq!(code(c, -15.79, -47.88), Some("BRA")); // Brasília
         assert_eq!(code(c, 64.84, -147.72), Some("USA")); // Fairbanks
         assert_eq!(code(c, 0.0, -30.0), None); // Atlantic
-        // Every country with electricity figures has an outline, bar a few without one at 1:50m.
+                                               // Every country with electricity figures has an outline, bar a few without one at 1:50m.
         let o = Owid::bundled().unwrap();
         let missing: Vec<&str> = o
             .countries()
             .iter()
-            .filter(|k| k.code != "OWID_WRL" && k.year(crate::owid::Series::Generation, 2024).is_some() && c.get(&k.code).is_none())
+            .filter(|k| {
+                k.code != "OWID_WRL"
+                    && k.year(crate::owid::Series::Generation, 2024).is_some()
+                    && c.get(&k.code).is_none()
+            })
             .map(|k| k.code.as_str())
             .collect();
         assert!(missing.len() <= 6, "{missing:?}");

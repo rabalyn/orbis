@@ -1,9 +1,9 @@
 //! Disk cache for downloaded tiles.
 
+use crate::wtime::{Duration, SystemTime};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use crate::wtime::{Duration, SystemTime};
 
 /// What was used this recently is never removed.
 const KEEP_RECENT: Duration = Duration::from_secs(6 * 3600);
@@ -82,7 +82,9 @@ impl DiskCache {
     pub fn is_known_missing(&self, name: &str) -> bool {
         fs::metadata(self.missing_path(name))
             .and_then(|m| m.modified())
-            .is_ok_and(|noted| SystemTime::now().duration_since(noted).unwrap_or_default() < MISSING_FOR)
+            .is_ok_and(|noted| {
+                SystemTime::now().duration_since(noted).unwrap_or_default() < MISSING_FOR
+            })
     }
 
     /// A place for this cache's own state, which size limits do not remove.
@@ -135,7 +137,11 @@ fn collect(dir: &Path, out: &mut Vec<(PathBuf, u64, SystemTime)>) {
         if meta.is_dir() {
             collect(&path, out);
         } else if meta.is_file() {
-            out.push((path, meta.len(), meta.modified().unwrap_or(SystemTime::UNIX_EPOCH)));
+            out.push((
+                path,
+                meta.len(),
+                meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            ));
         }
     }
 }
@@ -152,7 +158,8 @@ mod tests {
 
     fn age(c: &DiskCache, name: &str, hours: u64) {
         let f = File::options().write(true).open(c.path(name)).unwrap();
-        f.set_modified(SystemTime::now() - Duration::from_secs(hours * 3600)).unwrap();
+        f.set_modified(SystemTime::now() - Duration::from_secs(hours * 3600))
+            .unwrap();
     }
 
     #[test]
@@ -182,8 +189,12 @@ mod tests {
         c.mark_missing("a/1.jpg");
         assert!(c.is_known_missing("a/1.jpg"));
         assert_eq!(c.get("a/1.jpg"), None, "a note is not a tile");
-        let note = File::options().write(true).open(c.missing_path("a/1.jpg")).unwrap();
-        note.set_modified(SystemTime::now() - Duration::from_secs(31 * 24 * 3600)).unwrap();
+        let note = File::options()
+            .write(true)
+            .open(c.missing_path("a/1.jpg"))
+            .unwrap();
+        note.set_modified(SystemTime::now() - Duration::from_secs(31 * 24 * 3600))
+            .unwrap();
         assert!(!c.is_known_missing("a/1.jpg"));
         let _ = fs::remove_dir_all(&c.root);
     }
@@ -195,7 +206,11 @@ mod tests {
         c.put("b/2.bin", &[0; 50]).unwrap();
         fs::write(c.state_path("servers.txt"), b"state").unwrap();
         assert_eq!(c.usage(), (2, 150));
-        assert_eq!(c.trim(10), 0, "recent data stays, and state is not even considered");
+        assert_eq!(
+            c.trim(10),
+            0,
+            "recent data stays, and state is not even considered"
+        );
         assert!(c.state_path("servers.txt").exists());
         let _ = fs::remove_dir_all(&c.root);
     }

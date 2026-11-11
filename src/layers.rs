@@ -20,7 +20,12 @@ pub struct LineKinds {
 
 impl LineKinds {
     pub fn of(s: &Settings) -> Self {
-        Self { streets: s.streets, trails: s.trails, trains: s.trains, boundaries: s.boundaries }
+        Self {
+            streets: s.streets,
+            trails: s.trails,
+            trains: s.trains,
+            boundaries: s.boundaries,
+        }
     }
 
     pub fn road(&self, class: RoadClass) -> bool {
@@ -43,7 +48,11 @@ pub struct NameKinds {
 
 impl NameKinds {
     pub fn of(s: &Settings) -> Self {
-        Self { cities: s.cities, other: s.other_names, streets: s.streets }
+        Self {
+            cities: s.cities,
+            other: s.other_names,
+            streets: s.streets,
+        }
     }
 
     pub fn any(&self) -> bool {
@@ -52,10 +61,17 @@ impl NameKinds {
 
     pub fn allows(&self, style: LabelStyle) -> bool {
         match style {
-            LabelStyle::Country | LabelStyle::State | LabelStyle::City | LabelStyle::Town | LabelStyle::Village | LabelStyle::Local => {
-                self.cities
-            }
-            LabelStyle::Sea | LabelStyle::Lake | LabelStyle::Peak | LabelStyle::Region | LabelStyle::Feature => self.other,
+            LabelStyle::Country
+            | LabelStyle::State
+            | LabelStyle::City
+            | LabelStyle::Town
+            | LabelStyle::Village
+            | LabelStyle::Local => self.cities,
+            LabelStyle::Sea
+            | LabelStyle::Lake
+            | LabelStyle::Peak
+            | LabelStyle::Region
+            | LabelStyle::Feature => self.other,
             LabelStyle::Road => self.other && self.streets,
         }
     }
@@ -67,37 +83,88 @@ mod tests {
 
     #[test]
     fn each_class_belongs_to_one_switch() {
-        let none = LineKinds { streets: false, trails: false, trains: false, boundaries: false };
+        let none = LineKinds {
+            streets: false,
+            trails: false,
+            trains: false,
+            boundaries: false,
+        };
         let only = |f: fn(&mut LineKinds)| {
             let mut k = none;
             f(&mut k);
-            RoadClass::ALL.iter().filter(|c| k.road(**c)).copied().collect::<Vec<_>>()
+            RoadClass::ALL
+                .iter()
+                .filter(|c| k.road(**c))
+                .copied()
+                .collect::<Vec<_>>()
         };
         assert_eq!(only(|k| k.trails = true), vec![RoadClass::Path]);
         assert_eq!(only(|k| k.trains = true), vec![RoadClass::Rail]);
         let streets = only(|k| k.streets = true);
         assert_eq!(streets.len(), RoadClass::ALL.len() - 2);
-        assert!(streets.contains(&RoadClass::Motorway) && streets.contains(&RoadClass::Service) && !streets.contains(&RoadClass::Path));
-        assert!(only(|k| k.boundaries = true).is_empty(), "boundaries are not roads");
+        assert!(
+            streets.contains(&RoadClass::Motorway)
+                && streets.contains(&RoadClass::Service)
+                && !streets.contains(&RoadClass::Path)
+        );
+        assert!(
+            only(|k| k.boundaries = true).is_empty(),
+            "boundaries are not roads"
+        );
     }
 
     #[test]
     fn names_follow_their_switches() {
-        let k = NameKinds { cities: true, other: false, streets: true };
-        assert!(k.allows(LabelStyle::City) && k.allows(LabelStyle::Country) && k.allows(LabelStyle::Local));
-        assert!(!k.allows(LabelStyle::Peak) && !k.allows(LabelStyle::Sea) && !k.allows(LabelStyle::Road));
-        let k = NameKinds { cities: false, other: true, streets: false };
-        assert!(k.allows(LabelStyle::Lake) && k.allows(LabelStyle::Peak) && !k.allows(LabelStyle::City));
+        let k = NameKinds {
+            cities: true,
+            other: false,
+            streets: true,
+        };
+        assert!(
+            k.allows(LabelStyle::City)
+                && k.allows(LabelStyle::Country)
+                && k.allows(LabelStyle::Local)
+        );
+        assert!(
+            !k.allows(LabelStyle::Peak)
+                && !k.allows(LabelStyle::Sea)
+                && !k.allows(LabelStyle::Road)
+        );
+        let k = NameKinds {
+            cities: false,
+            other: true,
+            streets: false,
+        };
+        assert!(
+            k.allows(LabelStyle::Lake) && k.allows(LabelStyle::Peak) && !k.allows(LabelStyle::City)
+        );
         assert!(!k.allows(LabelStyle::Road), "street names need the streets");
-        assert!(k.any() && !NameKinds { cities: false, other: false, streets: true }.any());
+        assert!(
+            k.any()
+                && !NameKinds {
+                    cities: false,
+                    other: false,
+                    streets: true
+                }
+                .any()
+        );
     }
 
     #[test]
     fn the_defaults_show_streets_but_not_trails_or_railways() {
         let s = Settings::default();
         let k = LineKinds::of(&s);
-        assert!(RoadClass::ALL.iter().filter(|c| !matches!(c, RoadClass::Path | RoadClass::Rail)).all(|c| k.road(*c)) && k.boundaries);
+        assert!(
+            RoadClass::ALL
+                .iter()
+                .filter(|c| !matches!(c, RoadClass::Path | RoadClass::Rail))
+                .all(|c| k.road(*c))
+                && k.boundaries
+        );
         assert!(!k.road(RoadClass::Path) && !k.road(RoadClass::Rail));
-        assert!(NameKinds::of(&s).allows(LabelStyle::City) && !NameKinds::of(&s).allows(LabelStyle::Road));
+        assert!(
+            NameKinds::of(&s).allows(LabelStyle::City)
+                && !NameKinds::of(&s).allows(LabelStyle::Road)
+        );
     }
 }

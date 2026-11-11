@@ -12,7 +12,10 @@
 
 use crate::nav::Button;
 use crate::wtime::Instant;
-use egui::{Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, Shadow, Stroke, TextStyle, Vec2};
+use egui::{
+    Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, Shadow, Stroke,
+    TextStyle, Vec2,
+};
 use glam::DVec2;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -111,11 +114,23 @@ impl Gui {
         self.ctx.set_visuals(visuals(self.dark));
         self.ctx.all_styles_mut(|style| {
             style.text_styles = [
-                (TextStyle::Small, FontId::new(11.5, FontFamily::Proportional)),
+                (
+                    TextStyle::Small,
+                    FontId::new(11.5, FontFamily::Proportional),
+                ),
                 (TextStyle::Body, FontId::new(13.5, FontFamily::Proportional)),
-                (TextStyle::Button, FontId::new(13.5, FontFamily::Proportional)),
-                (TextStyle::Heading, FontId::new(15.5, FontFamily::Name(BOLD.into()))),
-                (TextStyle::Monospace, FontId::new(12.5, FontFamily::Monospace)),
+                (
+                    TextStyle::Button,
+                    FontId::new(13.5, FontFamily::Proportional),
+                ),
+                (
+                    TextStyle::Heading,
+                    FontId::new(15.5, FontFamily::Name(BOLD.into())),
+                ),
+                (
+                    TextStyle::Monospace,
+                    FontId::new(12.5, FontFamily::Monospace),
+                ),
             ]
             .into();
             let s = &mut style.spacing;
@@ -156,9 +171,14 @@ impl Gui {
 
     /// Whether a window or icon of the interface lies under a position, in pixels.
     pub fn covers(&self, p: DVec2) -> bool {
-        let pos = egui::pos2((p.x / self.ppp as f64) as f32, (p.y / self.ppp as f64) as f32);
+        let pos = egui::pos2(
+            (p.x / self.ppp as f64) as f32,
+            (p.y / self.ppp as f64) as f32,
+        );
         // Overlays in the background let clicks through to the map, except the credits with their links.
-        self.ctx.layer_id_at(pos).is_some_and(|l| l.order != egui::Order::Background || l.id == egui::Id::unique(crate::readout::CREDITS))
+        self.ctx.layer_id_at(pos).is_some_and(|l| {
+            l.order != egui::Order::Background || l.id == egui::Id::unique(crate::readout::CREDITS)
+        })
     }
 
     /// The areas windows covered in the last frame, in pixels, as (x0, y0, x1, y1).
@@ -169,11 +189,19 @@ impl Gui {
     /// Notes a window's area as covered, in points.
     pub fn cover(&mut self, r: egui::Rect) {
         let k = self.ppp as f64;
-        self.covered.push([r.min.x as f64 * k, r.min.y as f64 * k, r.max.x as f64 * k, r.max.y as f64 * k]);
+        self.covered.push([
+            r.min.x as f64 * k,
+            r.min.y as f64 * k,
+            r.max.x as f64 * k,
+            r.max.y as f64 * k,
+        ]);
     }
 
     fn pos(&self, p: DVec2) -> egui::Pos2 {
-        egui::pos2((p.x / self.ppp as f64) as f32, (p.y / self.ppp as f64) as f32)
+        egui::pos2(
+            (p.x / self.ppp as f64) as f32,
+            (p.y / self.ppp as f64) as f32,
+        )
     }
 
     /// The pointer moved; true if the interface takes it (it is over a window, or dragging in one).
@@ -191,9 +219,16 @@ impl Gui {
 
     /// A button went down; true if the interface takes it.
     pub fn press(&mut self, b: Button) -> bool {
-        let Some(p) = self.pointer.filter(|p| self.covers(*p)) else { return false };
+        let Some(p) = self.pointer.filter(|p| self.covers(*p)) else {
+            return false;
+        };
         self.held = true;
-        self.events.push(egui::Event::PointerButton { pos: self.pos(p), button: button(b), pressed: true, modifiers: Default::default() });
+        self.events.push(egui::Event::PointerButton {
+            pos: self.pos(p),
+            button: button(b),
+            pressed: true,
+            modifiers: Default::default(),
+        });
         true
     }
 
@@ -201,7 +236,12 @@ impl Gui {
     pub fn release(&mut self, b: Button) -> bool {
         let pos = self.pointer.map_or(egui::Pos2::ZERO, |p| self.pos(p));
         // Always passed on, so that egui never thinks a button stays down.
-        self.events.push(egui::Event::PointerButton { pos, button: button(b), pressed: false, modifiers: Default::default() });
+        self.events.push(egui::Event::PointerButton {
+            pos,
+            button: button(b),
+            pressed: false,
+            modifiers: Default::default(),
+        });
         std::mem::take(&mut self.held)
     }
 
@@ -238,13 +278,19 @@ impl Gui {
         }
         self.covered.clear();
         let mut raw = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(self.size[0] as f32 / ppp, self.size[1] as f32 / ppp))),
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(self.size[0] as f32 / ppp, self.size[1] as f32 / ppp),
+            )),
             time: Some(self.started.elapsed().as_secs_f64()),
             events: std::mem::take(&mut self.events),
             focused: true,
             ..Default::default()
         };
-        raw.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(ppp);
+        raw.viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .native_pixels_per_point = Some(ppp);
         raw
     }
 
@@ -255,13 +301,23 @@ impl Gui {
                 self.links.push(u.url);
             }
         }
-        self.animating = out.viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.repaint_delay.is_zero());
+        self.animating = out
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .is_some_and(|v| v.repaint_delay.is_zero());
         let primitives = self.ctx.tessellate(out.shapes, out.pixels_per_point);
-        let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: self.size, pixels_per_point: out.pixels_per_point };
+        let screen = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: self.size,
+            pixels_per_point: out.pixels_per_point,
+        };
         // Textures from an earlier frame that was never drawn are kept, with this frame's changes after them.
         let mut textures = self.paint.take().map(|p| p.textures).unwrap_or_default();
         textures.append(out.textures_delta);
-        self.paint = Some(Paint { primitives, textures, screen });
+        self.paint = Some(Paint {
+            primitives,
+            textures,
+            screen,
+        });
     }
 
     /// Whether the interface wants another frame soon, such as for an animation.
@@ -270,12 +326,24 @@ impl Gui {
     }
 
     /// Uploads this frame's textures and vertices. Run before the frame's drawing is submitted.
-    pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) {
+    pub fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+    ) {
         if self.renderer.as_ref().is_none_or(|r| r.1 != format) {
-            let options = egui_wgpu::RendererOptions { msaa_samples: 1, depth_stencil_format: None, dithering: true, predictable_texture_filtering: false };
+            let options = egui_wgpu::RendererOptions {
+                msaa_samples: 1,
+                depth_stencil_format: None,
+                dithering: true,
+                predictable_texture_filtering: false,
+            };
             self.renderer = Some((egui_wgpu::Renderer::new(device, format, options), format));
         }
-        let (Some((renderer, _)), Some(paint)) = (&mut self.renderer, &mut self.paint) else { return };
+        let (Some((renderer, _)), Some(paint)) = (&mut self.renderer, &mut self.paint) else {
+            return;
+        };
         for id in self.free.drain(..) {
             renderer.free_texture(&id);
         }
@@ -286,14 +354,24 @@ impl Gui {
         }
         self.free.extend(paint.textures.free.drain());
         paint.textures.set.clear();
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("interface upload") });
-        let extra = renderer.update_buffers(device, queue, &mut encoder, &paint.primitives, &paint.screen);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("interface upload"),
+        });
+        let extra = renderer.update_buffers(
+            device,
+            queue,
+            &mut encoder,
+            &paint.primitives,
+            &paint.screen,
+        );
         queue.submit(std::iter::once(encoder.finish()).chain(extra));
     }
 
     /// Draws the interface over what `target` holds.
     pub fn render(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
-        let (Some((renderer, _)), Some(paint)) = (&self.renderer, &self.paint) else { return };
+        let (Some((renderer, _)), Some(paint)) = (&self.renderer, &self.paint) else {
+            return;
+        };
         let mut pass = encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("interface"),
@@ -301,7 +379,10 @@ impl Gui {
                     view: target,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -325,11 +406,24 @@ fn button(b: Button) -> egui::PointerButton {
 fn fonts() -> FontDefinitions {
     let mut f = FontDefinitions::default();
     let add = |f: &mut FontDefinitions, name: &str, data: &'static [u8]| {
-        f.font_data.insert(name.to_string(), Arc::new(FontData::from_static(data)));
+        f.font_data
+            .insert(name.to_string(), Arc::new(FontData::from_static(data)));
     };
-    add(&mut f, "noto", include_bytes!("../web/fonts/NotoSans-Regular.ttf"));
-    add(&mut f, "noto-bold", include_bytes!("../web/fonts/NotoSans-Bold.ttf"));
-    add(&mut f, "symbols", include_bytes!("../web/fonts/NotoSansSymbols2-Subset.ttf"));
+    add(
+        &mut f,
+        "noto",
+        include_bytes!("../web/fonts/NotoSans-Regular.ttf"),
+    );
+    add(
+        &mut f,
+        "noto-bold",
+        include_bytes!("../web/fonts/NotoSans-Bold.ttf"),
+    );
+    add(
+        &mut f,
+        "symbols",
+        include_bytes!("../web/fonts/NotoSansSymbols2-Subset.ttf"),
+    );
     let proportional = f.families.entry(FontFamily::Proportional).or_default();
     proportional.insert(0, "noto".into());
     proportional.insert(1, "symbols".into());
@@ -337,13 +431,20 @@ fn fonts() -> FontDefinitions {
     let mut bold = vec!["noto-bold".to_string()];
     bold.extend(fallback.into_iter().filter(|n| n != "noto"));
     f.families.insert(FontFamily::Name(BOLD.into()), bold);
-    f.families.entry(FontFamily::Monospace).or_default().push("symbols".into());
+    f.families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .push("symbols".into());
     f
 }
 
 /// Breeze's colours: Plasma's Breeze Dark or Breeze Light.
 fn visuals(dark: bool) -> egui::Visuals {
-    let mut v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    let mut v = if dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
     let (window, view, button, text, weak, border) = if dark {
         (
             Color32::from_rgb(32, 35, 38),
@@ -371,12 +472,30 @@ fn visuals(dark: bool) -> egui::Visuals {
     v.window_stroke = Stroke::new(1.0, border);
     v.window_corner_radius = CornerRadius::same(10);
     v.menu_corner_radius = radius;
-    v.window_shadow = Shadow { offset: [0, 4], blur: 18, spread: 0, color: Color32::from_black_alpha(if dark { 110 } else { 50 }) };
-    v.popup_shadow = Shadow { offset: [0, 2], blur: 10, spread: 0, color: Color32::from_black_alpha(80) };
+    v.window_shadow = Shadow {
+        offset: [0, 4],
+        blur: 18,
+        spread: 0,
+        color: Color32::from_black_alpha(if dark { 110 } else { 50 }),
+    };
+    v.popup_shadow = Shadow {
+        offset: [0, 2],
+        blur: 10,
+        spread: 0,
+        color: Color32::from_black_alpha(80),
+    };
     v.window_highlight_topmost = false;
     v.extreme_bg_color = view;
-    v.faint_bg_color = if dark { Color32::from_rgb(38, 42, 46) } else { Color32::from_rgb(247, 247, 247) };
-    v.hyperlink_color = if dark { Color32::from_rgb(29, 153, 243) } else { Color32::from_rgb(41, 128, 185) };
+    v.faint_bg_color = if dark {
+        Color32::from_rgb(38, 42, 46)
+    } else {
+        Color32::from_rgb(247, 247, 247)
+    };
+    v.hyperlink_color = if dark {
+        Color32::from_rgb(29, 153, 243)
+    } else {
+        Color32::from_rgb(41, 128, 185)
+    };
     v.selection.bg_fill = ACCENT.linear_multiply(if dark { 0.45 } else { 0.6 });
     v.selection.stroke = Stroke::new(1.0, ACCENT);
     v.slider_trailing_fill = true;
@@ -420,7 +539,11 @@ pub const MIN_WIDTH: f32 = 200.0;
 /// A heading inside a window.
 pub fn section(ui: &mut egui::Ui, text: &str) {
     ui.add_space(4.0);
-    ui.label(egui::RichText::new(text).family(FontFamily::Name(BOLD.into())).size(13.5));
+    ui.label(
+        egui::RichText::new(text)
+            .family(FontFamily::Name(BOLD.into()))
+            .size(13.5),
+    );
 }
 
 /// A box around controls that belong together, headed by a small title with a stripe of the
@@ -440,7 +563,12 @@ pub fn group<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui, 
             ui.horizontal(|ui| {
                 let (r, _) = ui.allocate_exact_size(Vec2::new(3.0, 13.0), egui::Sense::hover());
                 ui.painter().rect_filled(r, 1.5, ACCENT);
-                ui.label(egui::RichText::new(title).family(FontFamily::Name(BOLD.into())).size(12.5).color(ui.visuals().weak_text_color()));
+                ui.label(
+                    egui::RichText::new(title)
+                        .family(FontFamily::Name(BOLD.into()))
+                        .size(12.5)
+                        .color(ui.visuals().weak_text_color()),
+                );
             });
             ui.add_space(2.0);
             add(ui, width)
@@ -487,7 +615,9 @@ pub fn track(ui: &mut egui::Ui, pos: f64, width: f32) -> Vec<Slide> {
     let id = response.id;
     let travel = (rect.width() - THUMB).max(1.0);
     let thumb_x = rect.left() + THUMB / 2.0 + pos.clamp(0.0, 1.0) as f32 * travel;
-    let at = |x: f32, grab: f32| (((x - grab - rect.left() - THUMB / 2.0) / travel).clamp(0.0, 1.0)) as f64;
+    let at = |x: f32, grab: f32| {
+        (((x - grab - rect.left() - THUMB / 2.0) / travel).clamp(0.0, 1.0)) as f64
+    };
     let held: Option<f32> = ui.data(|d| d.get_temp(id));
     let down = response.is_pointer_button_down_on();
     let pointer = ui.input(|i| i.pointer.interact_pos());
@@ -517,7 +647,19 @@ pub fn track(ui: &mut egui::Ui, pos: f64, width: f32) -> Vec<Slide> {
     }
     if response.hovered() && !down {
         // Notches of the wheel as they came, before egui smooths them into scrolling.
-        let dy: f32 = ui.input(|i| i.raw.events.iter().map(|e| if let egui::Event::MouseWheel { delta, .. } = e { delta.y } else { 0.0 }).sum());
+        let dy: f32 = ui.input(|i| {
+            i.raw
+                .events
+                .iter()
+                .map(|e| {
+                    if let egui::Event::MouseWheel { delta, .. } = e {
+                        delta.y
+                    } else {
+                        0.0
+                    }
+                })
+                .sum()
+        });
         if dy != 0.0 {
             out.push(Slide::Step(dy.signum() as i32));
         }
@@ -526,9 +668,25 @@ pub fn track(ui: &mut egui::Ui, pos: f64, width: f32) -> Vec<Slide> {
     let rail = egui::Rect::from_center_size(rect.center(), Vec2::new(rect.width() - THUMB, 4.0));
     let p = ui.painter();
     p.rect_filled(rail, 2.0, v.widgets.inactive.bg_fill.gamma_multiply(1.6));
-    p.rect_filled(egui::Rect::from_min_max(rail.min, egui::pos2(thumb_x, rail.max.y)), 2.0, ACCENT);
+    p.rect_filled(
+        egui::Rect::from_min_max(rail.min, egui::pos2(thumb_x, rail.max.y)),
+        2.0,
+        ACCENT,
+    );
     let lit = response.hovered() || down;
-    p.circle(egui::pos2(thumb_x, rect.center().y), THUMB / 2.0 - 1.0, v.widgets.inactive.bg_fill, Stroke::new(if lit { 2.0 } else { 1.0 }, if lit { ACCENT } else { v.widgets.inactive.bg_stroke.color }));
+    p.circle(
+        egui::pos2(thumb_x, rect.center().y),
+        THUMB / 2.0 - 1.0,
+        v.widgets.inactive.bg_fill,
+        Stroke::new(
+            if lit { 2.0 } else { 1.0 },
+            if lit {
+                ACCENT
+            } else {
+                v.widgets.inactive.bg_stroke.color
+            },
+        ),
+    );
     out
 }
 
@@ -536,7 +694,11 @@ pub fn track(ui: &mut egui::Ui, pos: f64, width: f32) -> Vec<Slide> {
 /// equal x + y, so neighbouring rectangles join up into one pattern.
 pub fn hatch(p: &egui::Painter, r: egui::Rect, colour: [u8; 3]) {
     const STEP: f32 = 6.0;
-    let dark = Color32::from_rgb((colour[0] as f32 * 0.4) as u8, (colour[1] as f32 * 0.4) as u8, (colour[2] as f32 * 0.4) as u8);
+    let dark = Color32::from_rgb(
+        (colour[0] as f32 * 0.4) as u8,
+        (colour[1] as f32 * 0.4) as u8,
+        (colour[2] as f32 * 0.4) as u8,
+    );
     let stroke = Stroke::new(1.6, dark);
     let first = ((r.min.x + r.min.y) / STEP).ceil() * STEP;
     let mut c = first;
@@ -560,18 +722,26 @@ pub fn swatch(ui: &mut egui::Ui, colour: [u8; 4], hatched: bool) {
 /// A legend entry: a swatch and its name in small text, kept together when the line wraps.
 pub fn legend_entry(ui: &mut egui::Ui, colour: [u8; 4], hatched: bool, name: &str) {
     let font = ui.style().text_styles[&TextStyle::Small].clone();
-    let galley = ui.painter().layout_no_wrap(name.to_string(), font, ui.visuals().text_color());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(name.to_string(), font, ui.visuals().text_color());
     let size = Vec2::new(14.0 + 4.0 + galley.size().x, 14.0_f32.max(galley.size().y));
     let (r, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let patch = egui::Rect::from_min_size(egui::pos2(r.min.x, r.center().y - 7.0), Vec2::splat(14.0));
+    let patch =
+        egui::Rect::from_min_size(egui::pos2(r.min.x, r.center().y - 7.0), Vec2::splat(14.0));
     paint_swatch(ui, patch, colour, hatched);
     let text_at = egui::pos2(patch.max.x + 4.0, r.center().y - galley.size().y / 2.0);
-    ui.painter().galley(text_at, galley, ui.visuals().text_color());
+    ui.painter()
+        .galley(text_at, galley, ui.visuals().text_color());
 }
 
 fn paint_swatch(ui: &egui::Ui, r: egui::Rect, colour: [u8; 4], hatched: bool) {
     let p = ui.painter().with_clip_rect(r);
-    p.rect_filled(r, 2.0, Color32::from_rgba_unmultiplied(colour[0], colour[1], colour[2], colour[3]));
+    p.rect_filled(
+        r,
+        2.0,
+        Color32::from_rgba_unmultiplied(colour[0], colour[1], colour[2], colour[3]),
+    );
     if hatched {
         hatch(&p, r, [colour[0], colour[1], colour[2]]);
     }

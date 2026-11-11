@@ -84,7 +84,9 @@ impl Cascade {
 impl Plan {
     /// Whether anything inside the sphere could cast a shadow into some cascade.
     pub fn touches(&self, centre_rel: DVec3, radius: f64) -> bool {
-        self.cascades.iter().any(|c| c.touches(&self.axes, centre_rel, radius))
+        self.cascades
+            .iter()
+            .any(|c| c.touches(&self.axes, centre_rel, radius))
     }
 
     pub fn cascade_touches(&self, i: usize, centre_rel: DVec3, radius: f64) -> bool {
@@ -94,7 +96,11 @@ impl Plan {
 
 /// Light-space axes for a direction to the Sun: stable for a given Sun, and turning with it.
 fn light_axes(sun: DVec3) -> [DVec3; 3] {
-    let reference = if sun.z.abs() > 0.99 { DVec3::X } else { DVec3::Z };
+    let reference = if sun.z.abs() > 0.99 {
+        DVec3::X
+    } else {
+        DVec3::Z
+    };
     let x = reference.cross(sun).normalize();
     [x, sun.cross(x), sun]
 }
@@ -134,7 +140,9 @@ pub fn plan(input: &Input, sun: DVec3) -> Option<Plan> {
     // The ground under the camera at the view point's height, and the tangent distance to its horizon.
     let (_, _, cam_h) = crate::geo::ecef_to_geodetic(b.pos);
     let ground_r = b.pos.length() - (cam_h - input.ground_h);
-    let horizon = (b.pos.length_squared() - ground_r * ground_r).max(0.0).sqrt();
+    let horizon = (b.pos.length_squared() - ground_r * ground_r)
+        .max(0.0)
+        .sqrt();
     let mut nearest = f64::INFINITY;
     let mut farthest: f64 = 0.0;
     let mut lit = false;
@@ -169,14 +177,31 @@ pub fn plan(input: &Input, sun: DVec3) -> Option<Plan> {
     let ratio = (zf / zn).powf(1.0 / CASCADES as f64).clamp(1.2, MAX_RATIO);
     let ends = std::array::from_fn(|i| zn * ratio.powi(i as i32 + 1));
     let cascades = std::array::from_fn(|i| {
-        let start = if i == 0 { zn } else { ends[i - 1] * (1.0 - BLEND) };
+        let start = if i == 0 {
+            zn
+        } else {
+            ends[i - 1] * (1.0 - BLEND)
+        };
         fit(input, &rays, &axes, sun, start, ends[i], reach_cap)
     });
-    Some(Plan { axes, cascades, ends, strength })
+    Some(Plan {
+        axes,
+        cascades,
+        ends,
+        strength,
+    })
 }
 
 /// The box for the part of the view between two depths.
-fn fit(input: &Input, rays: &[DVec3; 5], axes: &[DVec3; 3], sun: DVec3, d0: f64, d1: f64, reach_cap: f64) -> Cascade {
+fn fit(
+    input: &Input,
+    rays: &[DVec3; 5],
+    axes: &[DVec3; 3],
+    sun: DVec3,
+    d0: f64,
+    d1: f64,
+    reach_cap: f64,
+) -> Cascade {
     let b = &input.basis;
     let corners: Vec<DVec3> = rays[1..]
         .iter()
@@ -190,14 +215,20 @@ fn fit(input: &Input, rays: &[DVec3; 5], axes: &[DVec3; 3], sun: DVec3, d0: f64,
     let t = (FOV_Y / 2.0).tan();
     let mid = (0.5 * (d0 + d1) * (1.0 + t * t * (1.0 + input.aspect * input.aspect))).min(d1);
     let centre = b.pos + b.look * mid;
-    let r = corners.iter().map(|p| (*p - centre).length()).fold(0.0, f64::max);
+    let r = corners
+        .iter()
+        .map(|p| (*p - centre).length())
+        .fold(0.0, f64::max);
     // Room for the snapping and the filter at the edge.
     let half = quantise(r * (1.0 + 16.0 / MAP_SIZE as f64));
     let texel = 2.0 * half / MAP_SIZE as f64;
 
     let snap = |v: f64| (v / texel).round() * texel;
     let snapped = [snap(centre.dot(axes[0])), snap(centre.dot(axes[1]))];
-    let rel = [snapped[0] - b.pos.dot(axes[0]), snapped[1] - b.pos.dot(axes[1])];
+    let rel = [
+        snapped[0] - b.pos.dot(axes[0]),
+        snapped[1] - b.pos.dot(axes[1]),
+    ];
 
     // Casters between the Sun and the ground: a point of height H lies H / sin(elevation) along
     // the ray from the ground point it shades.
@@ -213,7 +244,9 @@ fn fit(input: &Input, rays: &[DVec3; 5], axes: &[DVec3; 3], sun: DVec3, d0: f64,
     let z = [cz - r - BELOW, cz + r + reach];
     let depth_range = z[1] - z[0];
 
-    let row = |a: DVec3, shift: f64, scale: f64| DVec4::new(a.x * scale, a.y * scale, a.z * scale, shift * scale);
+    let row = |a: DVec3, shift: f64, scale: f64| {
+        DVec4::new(a.x * scale, a.y * scale, a.z * scale, shift * scale)
+    };
     let rows = [
         row(axes[0], -rel[0], 1.0 / half),
         row(axes[1], -rel[1], 1.0 / half),
@@ -257,7 +290,12 @@ mod tests {
     }
 
     fn input(cam: &Camera) -> Input {
-        Input { basis: cam.basis(), aspect: 1.6, ground_h: cam.target_h, near: cam.near_plane(cam.distance * 0.7) }
+        Input {
+            basis: cam.basis(),
+            aspect: 1.6,
+            ground_h: cam.target_h,
+            near: cam.near_plane(cam.distance * 0.7),
+        }
     }
 
     /// The Sun at an elevation and an azimuth (clockwise from north) over a place.
@@ -296,7 +334,10 @@ mod tests {
                 let tip = foot - toward_sun * (h / el.tan());
                 let a = on_map(&p, 1, pos, top);
                 let b = on_map(&p, 1, pos, tip);
-                assert!((a.0 - b.0).abs() < 0.02 && (a.1 - b.1).abs() < 0.02, "el {el_deg} h {h}: {a:?} {b:?}");
+                assert!(
+                    (a.0 - b.0).abs() < 0.02 && (a.1 - b.1).abs() < 0.02,
+                    "el {el_deg} h {h}: {a:?} {b:?}"
+                );
                 // The tip lies farther from the Sun than the top does.
                 assert!(b.2 > a.2 - 1e-6);
                 // Further from the foot than the tip, the ground does not meet the same ray.
@@ -325,7 +366,15 @@ mod tests {
         let el = sun.dot(up).asin().to_degrees();
         assert!((60.0..70.0).contains(&el), "elevation {el}");
 
-        let cam = Camera { lat, lon, target_h: 0.0, distance: 2000.0, heading: 0.0, tilt: 0.5, sky: 0.0 };
+        let cam = Camera {
+            lat,
+            lon,
+            target_h: 0.0,
+            distance: 2000.0,
+            heading: 0.0,
+            tilt: 0.5,
+            sky: 0.0,
+        };
         let p = a_plan(&cam, sun);
         let pos = cam.basis().pos;
         let foot = geodetic_to_ecef(lat, lon, 0.0);
@@ -336,7 +385,12 @@ mod tests {
         let to_north = on_map(&p, 1, pos, foot + north * d);
         let to_south = on_map(&p, 1, pos, foot - north * d);
         let miss = |q: (f64, f64, f64)| (q.0 - top.0).hypot(q.1 - top.1);
-        assert!(miss(to_north) < 0.5 * d, "north is {} off, south {}", miss(to_north), miss(to_south));
+        assert!(
+            miss(to_north) < 0.5 * d,
+            "north is {} off, south {}",
+            miss(to_north),
+            miss(to_south)
+        );
         assert!(miss(to_south) > 1.5 * d);
     }
 
@@ -360,11 +414,18 @@ mod tests {
                 assert_eq!(a.half, b.half, "cascade {i} step {step}");
                 for k in 0..2 {
                     let cells = b.snapped[k] / b.texel;
-                    assert!((cells - cells.round()).abs() < 1e-6, "cascade {i} axis {k}: {cells}");
+                    assert!(
+                        (cells - cells.round()).abs() < 1e-6,
+                        "cascade {i} axis {k}: {cells}"
+                    );
                     // The relative offset in the matrix agrees with the snapped centre.
                     let rel = b.snapped[k] - p.axes[k].dot(moved.basis().pos);
-                    let from_matrix = -(b.matrix * Vec4::new(0.0, 0.0, 0.0, 1.0))[k] as f64 * b.half;
-                    assert!((rel - from_matrix).abs() < 0.01 * b.texel + 1e-3, "{rel} {from_matrix}");
+                    let from_matrix =
+                        -(b.matrix * Vec4::new(0.0, 0.0, 0.0, 1.0))[k] as f64 * b.half;
+                    assert!(
+                        (rel - from_matrix).abs() < 0.01 * b.texel + 1e-3,
+                        "{rel} {from_matrix}"
+                    );
                 }
             }
         }
@@ -404,19 +465,29 @@ mod tests {
                         let i = p.ends.iter().position(|e| depth <= *e).unwrap();
                         let (x, y, z) = on_map(&p, i, pos, g);
                         let half = p.cascades[i].half;
-                        assert!(x.abs() < half && y.abs() < half, "ground x {x} y {y} half {half} d {distance} t {tilt}");
+                        assert!(
+                            x.abs() < half && y.abs() < half,
+                            "ground x {x} y {y} half {half} d {distance} t {tilt}"
+                        );
                         assert!((0.0..1.0).contains(&z), "ground z {z}");
                         // A caster over that point, 9 km above the ground along the Sun's ray.
                         // Found by bisection, because the ground curves away below the ray.
                         let (mut lo, mut hi) = (0.0, 2.0e6);
                         for _ in 0..60 {
                             let mid = 0.5 * (lo + hi);
-                            if (g + sun * mid).length() - g.length() < 9000.0 { lo = mid } else { hi = mid }
+                            if (g + sun * mid).length() - g.length() < 9000.0 {
+                                lo = mid
+                            } else {
+                                hi = mid
+                            }
                         }
                         let caster = g + sun * lo;
                         let (cx, cy, cz) = on_map(&p, i, pos, caster);
                         assert!((cx - x).abs() < 0.05 && (cy - y).abs() < 0.05);
-                        assert!((0.0..1.0).contains(&cz), "caster z {cz} el {el_deg} d {distance}");
+                        assert!(
+                            (0.0..1.0).contains(&cz),
+                            "caster z {cz} el {el_deg} d {distance}"
+                        );
                         assert!(cz < z);
                         checked += 1;
                     }
@@ -430,7 +501,9 @@ mod tests {
     fn nearer_cascades_have_finer_texels() {
         let cam = camera(40.7, -74.0, 1500.0, 60.0);
         let p = a_plan(&cam, sun_at(cam.lat, cam.lon, 0.6, 3.0));
-        assert!(p.cascades[0].texel < p.cascades[1].texel && p.cascades[1].texel < p.cascades[2].texel);
+        assert!(
+            p.cascades[0].texel < p.cascades[1].texel && p.cascades[1].texel < p.cascades[2].texel
+        );
         assert!(p.cascades[0].texel < 2.0, "{}", p.cascades[0].texel);
         assert!(p.ends[0] < p.ends[1] && p.ends[1] < p.ends[2]);
     }
@@ -454,7 +527,10 @@ mod tests {
         let out = camera(46.0, 8.0, 1_500_000.0, 0.0);
         assert!(plan(&input(&out), sun_at(out.lat, out.lon, 0.5, 1.0)).is_none());
         let low = camera(46.0, 8.0, 3000.0, 20.0);
-        assert_eq!(a_plan(&low, sun_at(low.lat, low.lon, 0.5, 1.0)).strength, 1.0);
+        assert_eq!(
+            a_plan(&low, sun_at(low.lat, low.lon, 0.5, 1.0)).strength,
+            1.0
+        );
     }
 
     #[test]

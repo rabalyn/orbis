@@ -5,10 +5,10 @@
 //! checkbox, add a line to [`TOGGLES`]. To add a group of choices, add rows to `show`.
 
 use crate::atlas::Projection;
+use crate::gui::{self, Gui};
 use crate::pacing::FrameLimit;
 use crate::settings::{BuildingColour, Settings, ViewKind};
 use crate::world_energy::MapSignal;
-use crate::gui::{self, Gui};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -39,25 +39,69 @@ const TOGGLES: &[(&str, &[Toggle])] = &[
         &[
             ("3D buildings", |s| s.buildings, |s, v| s.buildings = v),
             ("Sunlight", |s| s.sunlight, |s, v| s.sunlight = v),
-            ("Cast shadows", |s| s.cast_shadows, |s, v| s.cast_shadows = v),
+            (
+                "Cast shadows",
+                |s| s.cast_shadows,
+                |s, v| s.cast_shadows = v,
+            ),
             ("Stars and planets", |s| s.stars, |s, v| s.stars = v),
-            ("Event markers", |s| s.event_markers, |s, v| s.event_markers = v),
-            ("Rover and Apollo tracks", |s| s.missions, |s, v| s.missions = v),
-            ("Information on click", |s| s.info_on_click, |s, v| s.info_on_click = v),
+            (
+                "Event markers",
+                |s| s.event_markers,
+                |s, v| s.event_markers = v,
+            ),
+            (
+                "Rover and Apollo tracks",
+                |s| s.missions,
+                |s, v| s.missions = v,
+            ),
+            (
+                "Information on click",
+                |s| s.info_on_click,
+                |s, v| s.info_on_click = v,
+            ),
         ],
     ),
     (
         "Electricity",
         &[
             ("Capacity bars", |s| s.energy, |s, v| s.energy = v),
-            ("Electricity window (detail, scale, totals)", |s| s.energy_panel, |s, v| s.energy_panel = v),
-            ("Output at the clock's time", |s| s.energy_output, |s, v| s.energy_output = v),
-            ("Include generation for own use", |s| s.energy_own_use, |s, v| s.energy_own_use = v),
-            ("Day chart of output and use", |s| s.energy_chart, |s, v| s.energy_chart = v),
-            ("Estimated use beside the bars", |s| s.energy_demand, |s, v| s.energy_demand = v),
+            (
+                "Electricity window (detail, scale, totals)",
+                |s| s.energy_panel,
+                |s, v| s.energy_panel = v,
+            ),
+            (
+                "Output at the clock's time",
+                |s| s.energy_output,
+                |s, v| s.energy_output = v,
+            ),
+            (
+                "Include generation for own use",
+                |s| s.energy_own_use,
+                |s, v| s.energy_own_use = v,
+            ),
+            (
+                "Day chart of output and use",
+                |s| s.energy_chart,
+                |s, v| s.energy_chart = v,
+            ),
+            (
+                "Estimated use beside the bars",
+                |s| s.energy_demand,
+                |s, v| s.energy_demand = v,
+            ),
             ("Solar", |s| s.energy_solar, |s, v| s.energy_solar = v),
-            ("Wind on land", |s| s.energy_wind_onshore, |s, v| s.energy_wind_onshore = v),
-            ("Wind at sea", |s| s.energy_wind_offshore, |s, v| s.energy_wind_offshore = v),
+            (
+                "Wind on land",
+                |s| s.energy_wind_onshore,
+                |s, v| s.energy_wind_onshore = v,
+            ),
+            (
+                "Wind at sea",
+                |s| s.energy_wind_offshore,
+                |s, v| s.energy_wind_offshore = v,
+            ),
             ("Hydro", |s| s.energy_hydro, |s, v| s.energy_hydro = v),
             ("Biomass", |s| s.energy_biomass, |s, v| s.energy_biomass = v),
         ],
@@ -66,10 +110,18 @@ const TOGGLES: &[(&str, &[Toggle])] = &[
         "For comparison: fossil and nuclear",
         &[
             ("Lignite", |s| s.energy_lignite, |s, v| s.energy_lignite = v),
-            ("Hard coal", |s| s.energy_hard_coal, |s, v| s.energy_hard_coal = v),
+            (
+                "Hard coal",
+                |s| s.energy_hard_coal,
+                |s, v| s.energy_hard_coal = v,
+            ),
             ("Natural gas", |s| s.energy_gas, |s, v| s.energy_gas = v),
             ("Oil", |s| s.energy_oil, |s, v| s.energy_oil = v),
-            ("Other fossil (gases, waste)", |s| s.energy_other_fossil, |s, v| s.energy_other_fossil = v),
+            (
+                "Other fossil (gases, waste)",
+                |s| s.energy_other_fossil,
+                |s, v| s.energy_other_fossil = v,
+            ),
             ("Nuclear", |s| s.energy_nuclear, |s, v| s.energy_nuclear = v),
         ],
     ),
@@ -94,7 +146,11 @@ pub struct Model {
 
 impl Default for Model {
     fn default() -> Self {
-        Self { settings: Settings::default(), earth: true, library: Vec::new() }
+        Self {
+            settings: Settings::default(),
+            earth: true,
+            library: Vec::new(),
+        }
     }
 }
 
@@ -133,103 +189,121 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Option<Action>
         .default_width(300.0)
         .default_height((screen.height() - 160.0).max(150.0))
         .show(ctx, |ui| {
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                let mut n = 0;
-                for (name, group) in TOGGLES {
-                    gui::section(ui, name);
-                    for (label, get, _) in *group {
-                        let mut on = get(st);
-                        if ui.checkbox(&mut on, *label).changed() {
-                            action = Some(Action::Set(n, on));
-                        }
-                        n += 1;
-                    }
-                    if *name == "Scene" {
-                        gui::section(ui, "Building colours");
-                        ui.horizontal(|ui| {
-                            for (label, c) in [("Aerial roofs", BuildingColour::Aerial), ("Zones", BuildingColour::Zones)] {
-                                if ui.radio(st.buildings_colour == c, label).clicked() {
-                                    action = Some(Action::BuildingColour(c));
-                                }
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let mut n = 0;
+                    for (name, group) in TOGGLES {
+                        gui::section(ui, name);
+                        for (label, get, _) in *group {
+                            let mut on = get(st);
+                            if ui.checkbox(&mut on, *label).changed() {
+                                action = Some(Action::Set(n, on));
                             }
-                        });
-                    }
-                    if *name == "Electricity" {
-                        gui::note(ui, "Flat map colour");
-                        ui.horizontal(|ui| {
-                            for (label, signal) in [
-                                ("Renewable share", MapSignal::RenewableShare),
-                                ("Carbon intensity", MapSignal::CarbonIntensity),
-                            ] {
-                                if ui.radio(st.energy_map_signal == signal, label).clicked() {
-                                    action = Some(Action::EnergyMapSignal(signal));
+                            n += 1;
+                        }
+                        if *name == "Scene" {
+                            gui::section(ui, "Building colours");
+                            ui.horizontal(|ui| {
+                                for (label, c) in [
+                                    ("Aerial roofs", BuildingColour::Aerial),
+                                    ("Zones", BuildingColour::Zones),
+                                ] {
+                                    if ui.radio(st.buildings_colour == c, label).clicked() {
+                                        action = Some(Action::BuildingColour(c));
+                                    }
                                 }
+                            });
+                        }
+                        if *name == "Electricity" {
+                            gui::note(ui, "Flat map colour");
+                            ui.horizontal(|ui| {
+                                for (label, signal) in [
+                                    ("Renewable share", MapSignal::RenewableShare),
+                                    ("Carbon intensity", MapSignal::CarbonIntensity),
+                                ] {
+                                    if ui.radio(st.energy_map_signal == signal, label).clicked() {
+                                        action = Some(Action::EnergyMapSignal(signal));
+                                    }
+                                }
+                            });
+                        }
+                        if name.starts_with("For comparison")
+                            && ui.button("Colours and bar size\u{2026}").clicked()
+                        {
+                            action = Some(Action::EnergyStyle);
+                        }
+                    }
+
+                    gui::section(ui, "View");
+                    ui.horizontal(|ui| {
+                        for (label, kind) in
+                            [("Globe", ViewKind::Globe), ("Flat map", ViewKind::Map)]
+                        {
+                            if ui.radio(st.view == kind, label).clicked() {
+                                action = Some(Action::View(kind));
                             }
-                        });
-                    }
-                    if name.starts_with("For comparison") && ui.button("Colours and bar size\u{2026}").clicked() {
-                        action = Some(Action::EnergyStyle);
-                    }
-                }
+                        }
+                    });
 
-                gui::section(ui, "View");
-                ui.horizontal(|ui| {
-                    for (label, kind) in [("Globe", ViewKind::Globe), ("Flat map", ViewKind::Map)] {
-                        if ui.radio(st.view == kind, label).clicked() {
-                            action = Some(Action::View(kind));
+                    gui::section(ui, "Map projection");
+                    let map = st.view == ViewKind::Map;
+                    if !map {
+                        gui::note(ui, "Used on the flat map. Choose it above to change these.");
+                    }
+                    ui.add_enabled_ui(map, |ui| {
+                        for p in Projection::ALL {
+                            if ui.radio(st.projection == p, p.name()).clicked() {
+                                action = Some(Action::Projection(p));
+                            }
+                        }
+                    });
+
+                    gui::section(ui, "The globe shows");
+                    for b in crate::body::all() {
+                        if ui.radio(st.body == b.id, b.name).clicked() {
+                            action = Some(Action::Body(b.id));
                         }
                     }
-                });
 
-                gui::section(ui, "Map projection");
-                let map = st.view == ViewKind::Map;
-                if !map {
-                    gui::note(ui, "Used on the flat map. Choose it above to change these.");
-                }
-                ui.add_enabled_ui(map, |ui| {
-                    for p in Projection::ALL {
-                        if ui.radio(st.projection == p, p.name()).clicked() {
-                            action = Some(Action::Projection(p));
+                    gui::section(ui, "Earth imagery");
+                    if !model.earth {
+                        gui::note(ui, "Map services are shown on Earth only.");
+                    }
+                    ui.add_enabled_ui(model.earth, |ui| {
+                        if ui
+                            .radio(st.base_service.is_empty(), "Usual imagery")
+                            .clicked()
+                        {
+                            action = Some(Action::Base(None));
                         }
-                    }
-                });
-
-                gui::section(ui, "The globe shows");
-                for b in crate::body::all() {
-                    if ui.radio(st.body == b.id, b.name).clicked() {
-                        action = Some(Action::Body(b.id));
-                    }
-                }
-
-                gui::section(ui, "Earth imagery");
-                if !model.earth {
-                    gui::note(ui, "Map services are shown on Earth only.");
-                }
-                ui.add_enabled_ui(model.earth, |ui| {
-                    if ui.radio(st.base_service.is_empty(), "Usual imagery").clicked() {
-                        action = Some(Action::Base(None));
-                    }
-                    for (id, name) in &model.library {
-                        if ui.radio(st.base_service == *id, name.as_str()).clicked() {
-                            action = Some(Action::Base(Some(id.clone())));
+                        for (id, name) in &model.library {
+                            if ui.radio(st.base_service == *id, name.as_str()).clicked() {
+                                action = Some(Action::Base(Some(id.clone())));
+                            }
                         }
+                    });
+                    if model.library.is_empty() {
+                        gui::note(
+                            ui,
+                            "Services you add to your library (key G) are listed here.",
+                        );
                     }
-                });
-                if model.library.is_empty() {
-                    gui::note(ui, "Services you add to your library (key G) are listed here.");
-                }
 
-                gui::section(ui, "Frame rate limit");
-                ui.horizontal(|ui| {
-                    for (label, limit) in [("120 fps", FrameLimit::Fps120), ("90 fps", FrameLimit::Fps90)] {
-                        if ui.radio(st.frame_rate == limit, label).clicked() {
-                            action = Some(Action::FrameRate(limit));
+                    gui::section(ui, "Frame rate limit");
+                    ui.horizontal(|ui| {
+                        for (label, limit) in [
+                            ("120 fps", FrameLimit::Fps120),
+                            ("90 fps", FrameLimit::Fps90),
+                        ] {
+                            if ui.radio(st.frame_rate == limit, label).clicked() {
+                                action = Some(Action::FrameRate(limit));
+                            }
                         }
-                    }
+                    });
+                    ui.add_space(6.0);
+                    gui::note(ui, "Changes are saved as you make them. Esc closes.");
                 });
-                ui.add_space(6.0);
-                gui::note(ui, "Changes are saved as you make them. Esc closes.");
-            });
         });
     if let Some(r) = shown {
         gui.cover(r.response.rect);
@@ -253,7 +327,11 @@ mod tests {
             assert_eq!((t.1)(&s), !before);
             let mut other = Settings::default();
             set_toggle(&mut other, i, before);
-            assert_eq!(other, Settings::default(), "setting a toggle to its value changes nothing else");
+            assert_eq!(
+                other,
+                Settings::default(),
+                "setting a toggle to its value changes nothing else"
+            );
         }
     }
 }

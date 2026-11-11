@@ -5,9 +5,11 @@ use crate::geo::TileKey;
 use crate::import::Imported;
 use crate::import_draw;
 use crate::layers::LineKinds;
-use std::sync::Arc;
 use crate::vector::{Line, RoadClass, VectorTile};
-use tiny_skia::{Color, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, StrokeDash, Transform};
+use std::sync::Arc;
+use tiny_skia::{
+    Color, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, StrokeDash, Transform,
+};
 
 pub const OVERLAY_SIZE: u32 = 512;
 /// Overlay texels per screen pixel at the point where a tile is about to split in two.
@@ -48,8 +50,17 @@ pub fn road_style(class: RoadClass, z: u8, tunnel: bool) -> Option<LineStyle> {
         _ => None,
     };
     // Tunnels run underground, so they stay quieter than the roads above them.
-    let color = if tunnel { [color[0], color[1], color[2], 120] } else { color };
-    Some(LineStyle { width, color, casing: casing && !tunnel, dash })
+    let color = if tunnel {
+        [color[0], color[1], color[2], 120]
+    } else {
+        color
+    };
+    Some(LineStyle {
+        width,
+        color,
+        casing: casing && !tunnel,
+        dash,
+    })
 }
 
 /// How a boundary looks at a tile zoom level. `None` hides it.
@@ -60,7 +71,12 @@ pub fn boundary_style(admin_level: i64, z: u8, disputed: bool) -> Option<LineSty
         _ => return None,
     };
     let dash = (disputed || admin_level > 2).then_some([4.0, 3.0]);
-    Some(LineStyle { width, color, casing: false, dash })
+    Some(LineStyle {
+        width,
+        color,
+        casing: false,
+        dash,
+    })
 }
 
 /// The transform from vector tile coordinates to overlay texels.
@@ -95,7 +111,9 @@ fn stroke(
     let mut builder = PathBuilder::new();
     for line in lines {
         let mut points = line.iter().map(|p| (p[0] * scale + dx, p[1] * scale + dy));
-        let Some((x, y)) = points.next() else { continue };
+        let Some((x, y)) = points.next() else {
+            continue;
+        };
         builder.move_to(x, y);
         for (x, y) in points {
             builder.line_to(x, y);
@@ -107,7 +125,11 @@ fn stroke(
     paint.anti_alias = true;
     let stroke = Stroke {
         width,
-        line_cap: if dash.is_some() { LineCap::Butt } else { LineCap::Round },
+        line_cap: if dash.is_some() {
+            LineCap::Butt
+        } else {
+            LineCap::Round
+        },
         line_join: LineJoin::Round,
         dash: dash.and_then(|d| StrokeDash::new(vec![d[0] * width, d[1] * width], 0.0)),
         ..Stroke::default()
@@ -117,14 +139,22 @@ fn stroke(
 
 /// Draws the lines for `tile`, whose data comes from the `source` vector tile. Returns
 /// premultiplied RGBA, or `None` when nothing was drawn.
-pub fn render(data: &VectorTile, tile: TileKey, source: TileKey, imports: &[Arc<Imported>], kinds: LineKinds) -> Option<Vec<u8>> {
+pub fn render(
+    data: &VectorTile,
+    tile: TileKey,
+    source: TileKey,
+    imports: &[Arc<Imported>],
+    kinds: LineKinds,
+) -> Option<Vec<u8>> {
     let place = placement(tile, source);
     let margin = 32.0;
     let z = tile.z;
 
     let mut groups: Vec<(i32, LineStyle, Vec<&Line>)> = Vec::new();
     for road in data.roads.iter().filter(|r| kinds.road(r.class)) {
-        let Some(style) = road_style(road.class, z, road.tunnel) else { continue };
+        let Some(style) = road_style(road.class, z, road.tunnel) else {
+            continue;
+        };
         if !visible(&road.line, place, margin) {
             continue;
         }
@@ -132,11 +162,18 @@ pub fn render(data: &VectorTile, tile: TileKey, source: TileKey, imports: &[Arc<
         push(&mut groups, order, style, &road.line);
     }
     for boundary in data.boundaries.iter().filter(|_| kinds.boundaries) {
-        let Some(style) = boundary_style(boundary.admin_level, z, boundary.disputed) else { continue };
+        let Some(style) = boundary_style(boundary.admin_level, z, boundary.disputed) else {
+            continue;
+        };
         if !visible(&boundary.line, place, margin) {
             continue;
         }
-        push(&mut groups, 1000 - boundary.admin_level as i32, style, &boundary.line);
+        push(
+            &mut groups,
+            1000 - boundary.admin_level as i32,
+            style,
+            &boundary.line,
+        );
     }
     let imported = import_draw::touches(imports, tile);
     if groups.is_empty() && !imported {
@@ -153,7 +190,14 @@ pub fn render(data: &VectorTile, tile: TileKey, source: TileKey, imports: &[Arc<
         }
     }
     for (_, style, lines) in &groups {
-        stroke(&mut pixmap, lines, place, style.width * TEXELS_PER_PIXEL, style.color, style.dash);
+        stroke(
+            &mut pixmap,
+            lines,
+            place,
+            style.width * TEXELS_PER_PIXEL,
+            style.color,
+            style.dash,
+        );
     }
     // What was imported lies over the roads.
     if imported {
@@ -162,7 +206,12 @@ pub fn render(data: &VectorTile, tile: TileKey, source: TileKey, imports: &[Arc<
     Some(pixmap.take())
 }
 
-fn push<'a>(groups: &mut Vec<(i32, LineStyle, Vec<&'a Line>)>, order: i32, style: LineStyle, line: &'a Line) {
+fn push<'a>(
+    groups: &mut Vec<(i32, LineStyle, Vec<&'a Line>)>,
+    order: i32,
+    style: LineStyle,
+    line: &'a Line,
+) {
     match groups.iter_mut().find(|g| g.0 == order && g.1 == style) {
         Some(group) => group.2.push(line),
         None => groups.push((order, style, vec![line])),
@@ -175,7 +224,11 @@ mod tests {
     use crate::vector::{Boundary, Road};
 
     fn road(class: RoadClass, line: Line) -> Road {
-        Road { class, tunnel: false, line }
+        Road {
+            class,
+            tunnel: false,
+            line,
+        }
     }
 
     fn alpha_at(rgba: &[u8], x: u32, y: u32) -> u8 {
@@ -207,7 +260,12 @@ mod tests {
         assert!(!tunnel.casing);
     }
 
-    const ALL: LineKinds = LineKinds { streets: true, trails: true, trains: true, boundaries: true };
+    const ALL: LineKinds = LineKinds {
+        streets: true,
+        trails: true,
+        trains: true,
+        boundaries: true,
+    };
 
     #[test]
     fn only_the_kinds_chosen_are_drawn() {
@@ -220,14 +278,38 @@ mod tests {
             ],
             ..Default::default()
         };
-        let none = LineKinds { streets: false, trails: false, trains: false, boundaries: false };
+        let none = LineKinds {
+            streets: false,
+            trails: false,
+            trains: false,
+            boundaries: false,
+        };
         assert!(render(&data, key, key, &[], none).is_none());
         let only = |k: LineKinds| render(&data, key, key, &[], k).unwrap();
         // Trails and rails are dashed, so look along the row.
-        let rows = |img: &[u8]| [102, 256, 410].map(|y| (0..512).any(|x| alpha_at(img, x, y) > 100));
-        assert_eq!(rows(&only(LineKinds { streets: true, ..none })), [true, false, false]);
-        assert_eq!(rows(&only(LineKinds { trails: true, ..none })), [false, true, false]);
-        assert_eq!(rows(&only(LineKinds { trains: true, ..none })), [false, false, true]);
+        let rows =
+            |img: &[u8]| [102, 256, 410].map(|y| (0..512).any(|x| alpha_at(img, x, y) > 100));
+        assert_eq!(
+            rows(&only(LineKinds {
+                streets: true,
+                ..none
+            })),
+            [true, false, false]
+        );
+        assert_eq!(
+            rows(&only(LineKinds {
+                trails: true,
+                ..none
+            })),
+            [false, true, false]
+        );
+        assert_eq!(
+            rows(&only(LineKinds {
+                trains: true,
+                ..none
+            })),
+            [false, false, true]
+        );
         assert_eq!(rows(&only(ALL)), [true, true, true]);
     }
 
@@ -260,7 +342,10 @@ mod tests {
             ..Default::default()
         };
         let image = render(&data, child, source, &[], ALL).unwrap();
-        assert!(alpha_at(&image, 256, 256) > 200, "runs through the child's middle");
+        assert!(
+            alpha_at(&image, 256, 256) > 200,
+            "runs through the child's middle"
+        );
         assert_eq!(alpha_at(&image, 256, 20), 0);
         // The other child sees none of it.
         assert!(render(&data, TileKey::new(15, 2000, 2000), source, &[], ALL).is_none());
@@ -271,14 +356,26 @@ mod tests {
         let key = TileKey::new(3, 4, 2);
         let data = VectorTile {
             boundaries: vec![
-                Boundary { admin_level: 2, disputed: false, line: vec![[0.0, 0.5], [1.0, 0.5]] },
-                Boundary { admin_level: 8, disputed: false, line: vec![[0.5, 0.0], [0.5, 1.0]] },
+                Boundary {
+                    admin_level: 2,
+                    disputed: false,
+                    line: vec![[0.0, 0.5], [1.0, 0.5]],
+                },
+                Boundary {
+                    admin_level: 8,
+                    disputed: false,
+                    line: vec![[0.5, 0.0], [0.5, 1.0]],
+                },
             ],
             ..Default::default()
         };
         let image = render(&data, key, key, &[], ALL).unwrap();
         assert!(alpha_at(&image, 100, 256) > 100);
-        assert_eq!(alpha_at(&image, 256, 100), 0, "local boundaries stay hidden");
+        assert_eq!(
+            alpha_at(&image, 256, 100),
+            0,
+            "local boundaries stay hidden"
+        );
     }
 
     #[test]
@@ -289,6 +386,8 @@ mod tests {
             ..Default::default()
         };
         let image = render(&data, key, key, &[], ALL).unwrap();
-        assert!(image.chunks(4).all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]));
+        assert!(image
+            .chunks(4)
+            .all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]));
     }
 }

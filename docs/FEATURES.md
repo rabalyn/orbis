@@ -53,11 +53,12 @@ The view is defined by a view point on the ground, a distance, a heading and a t
 | Ctrl-S | Name and save the current view as a place |
 | K | Show or hide the list of saved places |
 | I | Show or hide the list of imported items |
+| U | Open the measurement library; create rulers, manage tracks and export GPX |
 | E | Show or hide the list of eclipses and events around the clock's date. In it: Enter sets the clock to the greatest moment, pauses it and flies to the greatest point, and 1 to 5 show or hide quakes, eruptions, tsunamis, fireballs and eclipses |
 | G | Show or hide the list of map services. In it: Enter uses the chosen service as the base layer (again: back to the usual imagery), O as the overlay, + and - change the overlay's opacity, A opens the box to add a service, Delete removes one |
 | V | Show or hide the view options window |
 | H, ?, F1 | Show or hide the help window |
-| F12 | Show or hide the technical figures below the status line: tiles drawn and held, loading, frame rate, downloads |
+| F12 | Show or hide the technical figures below the status line: version, build commit, release tag, tiles, loading, frame rate and downloads |
 | Ctrl-Q | Quit |
 
 An arrow key keeps its meaning while held, even if modifiers change. Moving by hand ends a flight.
@@ -949,6 +950,8 @@ With `--config-dir DIR`, a click on an option writes `DIR/settings.json`, and an
 Copying and encoding run beside the drawing. When they fall behind, a frame loses its image: its log line then has `"image": null`, or a later `lost_image` line names it. The count is printed when the window closes. Recording can't go with `--screenshot` or `--serve-cache`.
 
 ## How far this is tested
+
+The project's mandatory testing rules are in [TESTING.md](TESTING.md). Measurement trails have automated coverage for distance/elevation calculations, persistence, GPX round trips, library operations, visibility and styled raster output. Known end-to-end UI and terrain-click gaps are listed there.
 
 The logic is covered by unit tests, which use neither the network nor a GPU, and the display is checked in saved images. Automated checks can't drive a real window, which leaves these with no automated check:
 

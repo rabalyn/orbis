@@ -5,8 +5,6 @@
 //! bounding boxes and the addresses to ask. Everything else is ignored, and anything missing
 //! or odd makes a layer unusable rather than stopping the whole document.
 
-
-
 use crate::import::{walk, Tok};
 
 /// The largest capabilities document that is read.
@@ -55,7 +53,11 @@ pub fn parse_tree(text: &str) -> Result<Node, String> {
     let mut root: Option<Node> = None;
     walk(text, |tok| {
         match tok {
-            Tok::Open(name, attrs) => stack.push(Node { name, attrs, ..Node::default() }),
+            Tok::Open(name, attrs) => stack.push(Node {
+                name,
+                attrs,
+                ..Node::default()
+            }),
             Tok::Text(t) => {
                 if let Some(top) = stack.last_mut() {
                     top.text.push_str(&t);
@@ -153,7 +155,11 @@ pub enum Document {
 /// Reads a capabilities document of either kind, saying plainly what it is if it is neither.
 pub fn parse(text: &str) -> Result<Document, String> {
     let head = text.trim_start();
-    if head.len() >= 5 && head[..5].eq_ignore_ascii_case("<html") || head.get(..9).is_some_and(|h| h.eq_ignore_ascii_case("<!doctype")) {
+    if head.len() >= 5 && head[..5].eq_ignore_ascii_case("<html")
+        || head
+            .get(..9)
+            .is_some_and(|h| h.eq_ignore_ascii_case("<!doctype"))
+    {
         return Err("the address returned a web page, not a service description".into());
     }
     let root = parse_tree(text)?;
@@ -162,10 +168,15 @@ pub fn parse(text: &str) -> Result<Document, String> {
         "WMS_Capabilities" | "WMT_MS_Capabilities" => parse_wms(&root).map(Document::Wms),
         "ServiceExceptionReport" | "ExceptionReport" => {
             let why = first_text(&root).unwrap_or_default();
-            Err(format!("the service answered with an error: {}", clip(&why, 160)))
+            Err(format!(
+                "the service answered with an error: {}",
+                clip(&why, 160)
+            ))
         }
         "html" | "HTML" => Err("the address returned a web page, not a service description".into()),
-        other => Err(format!("not a WMTS or WMS description (it starts with <{other}>)")),
+        other => Err(format!(
+            "not a WMTS or WMS description (it starts with <{other}>)"
+        )),
     }
 }
 
@@ -178,11 +189,17 @@ fn first_text(n: &Node) -> Option<String> {
 }
 
 fn clip(s: &str, max: usize) -> String {
-    s.chars().take(max).collect::<String>().replace(['\n', '\r'], " ")
+    s.chars()
+        .take(max)
+        .collect::<String>()
+        .replace(['\n', '\r'], " ")
 }
 
 fn numbers(text: &str) -> Vec<f64> {
-    text.split_whitespace().filter_map(|t| t.parse::<f64>().ok()).filter(|v| v.is_finite()).collect()
+    text.split_whitespace()
+        .filter_map(|t| t.parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .collect()
 }
 
 fn lon_lat_box(lower: &str, upper: &str) -> Option<[f64; 4]> {
@@ -203,32 +220,58 @@ fn sane_box(west: f64, south: f64, east: f64, north: f64) -> Option<[f64; 4]> {
 // ---- WMTS ----
 
 fn parse_wmts(root: &Node) -> Result<Wmts, String> {
-    let contents = root.child("Contents").ok_or("the service description has no layers")?;
+    let contents = root
+        .child("Contents")
+        .ok_or("the service description has no layers")?;
     let layers: Vec<WmtsLayer> = contents.all("Layer").filter_map(wmts_layer).collect();
-    let sets = contents.all("TileMatrixSet").filter_map(matrix_set).collect();
+    let sets = contents
+        .all("TileMatrixSet")
+        .filter_map(matrix_set)
+        .collect();
     let get_tile_url = root
         .child("OperationsMetadata")
-        .and_then(|m| m.all("Operation").find(|o| o.attr("name") == Some("GetTile")))
+        .and_then(|m| {
+            m.all("Operation")
+                .find(|o| o.attr("name") == Some("GetTile"))
+        })
         .and_then(|o| o.at(&["DCP", "HTTP", "Get"]))
         .and_then(|g| g.attr("href").map(str::to_string));
-    let title = root.at(&["ServiceIdentification"]).and_then(|s| s.text_of("Title")).unwrap_or_default();
+    let title = root
+        .at(&["ServiceIdentification"])
+        .and_then(|s| s.text_of("Title"))
+        .unwrap_or_default();
     if layers.is_empty() {
         return Err("the service description lists no layers".into());
     }
-    Ok(Wmts { layers, sets, get_tile_url, title })
+    Ok(Wmts {
+        layers,
+        sets,
+        get_tile_url,
+        title,
+    })
 }
 
 fn wmts_layer(n: &Node) -> Option<WmtsLayer> {
     let id = n.text_of("Identifier")?;
     let mut styles: Vec<(String, bool)> = n
         .all("Style")
-        .filter_map(|s| Some((s.text_of("Identifier")?, s.attr("isDefault") == Some("true"))))
+        .filter_map(|s| {
+            Some((
+                s.text_of("Identifier")?,
+                s.attr("isDefault") == Some("true"),
+            ))
+        })
         .collect();
     styles.sort_by_key(|s| !s.1);
     let resources = n
         .all("ResourceURL")
         .filter(|r| r.attr("resourceType").is_none_or(|t| t == "tile"))
-        .filter_map(|r| Some(Resource { format: r.attr("format")?.to_string(), template: r.attr("template")?.to_string() }))
+        .filter_map(|r| {
+            Some(Resource {
+                format: r.attr("format")?.to_string(),
+                template: r.attr("template")?.to_string(),
+            })
+        })
         .collect();
     let dimensions = n
         .all("Dimension")
@@ -237,9 +280,14 @@ fn wmts_layer(n: &Node) -> Option<WmtsLayer> {
     let mut sets = Vec::new();
     let mut limits = Vec::new();
     for link in n.all("TileMatrixSetLink") {
-        let Some(set) = link.text_of("TileMatrixSet") else { continue };
+        let Some(set) = link.text_of("TileMatrixSet") else {
+            continue;
+        };
         if let Some(l) = link.child("TileMatrixSetLimits") {
-            let ids = l.all("TileMatrixLimits").filter_map(|m| m.text_of("TileMatrix")).collect();
+            let ids = l
+                .all("TileMatrixLimits")
+                .filter_map(|m| m.text_of("TileMatrix"))
+                .collect();
             limits.push((set.clone(), ids));
         }
         sets.push(set);
@@ -250,7 +298,11 @@ fn wmts_layer(n: &Node) -> Option<WmtsLayer> {
     Some(WmtsLayer {
         title: n.text_of("Title").unwrap_or_else(|| id.clone()),
         id,
-        formats: n.all("Format").map(|f| f.text.trim().to_string()).filter(|f| !f.is_empty()).collect(),
+        formats: n
+            .all("Format")
+            .map(|f| f.text.trim().to_string())
+            .filter(|f| !f.is_empty())
+            .collect(),
         styles: styles.into_iter().map(|s| s.0).collect(),
         sets,
         limits,
@@ -270,8 +322,14 @@ fn matrix_set(n: &Node) -> Option<MatrixSet> {
             Some(Matrix {
                 id: m.text_of("Identifier")?,
                 top_left: (*corner.first()?, *corner.get(1)?),
-                tile: (m.text_of("TileWidth")?.parse().ok()?, m.text_of("TileHeight")?.parse().ok()?),
-                size: (m.text_of("MatrixWidth")?.parse().ok()?, m.text_of("MatrixHeight")?.parse().ok()?),
+                tile: (
+                    m.text_of("TileWidth")?.parse().ok()?,
+                    m.text_of("TileHeight")?.parse().ok()?,
+                ),
+                size: (
+                    m.text_of("MatrixWidth")?.parse().ok()?,
+                    m.text_of("MatrixHeight")?.parse().ok()?,
+                ),
             })
         })
         .collect();
@@ -282,21 +340,39 @@ fn matrix_set(n: &Node) -> Option<MatrixSet> {
 
 fn parse_wms(root: &Node) -> Result<Wms, String> {
     let version = root.attr("version").unwrap_or("").to_string();
-    let capability = root.child("Capability").ok_or("the service description has no capabilities")?;
+    let capability = root
+        .child("Capability")
+        .ok_or("the service description has no capabilities")?;
     let mut layers = Vec::new();
     if let Some(top) = capability.child("Layer") {
         collect_wms_layers(top, &Inherited::default(), &mut layers);
     }
     let get_map = capability.at(&["Request", "GetMap"]);
-    let formats = get_map.map(|g| g.all("Format").map(|f| f.text.trim().to_string()).filter(|f| !f.is_empty()).collect()).unwrap_or_default();
+    let formats = get_map
+        .map(|g| {
+            g.all("Format")
+                .map(|f| f.text.trim().to_string())
+                .filter(|f| !f.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
     let get_map_url = get_map
         .and_then(|g| g.at(&["DCPType", "HTTP", "Get", "OnlineResource"]))
         .and_then(|r| r.attr("href").map(str::to_string));
-    let title = root.at(&["Service"]).and_then(|s| s.text_of("Title")).unwrap_or_default();
+    let title = root
+        .at(&["Service"])
+        .and_then(|s| s.text_of("Title"))
+        .unwrap_or_default();
     if layers.is_empty() {
         return Err("the service description lists no named layers".into());
     }
-    Ok(Wms { version, layers, formats, get_map_url, title })
+    Ok(Wms {
+        version,
+        layers,
+        formats,
+        get_map_url,
+        title,
+    })
 }
 
 #[derive(Default, Clone)]
@@ -309,7 +385,11 @@ struct Inherited {
 
 fn collect_wms_layers(n: &Node, parent: &Inherited, out: &mut Vec<WmsLayer>) {
     let mut here = parent.clone();
-    for c in n.children.iter().filter(|c| c.name == "CRS" || c.name == "SRS") {
+    for c in n
+        .children
+        .iter()
+        .filter(|c| c.name == "CRS" || c.name == "SRS")
+    {
         for code in c.text.split_whitespace() {
             if !here.crs.iter().any(|x| x == code) {
                 here.crs.push(code.to_string());
@@ -318,19 +398,29 @@ fn collect_wms_layers(n: &Node, parent: &Inherited, out: &mut Vec<WmsLayer>) {
     }
     if let Some(b) = n.child("EX_GeographicBoundingBox") {
         let v = |k: &str| b.text_of(k).and_then(|t| t.parse::<f64>().ok());
-        if let (Some(w), Some(s), Some(e), Some(nn)) = (v("westBoundLongitude"), v("southBoundLatitude"), v("eastBoundLongitude"), v("northBoundLatitude")) {
+        if let (Some(w), Some(s), Some(e), Some(nn)) = (
+            v("westBoundLongitude"),
+            v("southBoundLatitude"),
+            v("eastBoundLongitude"),
+            v("northBoundLatitude"),
+        ) {
             here.bounds = sane_box(w, s, e, nn).or(here.bounds);
         }
     } else if let Some(b) = n.child("LatLonBoundingBox") {
         let v = |k: &str| b.attr(k).and_then(|t| t.trim().parse::<f64>().ok());
-        if let (Some(w), Some(s), Some(e), Some(nn)) = (v("minx"), v("miny"), v("maxx"), v("maxy")) {
+        if let (Some(w), Some(s), Some(e), Some(nn)) = (v("minx"), v("miny"), v("maxx"), v("maxy"))
+        {
             here.bounds = sane_box(w, s, e, nn).or(here.bounds);
         }
     }
     if let Some(a) = n.child("Attribution").and_then(|a| a.text_of("Title")) {
         here.attribution = Some(a);
     }
-    if let Some(m) = n.text_of("MinScaleDenominator").and_then(|t| t.parse::<f64>().ok()).filter(|m| *m > 0.0) {
+    if let Some(m) = n
+        .text_of("MinScaleDenominator")
+        .and_then(|t| t.parse::<f64>().ok())
+        .filter(|m| *m > 0.0)
+    {
         here.min_scale = Some(m);
     }
     if let Some(name) = n.text_of("Name") {
@@ -424,7 +514,9 @@ mod tests {
 
     #[test]
     fn reads_a_wmts_document() {
-        let Document::Wmts(d) = parse(WMTS).unwrap() else { panic!("not WMTS") };
+        let Document::Wmts(d) = parse(WMTS).unwrap() else {
+            panic!("not WMTS")
+        };
         assert_eq!(d.title, "Test WMTS");
         assert_eq!(d.get_tile_url.as_deref(), Some("https://t.example/wmts?"));
         assert_eq!(d.layers.len(), 2);
@@ -444,10 +536,15 @@ mod tests {
 
     #[test]
     fn reads_wms_130_with_inheritance() {
-        let Document::Wms(d) = parse(WMS130).unwrap() else { panic!("not WMS") };
+        let Document::Wms(d) = parse(WMS130).unwrap() else {
+            panic!("not WMS")
+        };
         assert_eq!(d.version, "1.3.0");
         assert_eq!(d.formats, ["image/jpeg", "image/png"]);
-        assert_eq!(d.get_map_url.as_deref(), Some("https://w.example/wms?map=a&"));
+        assert_eq!(
+            d.get_map_url.as_deref(),
+            Some("https://w.example/wms?map=a&")
+        );
         let names: Vec<_> = d.layers.iter().map(|l| l.name.as_str()).collect();
         assert_eq!(names, ["ortho", "dem"], "the unnamed root only groups");
         assert_eq!(d.layers[0].crs, ["EPSG:4326", "EPSG:3857"]);
@@ -460,7 +557,9 @@ mod tests {
 
     #[test]
     fn reads_wms_111() {
-        let Document::Wms(d) = parse(WMS111).unwrap() else { panic!("not WMS") };
+        let Document::Wms(d) = parse(WMS111).unwrap() else {
+            panic!("not WMS")
+        };
         assert_eq!(d.version, "1.1.1");
         assert_eq!(d.layers[0].crs, ["EPSG:4326", "EPSG:900913"]);
         assert_eq!(d.layers[0].bounds, Some([-5.0, 40.0, 10.0, 52.0]));
@@ -469,14 +568,24 @@ mod tests {
     #[test]
     fn bad_documents_give_plain_errors() {
         assert!(parse("").is_err());
-        assert!(parse("<Capabilities><Contents>").unwrap_err().contains("XML"));
-        assert!(parse("<html><body>Login</body></html>").unwrap_err().contains("web page"));
-        assert!(parse("<!DOCTYPE html><html></html>").unwrap_err().contains("web page"));
+        assert!(parse("<Capabilities><Contents>")
+            .unwrap_err()
+            .contains("XML"));
+        assert!(parse("<html><body>Login</body></html>")
+            .unwrap_err()
+            .contains("web page"));
+        assert!(parse("<!DOCTYPE html><html></html>")
+            .unwrap_err()
+            .contains("web page"));
         assert!(parse("<feed/>").unwrap_err().contains("<feed>"));
         let e = parse("<ServiceExceptionReport><ServiceException>Bad layer</ServiceException></ServiceExceptionReport>").unwrap_err();
         assert!(e.contains("Bad layer"), "{e}");
-        assert!(parse("<Capabilities xmlns='x'><Contents/></Capabilities>").unwrap_err().contains("no layers"));
-        assert!(parse("<WMS_Capabilities version='1.3.0'><Capability/></WMS_Capabilities>").is_err());
+        assert!(parse("<Capabilities xmlns='x'><Contents/></Capabilities>")
+            .unwrap_err()
+            .contains("no layers"));
+        assert!(
+            parse("<WMS_Capabilities version='1.3.0'><Capability/></WMS_Capabilities>").is_err()
+        );
         assert!(parse("<WMS_Capabilities><Service/></WMS_Capabilities>").is_err());
     }
 
@@ -484,7 +593,9 @@ mod tests {
     fn broken_entries_are_skipped_not_fatal() {
         let xml = "<Capabilities><Contents><Layer><Title>No id</Title></Layer><Layer><Identifier>ok</Identifier></Layer>\
                    <TileMatrixSet><Identifier>S</Identifier><TileMatrix><Identifier>0</Identifier><TopLeftCorner>x y</TopLeftCorner></TileMatrix></TileMatrixSet></Contents></Capabilities>";
-        let Document::Wmts(d) = parse(xml).unwrap() else { panic!() };
+        let Document::Wmts(d) = parse(xml).unwrap() else {
+            panic!()
+        };
         assert_eq!(d.layers.len(), 1);
         assert!(d.sets[0].matrices.is_empty());
     }

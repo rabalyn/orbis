@@ -116,16 +116,30 @@ struct ZoneArea {
 fn read_zones(layer: &Layer, out: &mut Vec<ZoneArea>) {
     let class_key = Fields { layer }.index("class");
     for bytes in &layer.features {
-        let Some(f) = parse_feature(bytes) else { continue };
+        let Some(f) = parse_feature(bytes) else {
+            continue;
+        };
         if f.kind != 3 {
             continue;
         }
-        let Some(Value::Text(class)) = get(layer, &f, class_key) else { continue };
-        let Some(zone) = Zone::parse(class) else { continue };
-        let rings: Vec<Line> = parse_geometry(f.geometry, layer.extent).into_iter().filter(|r| r.len() >= 4).collect();
+        let Some(Value::Text(class)) = get(layer, &f, class_key) else {
+            continue;
+        };
+        let Some(zone) = Zone::parse(class) else {
+            continue;
+        };
+        let rings: Vec<Line> = parse_geometry(f.geometry, layer.extent)
+            .into_iter()
+            .filter(|r| r.len() >= 4)
+            .collect();
         let mut bbox = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
         for p in rings.iter().flatten() {
-            bbox = [bbox[0].min(p[0]), bbox[1].min(p[1]), bbox[2].max(p[0]), bbox[3].max(p[1])];
+            bbox = [
+                bbox[0].min(p[0]),
+                bbox[1].min(p[1]),
+                bbox[2].max(p[0]),
+                bbox[3].max(p[1]),
+            ];
         }
         if !rings.is_empty() {
             out.push(ZoneArea { zone, rings, bbox });
@@ -139,7 +153,9 @@ fn in_rings(rings: &[Line], p: [f32; 2]) -> bool {
     for ring in rings {
         for w in ring.windows(2) {
             let (a, b) = (w[0], w[1]);
-            if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1]) {
+            if (a[1] > p[1]) != (b[1] > p[1])
+                && p[0] < a[0] + (p[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1])
+            {
                 hit = !hit;
             }
         }
@@ -154,17 +170,23 @@ fn zone_buildings(zones: &[ZoneArea], buildings: &mut [Building]) {
         return;
     }
     for b in buildings {
-        let Some(outer) = b.rings.first() else { continue };
+        let Some(outer) = b.rings.first() else {
+            continue;
+        };
         let corners = &outer[..outer.len().saturating_sub(1)];
         if corners.is_empty() {
             continue;
         }
         let n = corners.len() as f32;
-        let (sx, sy) = corners.iter().fold((0.0, 0.0), |s, p| (s.0 + p[0], s.1 + p[1]));
+        let (sx, sy) = corners
+            .iter()
+            .fold((0.0, 0.0), |s, p| (s.0 + p[0], s.1 + p[1]));
         let p = [sx / n, sy / n];
         b.zone = zones
             .iter()
-            .filter(|z| p[0] >= z.bbox[0] && p[1] >= z.bbox[1] && p[0] <= z.bbox[2] && p[1] <= z.bbox[3])
+            .filter(|z| {
+                p[0] >= z.bbox[0] && p[1] >= z.bbox[1] && p[0] <= z.bbox[2] && p[1] <= z.bbox[3]
+            })
             .filter(|z| in_rings(&z.rings, p))
             .min_by(|a, b| {
                 let size = |z: &ZoneArea| (z.bbox[2] - z.bbox[0]) * (z.bbox[3] - z.bbox[1]);
@@ -223,7 +245,10 @@ const MAX_BUILDING_HEIGHT: f64 = 1000.0;
 fn parse_colour(text: &str) -> Option<[u8; 3]> {
     let text = text.trim().to_ascii_lowercase();
     if let Some(hex) = text.strip_prefix('#') {
-        let digits: Vec<u8> = hex.chars().map(|c| c.to_digit(16).map(|d| d as u8)).collect::<Option<_>>()?;
+        let digits: Vec<u8> = hex
+            .chars()
+            .map(|c| c.to_digit(16).map(|d| d as u8))
+            .collect::<Option<_>>()?;
         return match digits[..] {
             [r, g, b] => Some([r * 17, g * 17, b * 17]),
             [r1, r2, g1, g2, b1, b2] => Some([r1 * 16 + r2, g1 * 16 + g2, b1 * 16 + b2]),
@@ -263,17 +288,30 @@ fn signed_area(ring: &[[f32; 2]]) -> f64 {
 
 fn read_buildings(layer: &Layer, out: &mut Vec<Building>) {
     let fields = Fields { layer };
-    let (height_key, min_key) = (fields.index("render_height"), fields.index("render_min_height"));
+    let (height_key, min_key) = (
+        fields.index("render_height"),
+        fields.index("render_min_height"),
+    );
     let (colour_key, hide_key) = (fields.index("colour"), fields.index("hide_3d"));
     for bytes in &layer.features {
-        let Some(f) = parse_feature(bytes) else { continue };
+        let Some(f) = parse_feature(bytes) else {
+            continue;
+        };
         // A hidden outline is already drawn in more detail by its building parts.
         if f.kind != 3 || get(layer, &f, hide_key).is_some_and(Value::truthy) {
             continue;
         }
-        let number = |key| get(layer, &f, key).and_then(Value::number).filter(|n| n.is_finite());
-        let height = number(height_key).unwrap_or(DEFAULT_BUILDING_HEIGHT).clamp(1.0, MAX_BUILDING_HEIGHT);
-        let min_height = number(min_key).unwrap_or(0.0).clamp(0.0, MAX_BUILDING_HEIGHT);
+        let number = |key| {
+            get(layer, &f, key)
+                .and_then(Value::number)
+                .filter(|n| n.is_finite())
+        };
+        let height = number(height_key)
+            .unwrap_or(DEFAULT_BUILDING_HEIGHT)
+            .clamp(1.0, MAX_BUILDING_HEIGHT);
+        let min_height = number(min_key)
+            .unwrap_or(0.0)
+            .clamp(0.0, MAX_BUILDING_HEIGHT);
         if min_height >= height {
             continue;
         }
@@ -308,7 +346,9 @@ fn read_buildings(layer: &Layer, out: &mut Vec<Building>) {
 
 /// Which name fields to try, best first.
 pub fn name_fields(lang: &str) -> Vec<String> {
-    const OTHER_SCRIPTS: &[&str] = &["ar", "be", "bg", "el", "fa", "he", "hi", "ja", "ka", "ko", "ru", "th", "uk", "zh"];
+    const OTHER_SCRIPTS: &[&str] = &[
+        "ar", "be", "bg", "el", "fa", "he", "hi", "ja", "ka", "ko", "ru", "th", "uk", "zh",
+    ];
     let mut fields = Vec::new();
     if !lang.is_empty() {
         fields.push(format!("name:{lang}"));
@@ -323,7 +363,10 @@ pub fn name_fields(lang: &str) -> Vec<String> {
 
 /// The two-letter language in a locale such as `de_DE.UTF-8`; empty when there is none.
 pub fn language_from_locale(locale: &str) -> String {
-    let code: String = locale.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+    let code: String = locale
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect();
     match code.as_str() {
         "" | "C" | "POSIX" => String::new(),
         _ => code.to_ascii_lowercase(),
@@ -455,7 +498,13 @@ struct Layer<'a> {
 }
 
 fn parse_layer(data: &[u8]) -> Option<Layer<'_>> {
-    let mut layer = Layer { name: "", extent: 4096.0, keys: Vec::new(), values: Vec::new(), features: Vec::new() };
+    let mut layer = Layer {
+        name: "",
+        extent: 4096.0,
+        keys: Vec::new(),
+        values: Vec::new(),
+        features: Vec::new(),
+    };
     let mut r = Reader::new(data);
     while let Some((n, w)) = r.field() {
         match (n, w) {
@@ -471,7 +520,11 @@ fn parse_layer(data: &[u8]) -> Option<Layer<'_>> {
 }
 
 fn parse_feature(data: &[u8]) -> Option<Feature<'_>> {
-    let mut f = Feature { kind: 0, tags: Vec::new(), geometry: &[] };
+    let mut f = Feature {
+        kind: 0,
+        tags: Vec::new(),
+        geometry: &[],
+    };
     let mut r = Reader::new(data);
     while let Some((n, w)) = r.field() {
         match (n, w) {
@@ -480,7 +533,8 @@ fn parse_feature(data: &[u8]) -> Option<Feature<'_>> {
                 while tags.pos < b.len() {
                     let key = tags.varint()?;
                     let value = tags.varint()?;
-                    f.tags.push((u32::try_from(key).ok()?, u32::try_from(value).ok()?));
+                    f.tags
+                        .push((u32::try_from(key).ok()?, u32::try_from(value).ok()?));
                 }
             }
             (3, Wire::Varint(v)) => f.kind = v,
@@ -536,7 +590,11 @@ struct Fields<'l, 'a> {
 
 impl Fields<'_, '_> {
     fn index(&self, name: &str) -> Option<u32> {
-        self.layer.keys.iter().position(|k| *k == name).map(|i| i as u32)
+        self.layer
+            .keys
+            .iter()
+            .position(|k| *k == name)
+            .map(|i| i as u32)
     }
 }
 
@@ -562,7 +620,10 @@ fn along_line(line: &[[f32; 2]], fraction: f32) -> [f32; 2] {
         let d = distance(w[0], w[1]);
         if left <= d && d > 0.0 {
             let t = left / d;
-            return [w[0][0] + (w[1][0] - w[0][0]) * t, w[0][1] + (w[1][1] - w[0][1]) * t];
+            return [
+                w[0][0] + (w[1][0] - w[0][0]) * t,
+                w[0][1] + (w[1][1] - w[0][1]) * t,
+            ];
         }
         left -= d;
     }
@@ -581,8 +642,12 @@ pub fn decode(data: &[u8], key: TileKey, names: &[String]) -> Option<VectorTile>
     let mut r = Reader::new(data);
     while r.pos < data.len() {
         let (n, wire) = r.field()?;
-        let (3, Wire::Bytes(bytes)) = (n, wire) else { continue };
-        let Some(layer) = parse_layer(bytes) else { continue };
+        let (3, Wire::Bytes(bytes)) = (n, wire) else {
+            continue;
+        };
+        let Some(layer) = parse_layer(bytes) else {
+            continue;
+        };
         match layer.name {
             "transportation" => read_roads(&layer, &mut tile.roads),
             "boundary" => read_boundaries(&layer, &mut tile.boundaries),
@@ -613,7 +678,9 @@ fn read_roads(layer: &Layer, out: &mut Vec<Road>) {
     let fields = Fields { layer };
     let (class_key, brunnel_key) = (fields.index("class"), fields.index("brunnel"));
     for bytes in &layer.features {
-        let Some(f) = parse_feature(bytes) else { continue };
+        let Some(f) = parse_feature(bytes) else {
+            continue;
+        };
         if f.kind != 2 {
             continue;
         }
@@ -626,7 +693,11 @@ fn read_roads(layer: &Layer, out: &mut Vec<Road>) {
         let tunnel = get(layer, &f, brunnel_key) == Some(Value::Text("tunnel"));
         for line in parse_geometry(f.geometry, layer.extent) {
             if line.len() >= 2 {
-                out.push(Road { class, tunnel, line });
+                out.push(Road {
+                    class,
+                    tunnel,
+                    line,
+                });
             }
         }
     }
@@ -638,15 +709,23 @@ fn read_boundaries(layer: &Layer, out: &mut Vec<Boundary>) {
     let maritime = fields.index("maritime");
     let disputed = fields.index("disputed");
     for bytes in &layer.features {
-        let Some(f) = parse_feature(bytes) else { continue };
+        let Some(f) = parse_feature(bytes) else {
+            continue;
+        };
         if f.kind != 2 || get(layer, &f, maritime).is_some_and(Value::truthy) {
             continue;
         }
-        let Some(admin_level) = get(layer, &f, level).and_then(Value::number) else { continue };
+        let Some(admin_level) = get(layer, &f, level).and_then(Value::number) else {
+            continue;
+        };
         let is_disputed = get(layer, &f, disputed).is_some_and(Value::truthy);
         for line in parse_geometry(f.geometry, layer.extent) {
             if line.len() >= 2 {
-                out.push(Boundary { admin_level: admin_level as i64, disputed: is_disputed, line });
+                out.push(Boundary {
+                    admin_level: admin_level as i64,
+                    disputed: is_disputed,
+                    line,
+                });
             }
         }
     }
@@ -662,12 +741,22 @@ const STATE_CAPITAL: i32 = 270;
 fn read_places(layer: &Layer, key: TileKey, names: &[String], out: &mut Vec<Label>) {
     let name_keys = name_indices(layer, names);
     let fields = Fields { layer };
-    let (class_key, rank_key, capital_key) = (fields.index("class"), fields.index("rank"), fields.index("capital"));
+    let (class_key, rank_key, capital_key) = (
+        fields.index("class"),
+        fields.index("rank"),
+        fields.index("capital"),
+    );
     for bytes in &layer.features {
-        let Some(f) = parse_feature(bytes) else { continue };
-        let Some(Value::Text(class)) = get(layer, &f, class_key) else { continue };
+        let Some(f) = parse_feature(bytes) else {
+            continue;
+        };
+        let Some(Value::Text(class)) = get(layer, &f, class_key) else {
+            continue;
+        };
         // The admin level of the area the place is the capital of: 2 a country, 3 or 4 a state.
-        let capital = get(layer, &f, capital_key).and_then(Value::number).map_or(0, |c| c as i32);
+        let capital = get(layer, &f, capital_key)
+            .and_then(Value::number)
+            .map_or(0, |c| c as i32);
         // Far out, countries are what matters; states and cities join in as the view closes in.
         let (style, base) = match class {
             "country" => (LabelStyle::Country, 100),
@@ -679,19 +768,43 @@ fn read_places(layer: &Layer, key: TileKey, names: &[String], out: &mut Vec<Labe
             "hamlet" | "neighbourhood" | "isolated_dwelling" => (LabelStyle::Local, 850),
             _ => continue,
         };
-        let Some(name) = first_name(layer, &f, &name_keys) else { continue };
-        let rank = get(layer, &f, rank_key).and_then(Value::number).unwrap_or(50.0) as i32;
-        let is_place = matches!(style, LabelStyle::City | LabelStyle::Town | LabelStyle::Village);
+        let Some(name) = first_name(layer, &f, &name_keys) else {
+            continue;
+        };
+        let rank = get(layer, &f, rank_key)
+            .and_then(Value::number)
+            .unwrap_or(50.0) as i32;
+        let is_place = matches!(
+            style,
+            LabelStyle::City | LabelStyle::Town | LabelStyle::Village
+        );
         // Capitals come right after the country and state names, marked with a star.
         let (style, base, text) = match capital {
-            2 if is_place => (LabelStyle::City, NATIONAL_CAPITAL, format!("{NATIONAL_CAPITAL_MARK} {name}")),
-            3 | 4 if is_place => (LabelStyle::City, STATE_CAPITAL, format!("{STATE_CAPITAL_MARK} {name}")),
+            2 if is_place => (
+                LabelStyle::City,
+                NATIONAL_CAPITAL,
+                format!("{NATIONAL_CAPITAL_MARK} {name}"),
+            ),
+            3 | 4 if is_place => (
+                LabelStyle::City,
+                STATE_CAPITAL,
+                format!("{STATE_CAPITAL_MARK} {name}"),
+            ),
             _ => (style, base, name),
         };
         for part in parse_geometry(f.geometry, layer.extent) {
-            let Some(&p) = part.first().filter(|p| inside(**p)) else { continue };
+            let Some(&p) = part.first().filter(|p| inside(**p)) else {
+                continue;
+            };
             let (lat, lon) = point_to_lat_lon(key, p);
-            out.push(Label { text: text.clone(), style, priority: base + rank, lat, lon, along: None });
+            out.push(Label {
+                text: text.clone(),
+                style,
+                priority: base + rank,
+                lat,
+                lon,
+                along: None,
+            });
         }
     }
 }
@@ -700,8 +813,12 @@ fn read_water_names(layer: &Layer, key: TileKey, names: &[String], out: &mut Vec
     let name_keys = name_indices(layer, names);
     let class_key = Fields { layer }.index("class");
     for bytes in &layer.features {
-        let Some(f) = parse_feature(bytes) else { continue };
-        let Some(text) = first_name(layer, &f, &name_keys) else { continue };
+        let Some(f) = parse_feature(bytes) else {
+            continue;
+        };
+        let Some(text) = first_name(layer, &f, &name_keys) else {
+            continue;
+        };
         let (style, priority) = match get(layer, &f, class_key) {
             Some(Value::Text("ocean")) => (LabelStyle::Sea, 50),
             Some(Value::Text("sea")) => (LabelStyle::Sea, 400),
@@ -709,9 +826,18 @@ fn read_water_names(layer: &Layer, key: TileKey, names: &[String], out: &mut Vec
             _ => (LabelStyle::Lake, 780),
         };
         for part in parse_geometry(f.geometry, layer.extent) {
-            let Some(&p) = part.first().filter(|p| inside(**p)) else { continue };
+            let Some(&p) = part.first().filter(|p| inside(**p)) else {
+                continue;
+            };
             let (lat, lon) = point_to_lat_lon(key, p);
-            out.push(Label { text: text.clone(), style, priority, lat, lon, along: None });
+            out.push(Label {
+                text: text.clone(),
+                style,
+                priority,
+                lat,
+                lon,
+                along: None,
+            });
         }
     }
 }
@@ -723,22 +849,41 @@ fn read_peaks(layer: &Layer, key: TileKey, names: &[String], out: &mut Vec<Label
     }
     let name_keys = name_indices(layer, names);
     let fields = Fields { layer };
-    let (class_key, rank_key, ele_key) = (fields.index("class"), fields.index("rank"), fields.index("ele"));
+    let (class_key, rank_key, ele_key) = (
+        fields.index("class"),
+        fields.index("rank"),
+        fields.index("ele"),
+    );
     for bytes in &layer.features {
-        let Some(f) = parse_feature(bytes) else { continue };
+        let Some(f) = parse_feature(bytes) else {
+            continue;
+        };
         if f.kind != 1 || get(layer, &f, class_key) != Some(Value::Text("peak")) {
             continue;
         }
-        let Some(name) = first_name(layer, &f, &name_keys) else { continue };
+        let Some(name) = first_name(layer, &f, &name_keys) else {
+            continue;
+        };
         let text = match get(layer, &f, ele_key).and_then(Value::number) {
             Some(ele) if ele > 0.0 => format!("▲ {name} {} m", ele as i64),
             _ => format!("▲ {name}"),
         };
-        let rank = get(layer, &f, rank_key).and_then(Value::number).unwrap_or(10.0) as i32;
+        let rank = get(layer, &f, rank_key)
+            .and_then(Value::number)
+            .unwrap_or(10.0) as i32;
         for part in parse_geometry(f.geometry, layer.extent) {
-            let Some(&p) = part.first().filter(|p| inside(**p)) else { continue };
+            let Some(&p) = part.first().filter(|p| inside(**p)) else {
+                continue;
+            };
             let (lat, lon) = point_to_lat_lon(key, p);
-            out.push(Label { text: text.clone(), style: LabelStyle::Peak, priority: 620 + rank, lat, lon, along: None });
+            out.push(Label {
+                text: text.clone(),
+                style: LabelStyle::Peak,
+                priority: 620 + rank,
+                lat,
+                lon,
+                along: None,
+            });
         }
     }
 }
@@ -748,7 +893,9 @@ fn read_road_names(layer: &Layer, key: TileKey, names: &[String], out: &mut Vec<
     let fields = Fields { layer };
     let (class_key, ref_key) = (fields.index("class"), fields.index("ref"));
     for bytes in &layer.features {
-        let Some(f) = parse_feature(bytes) else { continue };
+        let Some(f) = parse_feature(bytes) else {
+            continue;
+        };
         // Point features here are motorway junctions, which would crowd out everything else.
         if f.kind != 2 {
             continue;
@@ -778,7 +925,14 @@ fn read_road_names(layer: &Layer, key: TileKey, names: &[String], out: &mut Vec<
                 point_to_lat_lon(key, along_line(&line, 0.4)),
                 point_to_lat_lon(key, along_line(&line, 0.6)),
             ]);
-            out.push(Label { text: text.clone(), style: LabelStyle::Road, priority, lat, lon, along });
+            out.push(Label {
+                text: text.clone(),
+                style: LabelStyle::Road,
+                priority,
+                lat,
+                lon,
+                along,
+            });
         }
     }
 }
@@ -888,7 +1042,11 @@ pub mod tests {
         let data = layer(
             "transportation",
             &[
-                (2, vec![("class", V::S("motorway")), ("brunnel", V::S("tunnel"))], g.clone()),
+                (
+                    2,
+                    vec![("class", V::S("motorway")), ("brunnel", V::S("tunnel"))],
+                    g.clone(),
+                ),
                 (2, vec![("class", V::S("minor"))], g.clone()),
                 (2, vec![("class", V::S("motorway_construction"))], g),
             ],
@@ -907,7 +1065,10 @@ pub mod tests {
         g.extend(line_to(&[(100, 0)]));
         g.extend(move_to(0, 100));
         g.extend(line_to(&[(100, 0)]));
-        let data = layer("transportation", &[(2, vec![("class", V::S("primary"))], g)]);
+        let data = layer(
+            "transportation",
+            &[(2, vec![("class", V::S("primary"))], g)],
+        );
         assert_eq!(decode(&data, KEY, &names()).unwrap().roads.len(), 2);
     }
 
@@ -918,8 +1079,16 @@ pub mod tests {
         let data = layer(
             "boundary",
             &[
-                (2, vec![("admin_level", V::Sint(2)), ("maritime", V::Sint(0))], g.clone()),
-                (2, vec![("admin_level", V::Sint(2)), ("maritime", V::Sint(1))], g),
+                (
+                    2,
+                    vec![("admin_level", V::Sint(2)), ("maritime", V::Sint(0))],
+                    g.clone(),
+                ),
+                (
+                    2,
+                    vec![("admin_level", V::Sint(2)), ("maritime", V::Sint(1))],
+                    g,
+                ),
             ],
         );
         let t = decode(&data, KEY, &names()).unwrap();
@@ -932,18 +1101,68 @@ pub mod tests {
         let data = layer(
             "place",
             &[
-                (1, vec![("class", V::S("city")), ("rank", V::Sint(1)), ("capital", V::Sint(2)), ("name", V::S("Berlin"))], move_to(10, 10)),
-                (1, vec![("class", V::S("city")), ("rank", V::Sint(2)), ("capital", V::Sint(4)), ("name", V::S("Munich"))], move_to(10, 10)),
-                (1, vec![("class", V::S("town")), ("rank", V::Sint(5)), ("capital", V::Sint(4)), ("name", V::S("Schwerin"))], move_to(10, 10)),
-                (1, vec![("class", V::S("city")), ("rank", V::Sint(1)), ("name", V::S("Hamburg"))], move_to(10, 10)),
+                (
+                    1,
+                    vec![
+                        ("class", V::S("city")),
+                        ("rank", V::Sint(1)),
+                        ("capital", V::Sint(2)),
+                        ("name", V::S("Berlin")),
+                    ],
+                    move_to(10, 10),
+                ),
+                (
+                    1,
+                    vec![
+                        ("class", V::S("city")),
+                        ("rank", V::Sint(2)),
+                        ("capital", V::Sint(4)),
+                        ("name", V::S("Munich")),
+                    ],
+                    move_to(10, 10),
+                ),
+                (
+                    1,
+                    vec![
+                        ("class", V::S("town")),
+                        ("rank", V::Sint(5)),
+                        ("capital", V::Sint(4)),
+                        ("name", V::S("Schwerin")),
+                    ],
+                    move_to(10, 10),
+                ),
+                (
+                    1,
+                    vec![
+                        ("class", V::S("city")),
+                        ("rank", V::Sint(1)),
+                        ("name", V::S("Hamburg")),
+                    ],
+                    move_to(10, 10),
+                ),
             ],
         );
         let t = decode(&data, KEY, &names()).unwrap();
-        let find = |n: &str| t.labels.iter().find(|l| l.text.ends_with(n)).unwrap().clone();
-        let (berlin, munich, schwerin, hamburg) = (find("Berlin"), find("Munich"), find("Schwerin"), find("Hamburg"));
+        let find = |n: &str| {
+            t.labels
+                .iter()
+                .find(|l| l.text.ends_with(n))
+                .unwrap()
+                .clone()
+        };
+        let (berlin, munich, schwerin, hamburg) = (
+            find("Berlin"),
+            find("Munich"),
+            find("Schwerin"),
+            find("Hamburg"),
+        );
         assert_eq!(berlin.text, "\u{2605} Berlin");
         assert_eq!(munich.text, "\u{2b51} Munich");
-        assert_eq!(schwerin.style, LabelStyle::City, "a small state capital is drawn like a city");
+        assert_eq!(
+            schwerin.style,
+            LabelStyle::City,
+            "a small state capital is drawn like a city"
+        );
         assert_eq!(hamburg.text, "Hamburg");
         assert!(berlin.priority < munich.priority && munich.priority < hamburg.priority);
         assert!(schwerin.priority < hamburg.priority);
@@ -954,12 +1173,41 @@ pub mod tests {
         let data = layer(
             "place",
             &[
-                (1, vec![("class", V::S("city")), ("rank", V::Sint(7)), ("name", V::S("München")), ("name:de", V::S("München DE"))], move_to(2048, 2048)),
-                (1, vec![("class", V::S("town")), ("name", V::S("Local")), ("name:latin", V::S("Latin"))], move_to(100, 100)),
-                (1, vec![("class", V::S("town")), ("name", V::S("Only"))], move_to(100, 100)),
+                (
+                    1,
+                    vec![
+                        ("class", V::S("city")),
+                        ("rank", V::Sint(7)),
+                        ("name", V::S("München")),
+                        ("name:de", V::S("München DE")),
+                    ],
+                    move_to(2048, 2048),
+                ),
+                (
+                    1,
+                    vec![
+                        ("class", V::S("town")),
+                        ("name", V::S("Local")),
+                        ("name:latin", V::S("Latin")),
+                    ],
+                    move_to(100, 100),
+                ),
+                (
+                    1,
+                    vec![("class", V::S("town")), ("name", V::S("Only"))],
+                    move_to(100, 100),
+                ),
                 (1, vec![("class", V::S("city"))], move_to(100, 100)),
-                (1, vec![("class", V::S("city")), ("name", V::S("Outside"))], move_to(5000, 100)),
-                (1, vec![("class", V::S("spaceport")), ("name", V::S("Unknown"))], move_to(100, 100)),
+                (
+                    1,
+                    vec![("class", V::S("city")), ("name", V::S("Outside"))],
+                    move_to(5000, 100),
+                ),
+                (
+                    1,
+                    vec![("class", V::S("spaceport")), ("name", V::S("Unknown"))],
+                    move_to(100, 100),
+                ),
             ],
         );
         let t = decode(&data, KEY, &names()).unwrap();
@@ -973,11 +1221,27 @@ pub mod tests {
 
     #[test]
     fn far_views_keep_only_the_big_picture() {
-        let place = |class| (1, vec![("class", V::S(class)), ("name", V::S(class))], move_to(10, 10));
-        let peak = (1, vec![("class", V::S("peak")), ("name", V::S("Hill"))], move_to(10, 10));
+        let place = |class| {
+            (
+                1,
+                vec![("class", V::S(class)), ("name", V::S(class))],
+                move_to(10, 10),
+            )
+        };
+        let peak = (
+            1,
+            vec![("class", V::S("peak")), ("name", V::S("Hill"))],
+            move_to(10, 10),
+        );
         let mut data = layer(
             "place",
-            &[place("continent"), place("country"), place("state"), place("city"), place("town")],
+            &[
+                place("continent"),
+                place("country"),
+                place("state"),
+                place("city"),
+                place("town"),
+            ],
         );
         data.extend(layer("mountain_peak", &[peak]));
         let at = |z| {
@@ -985,8 +1249,19 @@ pub mod tests {
             t.labels.iter().map(|l| l.style).collect::<Vec<_>>()
         };
         assert_eq!(at(3), [LabelStyle::Country, LabelStyle::Town]);
-        assert_eq!(at(4), [LabelStyle::Country, LabelStyle::City, LabelStyle::Town]);
-        assert_eq!(at(5), [LabelStyle::Country, LabelStyle::State, LabelStyle::City, LabelStyle::Town]);
+        assert_eq!(
+            at(4),
+            [LabelStyle::Country, LabelStyle::City, LabelStyle::Town]
+        );
+        assert_eq!(
+            at(5),
+            [
+                LabelStyle::Country,
+                LabelStyle::State,
+                LabelStyle::City,
+                LabelStyle::Town
+            ]
+        );
         assert_eq!(at(9).last(), Some(&LabelStyle::Peak));
     }
 
@@ -995,9 +1270,26 @@ pub mod tests {
         let data = layer(
             "mountain_peak",
             &[
-                (1, vec![("class", V::S("peak")), ("name", V::S("Olperer")), ("ele", V::Sint(3476)), ("rank", V::Sint(1))], move_to(10, 10)),
-                (1, vec![("class", V::S("saddle")), ("name", V::S("Joch"))], move_to(10, 10)),
-                (2, vec![("class", V::S("peak")), ("name", V::S("Ridge"))], move_to(10, 10)),
+                (
+                    1,
+                    vec![
+                        ("class", V::S("peak")),
+                        ("name", V::S("Olperer")),
+                        ("ele", V::Sint(3476)),
+                        ("rank", V::Sint(1)),
+                    ],
+                    move_to(10, 10),
+                ),
+                (
+                    1,
+                    vec![("class", V::S("saddle")), ("name", V::S("Joch"))],
+                    move_to(10, 10),
+                ),
+                (
+                    2,
+                    vec![("class", V::S("peak")), ("name", V::S("Ridge"))],
+                    move_to(10, 10),
+                ),
             ],
         );
         let t = decode(&data, KEY, &names()).unwrap();
@@ -1012,9 +1304,29 @@ pub mod tests {
         let data = layer(
             "transportation_name",
             &[
-                (2, vec![("class", V::S("motorway")), ("ref", V::S("A 12")), ("name", V::S("Inntal"))], g.clone()),
-                (2, vec![("class", V::S("minor")), ("ref", V::S("x")), ("name", V::S("Maria-Theresien-Straße"))], g),
-                (1, vec![("class", V::S("motorway")), ("name", V::S("Junction"))], move_to(10, 10)),
+                (
+                    2,
+                    vec![
+                        ("class", V::S("motorway")),
+                        ("ref", V::S("A 12")),
+                        ("name", V::S("Inntal")),
+                    ],
+                    g.clone(),
+                ),
+                (
+                    2,
+                    vec![
+                        ("class", V::S("minor")),
+                        ("ref", V::S("x")),
+                        ("name", V::S("Maria-Theresien-Straße")),
+                    ],
+                    g,
+                ),
+                (
+                    1,
+                    vec![("class", V::S("motorway")), ("name", V::S("Junction"))],
+                    move_to(10, 10),
+                ),
             ],
         );
         let t = decode(&data, KEY, &names()).unwrap();
@@ -1059,7 +1371,15 @@ pub mod tests {
         g.extend(square(d.0, d.1, 500, true));
         let data = layer(
             "building",
-            &[(3, vec![("render_height", V::Sint(20)), ("render_min_height", V::Sint(0)), ("colour", V::S("#5a81a0"))], g)],
+            &[(
+                3,
+                vec![
+                    ("render_height", V::Sint(20)),
+                    ("render_min_height", V::Sint(0)),
+                    ("colour", V::S("#5a81a0")),
+                ],
+                g,
+            )],
         );
         let t = decode(&data, CITY, &names()).unwrap();
         assert_eq!(t.buildings.len(), 2);
@@ -1078,8 +1398,19 @@ pub mod tests {
         let data = layer(
             "building",
             &[
-                (3, vec![("render_height", V::Sint(30)), ("hide_3d", V::Sint(1))], g.clone()),
-                (3, vec![("render_height", V::Sint(5)), ("render_min_height", V::Sint(9))], g.clone()),
+                (
+                    3,
+                    vec![("render_height", V::Sint(30)), ("hide_3d", V::Sint(1))],
+                    g.clone(),
+                ),
+                (
+                    3,
+                    vec![
+                        ("render_height", V::Sint(5)),
+                        ("render_min_height", V::Sint(9)),
+                    ],
+                    g.clone(),
+                ),
                 (3, vec![], g.clone()),
                 (3, vec![("render_height", V::Sint(90000))], g.clone()),
                 (2, vec![("render_height", V::Sint(5))], g),
@@ -1087,7 +1418,11 @@ pub mod tests {
         );
         let t = decode(&data, CITY, &names()).unwrap();
         let heights: Vec<f32> = t.buildings.iter().map(|b| b.height).collect();
-        assert_eq!(heights, [6.0, 1000.0], "hidden and inverted are skipped, the rest defaulted or capped");
+        assert_eq!(
+            heights,
+            [6.0, 1000.0],
+            "hidden and inverted are skipped, the rest defaulted or capped"
+        );
     }
 
     #[test]
@@ -1097,24 +1432,60 @@ pub mod tests {
         let mut tile = layer(
             "landuse",
             &[
-                (3, vec![("class", V::S("residential"))], square(0, 0, 3000, true)),
-                (3, vec![("class", V::S("retail"))], square(1000, 1000, 500, true)),
-                (3, vec![("class", V::S("industrial"))], square(3500, 3500, 500, true)),
-                (3, vec![("class", V::S("school"))], square(100, 100, 300, true)),
+                (
+                    3,
+                    vec![("class", V::S("residential"))],
+                    square(0, 0, 3000, true),
+                ),
+                (
+                    3,
+                    vec![("class", V::S("retail"))],
+                    square(1000, 1000, 500, true),
+                ),
+                (
+                    3,
+                    vec![("class", V::S("industrial"))],
+                    square(3500, 3500, 500, true),
+                ),
+                (
+                    3,
+                    vec![("class", V::S("school"))],
+                    square(100, 100, 300, true),
+                ),
             ],
         );
         let houses = [(200, 200), (1100, 1100), (3600, 3600), (3200, 100)];
-        let features: Vec<_> = houses.iter().map(|&(x, y)| (3, vec![("render_height", V::Sint(10))], square(x, y, 50, true))).collect();
+        let features: Vec<_> = houses
+            .iter()
+            .map(|&(x, y)| {
+                (
+                    3,
+                    vec![("render_height", V::Sint(10))],
+                    square(x, y, 50, true),
+                )
+            })
+            .collect();
         tile.extend(layer("building", &features));
         let t = decode(&tile, CITY, &names()).unwrap();
         let zones: Vec<Option<Zone>> = t.buildings.iter().map(|b| b.zone).collect();
-        assert_eq!(zones, [Some(Zone::Residential), Some(Zone::Commercial), Some(Zone::Industrial), None]);
+        assert_eq!(
+            zones,
+            [
+                Some(Zone::Residential),
+                Some(Zone::Commercial),
+                Some(Zone::Industrial),
+                None
+            ]
+        );
     }
 
     #[test]
     fn coarse_tiles_have_no_buildings() {
         let data = layer("building", &[(3, vec![], square(0, 0, 1000, true))]);
-        assert!(decode(&data, TileKey::new(13, 4356, 2875), &names()).unwrap().buildings.is_empty());
+        assert!(decode(&data, TileKey::new(13, 4356, 2875), &names())
+            .unwrap()
+            .buildings
+            .is_empty());
         assert_eq!(decode(&data, CITY, &names()).unwrap().buildings.len(), 1);
     }
 
@@ -1144,7 +1515,10 @@ pub mod tests {
         assert_eq!(language_from_locale("de_DE.UTF-8"), "de");
         assert_eq!(language_from_locale("C"), "");
         assert_eq!(language_from_locale(""), "");
-        assert_eq!(name_fields("de"), ["name:de", "name_de", "name:latin", "name"]);
+        assert_eq!(
+            name_fields("de"),
+            ["name:de", "name_de", "name:latin", "name"]
+        );
         assert_eq!(name_fields("ja"), ["name:ja", "name_ja", "name"]);
         assert_eq!(name_fields(""), ["name:latin", "name"]);
     }

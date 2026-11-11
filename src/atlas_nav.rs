@@ -37,7 +37,11 @@ pub struct AtlasNav {
 
 impl AtlasNav {
     pub fn new(view: AtlasView) -> Self {
-        Self { view, drag: None, flight: None }
+        Self {
+            view,
+            drag: None,
+            flight: None,
+        }
     }
 
     pub fn press(&mut self, pos: DVec2) {
@@ -66,7 +70,8 @@ impl AtlasNav {
     /// `lines` is positive for scrolling away from the user, which zooms in.
     pub fn scroll(&mut self, lines: f64, pos: DVec2) {
         self.flight = None;
-        self.view.zoom_at((pos.x, pos.y), (lines * ZOOM_PER_LINE).exp());
+        self.view
+            .zoom_at((pos.x, pos.y), (lines * ZOOM_PER_LINE).exp());
     }
 
     /// Starts a smooth flight that centres on a point and zooms in (or out, with `out`) by a
@@ -87,7 +92,13 @@ impl AtlasNav {
             return;
         }
         let curve = crate::flight::Curve::new(ground, widths.0, widths.1);
-        self.flight = Some(Flight { from, to, widths, curve, t: 0.0 });
+        self.flight = Some(Flight {
+            from,
+            to,
+            widths,
+            curve,
+            t: 0.0,
+        });
     }
 
     pub fn is_animating(&self) -> bool {
@@ -101,13 +112,21 @@ impl AtlasNav {
 
     /// Moves a flight on by `dt` seconds. Returns whether the view changed.
     pub fn tick(&mut self, dt: f64) -> bool {
-        let Some(mut f) = self.flight else { return false };
+        let Some(mut f) = self.flight else {
+            return false;
+        };
         f.t = (f.t + dt / f.curve.duration()).min(1.0);
         let s = f.curve.at(f.t);
         let (c, w) = if f.t >= 1.0 {
             (f.to, f.widths.1)
         } else {
-            ((f.from.0 + (f.to.0 - f.from.0) * s.along, f.from.1 + (f.to.1 - f.from.1) * s.along), s.width)
+            (
+                (
+                    f.from.0 + (f.to.0 - f.from.0) * s.along,
+                    f.from.1 + (f.to.1 - f.from.1) * s.along,
+                ),
+                s.width,
+            )
         };
         self.view.scale = self.view.size.0 / w;
         self.view.centre = c;
@@ -121,11 +140,20 @@ impl AtlasNav {
         let v = &mut self.view;
         match key {
             Key::CycleProjection { back } => {
-                let p: Projection = if back { v.projection.previous() } else { v.projection.next() };
+                let p: Projection = if back {
+                    v.projection.previous()
+                } else {
+                    v.projection.next()
+                };
                 v.set_projection(p);
             }
             Key::ShiftMeridian { east, fine } => {
-                let step = if fine { MERIDIAN_FINE_STEP } else { MERIDIAN_STEP }.to_radians();
+                let step = if fine {
+                    MERIDIAN_FINE_STEP
+                } else {
+                    MERIDIAN_STEP
+                }
+                .to_radians();
                 v.set_central_meridian(v.central_meridian + if east { step } else { -step });
             }
             Key::Whole => v.show_whole(),
@@ -141,7 +169,8 @@ impl AtlasNav {
         let s = crate::spacemouse_nav::atlas_step(axes, sensitivity, dt);
         let before = self.view;
         self.view.pan(s.dx, s.dy);
-        self.view.zoom_at((self.view.size.0 / 2.0, self.view.size.1 / 2.0), s.zoom);
+        self.view
+            .zoom_at((self.view.size.0 / 2.0, self.view.size.1 / 2.0), s.zoom);
         self.view != before
     }
 
@@ -155,7 +184,11 @@ mod tests {
     use super::*;
 
     fn nav() -> AtlasNav {
-        AtlasNav::new(AtlasView::whole(Projection::EqualEarth, 0.0, (1280.0, 800.0)))
+        AtlasNav::new(AtlasView::whole(
+            Projection::EqualEarth,
+            0.0,
+            (1280.0, 800.0),
+        ))
     }
 
     #[test]
@@ -185,7 +218,11 @@ mod tests {
         n.moved(DVec2::new(5000.0, 100.0));
         let (_, lon) = n.view.centre_lat_lon();
         assert!(lon.abs() <= std::f64::consts::PI + 1e-9);
-        assert!(n.view.projection.inverse(n.view.centre.0, n.view.centre.1).is_some());
+        assert!(n
+            .view
+            .projection
+            .inverse(n.view.centre.0, n.view.centre.1)
+            .is_some());
     }
 
     #[test]
@@ -211,12 +248,21 @@ mod tests {
         n.key(Key::CycleProjection { back: true });
         n.key(Key::CycleProjection { back: true });
         assert_eq!(n.view.projection, Projection::PlateCarree);
-        n.key(Key::ShiftMeridian { east: true, fine: false });
+        n.key(Key::ShiftMeridian {
+            east: true,
+            fine: false,
+        });
         assert!((n.view.central_meridian.to_degrees() - 15.0).abs() < 1e-9);
-        n.key(Key::ShiftMeridian { east: false, fine: true });
+        n.key(Key::ShiftMeridian {
+            east: false,
+            fine: true,
+        });
         assert!((n.view.central_meridian.to_degrees() - 14.0).abs() < 1e-9);
         for _ in 0..30 {
-            n.key(Key::ShiftMeridian { east: true, fine: false });
+            n.key(Key::ShiftMeridian {
+                east: true,
+                fine: false,
+            });
         }
         // 14 + 450 degrees wraps to 104.
         assert!((n.view.central_meridian.to_degrees() - 104.0).abs() < 1e-9);
@@ -229,7 +275,10 @@ mod tests {
         let mut n = nav();
         n.scroll(10.0, DVec2::new(400.0, 300.0));
         let (lat, lon) = n.view.centre_lat_lon();
-        n.key(Key::ShiftMeridian { east: true, fine: false });
+        n.key(Key::ShiftMeridian {
+            east: true,
+            fine: false,
+        });
         n.key(Key::CycleProjection { back: false });
         let (la, lo) = n.view.centre_lat_lon();
         assert!((la - lat).abs() < 1e-6 && (lo - lon).abs() < 1e-6);
@@ -257,12 +306,19 @@ mod tests {
         assert!((c.0 - target.0).abs() < 1e-3 && (c.1 - target.1).abs() < 1e-3);
         // Zooming out at the window's corner, which is off the map, halves the scale back to the
         // whole map, and the whole map is shown centred.
-        assert!(n.view.lat_lon_at(1.0, 1.0).is_none(), "the corner is off the map");
+        assert!(
+            n.view.lat_lon_at(1.0, 1.0).is_none(),
+            "the corner is off the map"
+        );
         n.double_click(DVec2::new(1.0, 1.0), true);
         assert!(n.is_animating());
         run(&mut n);
         assert!(!n.is_animating());
-        assert!((n.view.scale - scale).abs() < 1e-9 && (n.view.scale - n.view.fit_scale()).abs() < 1e-9, "{}", n.view.scale);
+        assert!(
+            (n.view.scale - scale).abs() < 1e-9 && (n.view.scale - n.view.fit_scale()).abs() < 1e-9,
+            "{}",
+            n.view.scale
+        );
         assert_eq!(n.view.centre, (0.0, 0.0));
         // At the whole map already, zooming out has nowhere to go and starts no flight.
         n.double_click(DVec2::new(1.0, 1.0), true);
@@ -278,7 +334,10 @@ mod tests {
         let mut steps = 0;
         while n.is_animating() {
             n.tick(1.0 / 60.0);
-            assert!((n.view.centre.0 - last.centre.0).abs() * n.view.scale < 60.0, "jump");
+            assert!(
+                (n.view.centre.0 - last.centre.0).abs() * n.view.scale < 60.0,
+                "jump"
+            );
             assert!((n.view.scale / last.scale).ln().abs() < 0.1, "zoom jump");
             last = n.view;
             steps += 1;

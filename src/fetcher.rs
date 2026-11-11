@@ -5,10 +5,10 @@ use crate::cache::DiskCache;
 use crate::geo::TileKey;
 use crate::servers::{Failure, ServerReport, Servers};
 use crate::sources::{self, TileSource, MAP_TILEJSON_URL};
+use crate::wtime::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Condvar, Mutex};
-use crate::wtime::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const USER_AGENT: &str = "orbis-globe/0.1";
 const WEEK_SECONDS: u64 = 7 * 24 * 3600;
@@ -46,7 +46,11 @@ pub enum Wait {
 pub(crate) enum Answer {
     TimedOut,
     Unreachable(String),
-    Reply { status: u16, retry_after: Option<Duration>, body: Result<Vec<u8>, BodyError> },
+    Reply {
+        status: u16,
+        retry_after: Option<Duration>,
+        body: Result<Vec<u8>, BodyError>,
+    },
 }
 
 #[derive(Clone)]
@@ -65,7 +69,11 @@ pub struct Gate {
 
 impl Gate {
     pub fn new(n: usize) -> Self {
-        Self { free: Mutex::new(n), released: Condvar::new(), capacity: n }
+        Self {
+            free: Mutex::new(n),
+            released: Condvar::new(),
+            capacity: n,
+        }
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -112,7 +120,8 @@ pub fn tile_template(json: &str) -> Option<String> {
     let start = after.find("\"http")? + 1;
     let rest = &after[start..];
     let url = rest[..rest.find('"')?].replace("\\/", "/");
-    let usable = url.starts_with("https://") && ["{z}", "{x}", "{y}"].iter().all(|p| url.contains(p));
+    let usable =
+        url.starts_with("https://") && ["{z}", "{x}", "{y}"].iter().all(|p| url.contains(p));
     usable.then_some(url)
 }
 
@@ -159,7 +168,10 @@ pub struct Peers {
 
 impl Peers {
     pub fn new(fixed: Vec<String>) -> Self {
-        Self { fixed, ..Self::default() }
+        Self {
+            fixed,
+            ..Self::default()
+        }
     }
 
     pub fn hold_downloads_until(&self, until: Instant) {
@@ -196,7 +208,10 @@ impl Peers {
     }
 
     fn mark_down(&self, address: &str, now: Instant) {
-        self.down.lock().unwrap().insert(address.to_string(), now + PEER_DOWN);
+        self.down
+            .lock()
+            .unwrap()
+            .insert(address.to_string(), now + PEER_DOWN);
     }
 
     #[cfg(test)]
@@ -322,13 +337,18 @@ impl Fetcher {
             self.disk_hits.fetch_add(1, Relaxed);
             return Some(Ok(data));
         }
-        self.cache.is_known_missing(&name).then_some(Err(FetchError::Missing))
+        self.cache
+            .is_known_missing(&name)
+            .then_some(Err(FetchError::Missing))
     }
 
     /// Whether a coarser image of this area already turned out empty. A finer one holds nothing
     /// either, so asking the service for each of them would only cost it requests.
     pub fn empty_above(&self, source: &TileSource, k: TileKey) -> bool {
-        (source.min_z.saturating_sub(1)..k.z).any(|z| self.cache.is_known_missing(&source.cache_name(k.ancestor(z))))
+        (source.min_z.saturating_sub(1)..k.z).any(|z| {
+            self.cache
+                .is_known_missing(&source.cache_name(k.ancestor(z)))
+        })
     }
 
     /// Gets a tile by the cheapest route available, waiting for its turn if need be.
@@ -344,7 +364,11 @@ impl Fetcher {
 
     /// Like `fetch`, but says what it would have to wait for instead of waiting. This lets a
     /// thread do other work meanwhile, so a slow server holds up only its own tiles.
-    pub fn try_fetch(&self, source: &'static TileSource, k: TileKey) -> Result<Vec<u8>, FetchError> {
+    pub fn try_fetch(
+        &self,
+        source: &'static TileSource,
+        k: TileKey,
+    ) -> Result<Vec<u8>, FetchError> {
         self.fetch_with(source, k, false)
     }
 
@@ -352,9 +376,19 @@ impl Fetcher {
     pub fn is_clear(&self, wait: &Wait) -> bool {
         match wait {
             #[cfg(target_arch = "wasm32")]
-            Wait::Server(host) => self.gates.lock().unwrap().get(host).is_none_or(|g| self.web.in_flight(host) < g.capacity().max(1)),
+            Wait::Server(host) => self
+                .gates
+                .lock()
+                .unwrap()
+                .get(host)
+                .is_none_or(|g| self.web.in_flight(host) < g.capacity().max(1)),
             #[cfg(not(target_arch = "wasm32"))]
-            Wait::Server(host) => self.gates.lock().unwrap().get(host).is_none_or(|g| !g.is_full()),
+            Wait::Server(host) => self
+                .gates
+                .lock()
+                .unwrap()
+                .get(host)
+                .is_none_or(|g| !g.is_full()),
             Wait::Tile(name) => !self.flights.lock().unwrap().contains_key(name),
             #[cfg(target_arch = "wasm32")]
             Wait::Download(url) => self.web.is_settled(url),
@@ -363,7 +397,12 @@ impl Fetcher {
         }
     }
 
-    fn fetch_with(&self, source: &'static TileSource, k: TileKey, may_wait: bool) -> Result<Vec<u8>, FetchError> {
+    fn fetch_with(
+        &self,
+        source: &'static TileSource,
+        k: TileKey,
+        may_wait: bool,
+    ) -> Result<Vec<u8>, FetchError> {
         if let Some(known) = self.cached(source, k) {
             return known;
         }
@@ -390,7 +429,12 @@ impl Fetcher {
                 slot = flight.done.wait(slot).unwrap();
             }
         }
-        let mut guard = FlightGuard { fetcher: self, name: &name, flight, result: None };
+        let mut guard = FlightGuard {
+            fetcher: self,
+            name: &name,
+            flight,
+            result: None,
+        };
         let result = self.fetch_remote(source, k, &name, may_wait);
         guard.result = Some(result.clone());
         result
@@ -408,12 +452,22 @@ impl Fetcher {
         self.cache.mark_missing(&name);
     }
 
-    fn fetch_remote(&self, source: &'static TileSource, k: TileKey, name: &str, may_wait: bool) -> Result<Vec<u8>, FetchError> {
+    fn fetch_remote(
+        &self,
+        source: &'static TileSource,
+        k: TileKey,
+        name: &str,
+        may_wait: bool,
+    ) -> Result<Vec<u8>, FetchError> {
         if self.offline {
             return Err(FetchError::Transient);
         }
         // Cache servers know only the built-in sources, and must not learn what a user views.
-        let asked = if crate::service_lib::is_service(source) { None } else { self.ask_peers(source, k) };
+        let asked = if crate::service_lib::is_service(source) {
+            None
+        } else {
+            self.ask_peers(source, k)
+        };
         match asked {
             Some(Ok(data)) => {
                 self.store(name, &data);
@@ -492,21 +546,32 @@ impl Fetcher {
 
     pub(crate) fn gate(&self, host: &str, concurrency: usize) -> Arc<Gate> {
         let mut gates = self.gates.lock().unwrap();
-        gates.entry(host.to_string()).or_insert_with(|| Arc::new(Gate::new(concurrency))).clone()
+        gates
+            .entry(host.to_string())
+            .or_insert_with(|| Arc::new(Gate::new(concurrency)))
+            .clone()
     }
 
     /// One request to a public server, under the rules for that server.
     #[cfg(not(target_arch = "wasm32"))]
-    fn download(&self, url: &str, concurrency: usize, may_wait: bool) -> Result<Vec<u8>, FetchError> {
+    fn download(
+        &self,
+        url: &str,
+        concurrency: usize,
+        may_wait: bool,
+    ) -> Result<Vec<u8>, FetchError> {
         let host = host_of(url);
         let gate = self.gate(&host, concurrency);
         let _pass = if may_wait {
             gate.enter()
         } else {
-            gate.try_enter().ok_or_else(|| FetchError::Busy(Wait::Server(host.clone())))?
+            gate.try_enter()
+                .ok_or_else(|| FetchError::Busy(Wait::Server(host.clone())))?
         };
         // Asked only now: the server may have been timed out while this request waited.
-        self.servers.check(&host, SystemTime::now()).map_err(FetchError::Paused)?;
+        self.servers
+            .check(&host, SystemTime::now())
+            .map_err(FetchError::Paused)?;
         let answer = match self.agent.get(url).call() {
             Ok(mut response) => {
                 let status = response.status().as_u16();
@@ -520,7 +585,11 @@ impl Fetcher {
                 } else {
                     Ok(Vec::new())
                 };
-                Answer::Reply { status, retry_after, body }
+                Answer::Reply {
+                    status,
+                    retry_after,
+                    body,
+                }
             }
             Err(ureq::Error::Timeout(_) | ureq::Error::BodyStalled) => Answer::TimedOut,
             Err(e) => Answer::Unreachable(e.to_string()),
@@ -534,9 +603,18 @@ impl Fetcher {
     /// Callers that would have waited (`may_wait`) are jobs that run again until all their
     /// answers are in (see `worker`), so their answers stay for the next run; a tile's is taken.
     #[cfg(target_arch = "wasm32")]
-    fn download(&self, url: &str, concurrency: usize, may_wait: bool) -> Result<Vec<u8>, FetchError> {
+    fn download(
+        &self,
+        url: &str,
+        concurrency: usize,
+        may_wait: bool,
+    ) -> Result<Vec<u8>, FetchError> {
         let host = host_of(url);
-        let answer = if may_wait { self.web.peek(url) } else { self.web.take(url) };
+        let answer = if may_wait {
+            self.web.peek(url)
+        } else {
+            self.web.take(url)
+        };
         if let Some(answer) = answer {
             return self.judge(&host, answer);
         }
@@ -551,7 +629,9 @@ impl Fetcher {
         if self.web.in_flight(&host) >= concurrency.max(1) {
             return busy(Wait::Server(host));
         }
-        self.servers.check(&host, SystemTime::now()).map_err(FetchError::Paused)?;
+        self.servers
+            .check(&host, SystemTime::now())
+            .map_err(FetchError::Paused)?;
         self.web.start(url, &host);
         busy(Wait::Download(url.to_string()))
     }
@@ -571,7 +651,11 @@ impl Fetcher {
                 eprintln!("{host}: {e}");
                 return Err(fail(Failure::Unreachable));
             }
-            Answer::Reply { status, retry_after, body } => (status, retry_after, body),
+            Answer::Reply {
+                status,
+                retry_after,
+                body,
+            } => (status, retry_after, body),
         };
         match status {
             200..=299 => match body {
@@ -612,7 +696,9 @@ impl Fetcher {
             return Ok(t.clone());
         }
         let name = |week: u64| format!("openfreemap/tilejson-{week}.json");
-        let seconds = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
         let week = seconds / WEEK_SECONDS;
         let parse = |bytes: &[u8]| tile_template(&String::from_utf8_lossy(bytes));
         let mut trouble = FetchError::Transient;
@@ -702,7 +788,11 @@ pub mod tests {
                         counter.fetch_add(1, Relaxed);
                         let (status, headers) = {
                             let mut plan = plan.lock().unwrap();
-                            if plan.len() > 1 { plan.remove(0) } else { plan[0] }
+                            if plan.len() > 1 {
+                                plan.remove(0)
+                            } else {
+                                plan[0]
+                            }
                         };
                         std::thread::sleep(delay);
                         let body = b"tile-bytes";
@@ -747,7 +837,8 @@ pub mod tests {
     pub fn temp_cache(tag: &str) -> DiskCache {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let n = NEXT.fetch_add(1, Relaxed);
-        let root = std::env::temp_dir().join(format!("orbis-fetch-{tag}-{}-{n}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("orbis-fetch-{tag}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         DiskCache::new(root)
     }
@@ -775,8 +866,12 @@ pub mod tests {
         let server = TestServer::start(vec![(200, "")], Duration::ZERO);
         let cache = temp_cache("restart");
         let source = server.source();
-        Fetcher::new(cache.clone(), Peers::default(), false).fetch(source, K).unwrap();
-        Fetcher::new(cache, Peers::default(), false).fetch(source, K).unwrap();
+        Fetcher::new(cache.clone(), Peers::default(), false)
+            .fetch(source, K)
+            .unwrap();
+        Fetcher::new(cache, Peers::default(), false)
+            .fetch(source, K)
+            .unwrap();
         assert_eq!(server.count(), 1);
     }
 
@@ -823,12 +918,17 @@ pub mod tests {
         assert_eq!(f.fetch(source, tile(1)), Err(FetchError::Transient));
         assert_eq!(f.fetch(source, tile(2)), Err(FetchError::Transient));
         let third = f.fetch(source, tile(3));
-        let Err(FetchError::Paused(until)) = third else { panic!("{third:?}") };
+        let Err(FetchError::Paused(until)) = third else {
+            panic!("{third:?}")
+        };
         let wait = until.duration_since(SystemTime::now()).unwrap().as_secs();
         assert!((890..=900).contains(&wait), "paused for {wait} s");
         assert_eq!(server.count(), 3);
         for x in 4..20 {
-            assert!(matches!(f.fetch(source, tile(x)), Err(FetchError::Paused(_))));
+            assert!(matches!(
+                f.fetch(source, tile(x)),
+                Err(FetchError::Paused(_))
+            ));
         }
         assert_eq!(server.count(), 3, "nothing more reached the server");
         // Other servers carry on.
@@ -844,7 +944,9 @@ pub mod tests {
         assert!(matches!(f.fetch(source, K), Err(FetchError::Paused(_))));
         let f = Fetcher::new(cache, Peers::default(), false);
         let again = f.fetch(source, TileKey::new(3, 1, 1));
-        let Err(FetchError::Paused(until)) = again else { panic!("{again:?}") };
+        let Err(FetchError::Paused(until)) = again else {
+            panic!("{again:?}")
+        };
         let wait = until.duration_since(SystemTime::now()).unwrap().as_secs();
         assert!(wait > 3500, "Retry-After is respected: {wait} s");
         assert_eq!(server.count(), 1);
@@ -872,19 +974,28 @@ pub mod tests {
             ..clone_source(&sources::TERRAIN)
         }));
         let result = f.fetch(source, K);
-        let Err(FetchError::Paused(until)) = result else { panic!("{result:?}") };
+        let Err(FetchError::Paused(until)) = result else {
+            panic!("{result:?}")
+        };
         assert!(until.duration_since(SystemTime::now()).unwrap() <= Duration::from_secs(2));
     }
 
     fn clone_source(s: &TileSource) -> TileSource {
-        TileSource { kind: s.kind, content_type: s.content_type, credit: s.credit, bounds: s.bounds, ..*s }
+        TileSource {
+            kind: s.kind,
+            content_type: s.content_type,
+            credit: s.credit,
+            bounds: s.bounds,
+            ..*s
+        }
     }
 
     #[test]
     fn nothing_is_downloaded_while_cache_servers_may_still_answer() {
         let server = TestServer::start(vec![(200, "")], Duration::ZERO);
         let f = fetcher("grace");
-        f.peers.hold_downloads_until(Instant::now() + Duration::from_millis(150));
+        f.peers
+            .hold_downloads_until(Instant::now() + Duration::from_millis(150));
         let started = Instant::now();
         f.fetch(server.source(), K).unwrap();
         assert!(started.elapsed() >= Duration::from_millis(150));
@@ -905,7 +1016,10 @@ pub mod tests {
         for t in threads {
             t.join().unwrap();
         }
-        assert!(started.elapsed() >= Duration::from_millis(200), "8 requests at 4 at a time");
+        assert!(
+            started.elapsed() >= Duration::from_millis(200),
+            "8 requests at 4 at a time"
+        );
         assert_eq!(server.count(), 8);
     }
 
@@ -934,11 +1048,23 @@ pub mod tests {
         assert_eq!(host_of("http://127.0.0.1:80/x"), "127.0.0.1:80");
         assert_eq!(host_of("https://a.example.org?x=1"), "a.example.org");
         let json = r#"{"tilejson":"3.0.0","tiles":["https://t.example/v1/{z}/{x}/{y}.pbf"],"x":"http://no"}"#;
-        assert_eq!(tile_template(json).unwrap(), "https://t.example/v1/{z}/{x}/{y}.pbf");
+        assert_eq!(
+            tile_template(json).unwrap(),
+            "https://t.example/v1/{z}/{x}/{y}.pbf"
+        );
         let escaped = r#"{"tiles":["https:\/\/t.example\/{z}\/{x}\/{y}.pbf"]}"#;
-        assert_eq!(tile_template(escaped).unwrap(), "https://t.example/{z}/{x}/{y}.pbf");
-        assert_eq!(tile_template(r#"{"tiles":["http://t.example/{z}/{x}/{y}"]}"#), None);
-        assert_eq!(tile_template(r#"{"tiles":["https://t.example/fixed.pbf"]}"#), None);
+        assert_eq!(
+            tile_template(escaped).unwrap(),
+            "https://t.example/{z}/{x}/{y}.pbf"
+        );
+        assert_eq!(
+            tile_template(r#"{"tiles":["http://t.example/{z}/{x}/{y}"]}"#),
+            None
+        );
+        assert_eq!(
+            tile_template(r#"{"tiles":["https://t.example/fixed.pbf"]}"#),
+            None
+        );
         assert_eq!(tile_template("not json"), None);
     }
 
@@ -1001,7 +1127,10 @@ pub mod tests {
         let source = server.source();
         let f = fetcher("busy-tile");
         let name = source.cache_name(K);
-        f.flights.lock().unwrap().insert(name.clone(), Arc::default());
+        f.flights
+            .lock()
+            .unwrap()
+            .insert(name.clone(), Arc::default());
 
         let wait = Wait::Tile(name.clone());
         assert_eq!(f.try_fetch(source, K), Err(FetchError::Busy(wait.clone())));
@@ -1017,7 +1146,10 @@ pub mod tests {
         let f = Arc::new(fetcher("busy-follower"));
         let name = source.cache_name(K);
         let flight: Arc<Flight> = Arc::default();
-        f.flights.lock().unwrap().insert(name.clone(), flight.clone());
+        f.flights
+            .lock()
+            .unwrap()
+            .insert(name.clone(), flight.clone());
 
         let waiting = {
             let f = f.clone();

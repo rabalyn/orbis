@@ -22,7 +22,8 @@ impl Store {
         if self.bytes <= limit {
             return 0;
         }
-        let mut order: Vec<(u64, String)> = self.entries.iter().map(|(k, v)| (v.1, k.clone())).collect();
+        let mut order: Vec<(u64, String)> =
+            self.entries.iter().map(|(k, v)| (v.1, k.clone())).collect();
         order.sort_unstable();
         let mut freed = 0;
         for (_, name) in order {

@@ -78,7 +78,11 @@ impl Pacer {
     pub fn frame_started(&mut self, now: Instant) {
         let interval = self.limit.interval();
         let scheduled = self.next + interval;
-        self.next = if scheduled > now { scheduled } else { now + interval };
+        self.next = if scheduled > now {
+            scheduled
+        } else {
+            now + interval
+        };
     }
 }
 
@@ -223,7 +227,10 @@ mod tests {
         pacer.frame_started(start);
         let later = start + Duration::from_secs(2);
         pacer.frame_started(later);
-        assert!(!pacer.due(later + ms(1.0)), "must wait a full interval again");
+        assert!(
+            !pacer.due(later + ms(1.0)),
+            "must wait a full interval again"
+        );
     }
 
     #[test]
@@ -285,6 +292,9 @@ mod tests {
     fn status_shows_limit_rate_and_display() {
         let line = status_line(FrameLimit::Fps90, Some(89.6), Some(143.9));
         assert_eq!(line, "limit 90 fps  now 90 fps  display 144 Hz");
-        assert_eq!(status_line(FrameLimit::Fps120, None, None), "limit 120 fps  now idle");
+        assert_eq!(
+            status_line(FrameLimit::Fps120, None, None),
+            "limit 120 fps  now idle"
+        );
     }
 }

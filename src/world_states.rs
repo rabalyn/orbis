@@ -11,7 +11,10 @@
 //! shared out by population. Generation in no plant of the list stays with the country.
 
 use crate::countries::Countries;
-use crate::energy::{format_power, group_thousands, Bar, Palette, Source, Subject, AREA_EDGE, SELECTED, SELECTED_FILL_ALPHA, SOURCES};
+use crate::energy::{
+    format_power, group_thousands, Bar, Palette, Source, Subject, AREA_EDGE, SELECTED,
+    SELECTED_FILL_ALPHA, SOURCES,
+};
 use crate::import::{Imported, Item, Outline as Edge, Pos, Shape};
 use crate::info::{Card, Meter, Meters, Segment as Part};
 use crate::owid::{Owid, Reader};
@@ -50,7 +53,8 @@ impl States {
     /// The states built into the program.
     pub fn bundled() -> Option<&'static States> {
         static DATA: std::sync::OnceLock<Option<States>> = std::sync::OnceLock::new();
-        DATA.get_or_init(|| States::parse(include_bytes!("../data/states_world.bin"))).as_ref()
+        DATA.get_or_init(|| States::parse(include_bytes!("../data/states_world.bin")))
+            .as_ref()
     }
 
     pub fn parse(data: &[u8]) -> Option<States> {
@@ -88,7 +92,16 @@ impl States {
             if rings.is_empty() || country.is_empty() {
                 return None;
             }
-            list.push(State { country, iso, name, kind, population, estimated, label: [deg(lat0), deg(lon0)], rings });
+            list.push(State {
+                country,
+                iso,
+                name,
+                kind,
+                population,
+                estimated,
+                label: [deg(lat0), deg(lon0)],
+                rings,
+            });
         }
         if r.at != data.len() {
             return None;
@@ -123,9 +136,19 @@ impl States {
 
     /// South, west, north and east of a state, in degrees.
     pub fn bounds(&self, i: usize) -> [f64; 4] {
-        let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+        let mut b = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
         for p in self.list[i].rings.iter().flatten() {
-            b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
+            b = [
+                b[0].min(p[0]),
+                b[1].min(p[1]),
+                b[2].max(p[0]),
+                b[3].max(p[1]),
+            ];
         }
         b
     }
@@ -148,12 +171,21 @@ impl States {
     /// The population of a country summed over its states.
     #[cfg(test)]
     pub fn country_people(&self, code: &str) -> f64 {
-        self.list.iter().filter(|s| s.country == code).map(|s| s.population as f64).sum()
+        self.list
+            .iter()
+            .filter(|s| s.country == code)
+            .map(|s| s.population as f64)
+            .sum()
     }
 
     /// A state at the clock's month: the country's figures, the estimated output of its plants
     /// by source with those in `shown`, in kW, and its use by population in kW.
-    fn estimate(&self, i: usize, month: (i32, u32), shown: [bool; SOURCES]) -> Option<(Figures, [f32; SOURCES], f32)> {
+    fn estimate(
+        &self,
+        i: usize,
+        month: (i32, u32),
+        shown: [bool; SOURCES],
+    ) -> Option<(Figures, [f32; SOURCES], f32)> {
         let c = Owid::bundled()?.country(&self.list[i].country)?;
         let f = Figures::of(c, month)?;
         let used = f.demand.filter(|d| *d > 0.0).unwrap_or(f.generation) * self.share(i) as f32;
@@ -163,7 +195,12 @@ impl States {
 
     /// The estimated output of the bundled world plants inside a state's outline at the clock's
     /// month, by source with those in `shown`, in kW.
-    pub fn output(&self, i: usize, month: (i32, u32), shown: [bool; SOURCES]) -> Option<[f32; SOURCES]> {
+    pub fn output(
+        &self,
+        i: usize,
+        month: (i32, u32),
+        shown: [bool; SOURCES],
+    ) -> Option<[f32; SOURCES]> {
         let plants = Plants::bundled()?;
         let list = Plants::bundled_by_state()?.get(i)?;
         let mut kw = plants.output(list, month_index(month));
@@ -180,7 +217,9 @@ impl States {
     pub fn bars(&self, month: (i32, u32), shown: [bool; SOURCES], demand: bool) -> Vec<Bar> {
         let mut bars = Vec::new();
         for (i, s) in self.list.iter().enumerate() {
-            let Some((f, kw, used)) = self.estimate(i, month, shown) else { continue };
+            let Some((f, kw, used)) = self.estimate(i, month, shown) else {
+                continue;
+            };
             let b = Bar {
                 lat: s.label[0].to_radians(),
                 lon: s.label[1].to_radians(),
@@ -200,24 +239,41 @@ impl States {
 
     /// The states' outlines, added to `into`; the chosen one emphasised in the colour of its main
     /// source and drawn last.
-    pub fn outlines(&self, into: &mut Imported, selected: Option<Subject>, month: (i32, u32), shown: [bool; SOURCES], palette: Palette) {
+    pub fn outlines(
+        &self,
+        into: &mut Imported,
+        selected: Option<Subject>,
+        month: (i32, u32),
+        shown: [bool; SOURCES],
+        palette: Palette,
+    ) {
         let mut chosen = None;
         for (i, s) in self.list.iter().enumerate() {
             let mut item = polygon(&s.rings);
             if selected == Some(Subject::State(i as u16)) {
                 let main = self.estimate(i, month, shown).and_then(|(_, kw, _)| {
-                    Source::ALL.into_iter().filter(|s| kw[*s as usize] > 0.0).max_by(|a, b| kw[*a as usize].total_cmp(&kw[*b as usize]))
+                    Source::ALL
+                        .into_iter()
+                        .filter(|s| kw[*s as usize] > 0.0)
+                        .max_by(|a, b| kw[*a as usize].total_cmp(&kw[*b as usize]))
                 });
                 item.outline = Some(match main {
                     Some(m) => {
                         let [r, g, b] = palette.colour(m);
-                        Edge { fill: [r, g, b, SELECTED_FILL_ALPHA], dashed: m.fossil(), ..SELECTED }
+                        Edge {
+                            fill: [r, g, b, SELECTED_FILL_ALPHA],
+                            dashed: m.fossil(),
+                            ..SELECTED
+                        }
                     }
                     None => SELECTED,
                 });
                 chosen = Some(item);
             } else {
-                item.outline = Some(Edge { width: 1.0, ..AREA_EDGE });
+                item.outline = Some(Edge {
+                    width: 1.0,
+                    ..AREA_EDGE
+                });
                 into.items.push(item);
             }
         }
@@ -226,17 +282,33 @@ impl States {
 
     /// Germany's outlines at the States level with the world's states before them, the chosen
     /// outline last of all, so that it is drawn over its neighbours' edges.
-    pub fn with_germany(&self, germany: Imported, selected: Option<Subject>, month: (i32, u32), shown: [bool; SOURCES], palette: Palette) -> Imported {
-        let mut out = Imported { items: Vec::new(), ..germany };
+    pub fn with_germany(
+        &self,
+        germany: Imported,
+        selected: Option<Subject>,
+        month: (i32, u32),
+        shown: [bool; SOURCES],
+        palette: Palette,
+    ) -> Imported {
+        let mut out = Imported {
+            items: Vec::new(),
+            ..germany
+        };
         self.outlines(&mut out, selected, month, shown, palette);
         out.items.extend(germany.items);
-        out.items.sort_by_key(|i| i.outline.is_some_and(|o| o.width == SELECTED.width));
+        out.items
+            .sort_by_key(|i| i.outline.is_some_and(|o| o.width == SELECTED.width));
         out
     }
 
     /// A state's installed capacity by source at the clock's month, in kW: the bundled world
     /// plants inside its outline, with the sources in `shown`.
-    pub fn capacity(&self, i: usize, month: (i32, u32), shown: [bool; SOURCES]) -> Option<[f32; SOURCES]> {
+    pub fn capacity(
+        &self,
+        i: usize,
+        month: (i32, u32),
+        shown: [bool; SOURCES],
+    ) -> Option<[f32; SOURCES]> {
         let plants = Plants::bundled()?;
         let list = Plants::bundled_by_state()?.get(i)?;
         let mut kw = plants.capacity(list, month_index(month));
@@ -250,7 +322,9 @@ impl States {
 
     /// The state's name and its country's.
     pub fn title(&self, i: u16) -> String {
-        let Some(s) = self.list.get(i as usize) else { return String::new() };
+        let Some(s) = self.list.get(i as usize) else {
+            return String::new();
+        };
         match self.country_name(s) {
             Some(c) => format!("{}, {c}", s.name),
             None => s.name.clone(),
@@ -258,19 +332,32 @@ impl States {
     }
 
     fn country_name(&self, s: &State) -> Option<String> {
-        Countries::bundled().and_then(|c| c.get(&s.country)).map(|o| o.name.clone()).or_else(|| Owid::bundled()?.country(&s.country).map(|c| c.name.clone()))
+        Countries::bundled()
+            .and_then(|c| c.get(&s.country))
+            .map(|o| o.name.clone())
+            .or_else(|| Owid::bundled()?.country(&s.country).map(|c| c.name.clone()))
     }
 
     /// Where a state's bar stands, in radians.
     pub fn position(&self, i: u16) -> Option<(f64, f64)> {
-        self.list.get(i as usize).map(|s| (s.label[0].to_radians(), s.label[1].to_radians()))
+        self.list
+            .get(i as usize)
+            .map(|s| (s.label[0].to_radians(), s.label[1].to_radians()))
     }
 
     /// What the information box says about a state: its plants' estimated output by source at
     /// the month against their capacity, its use by population, and the country's figures.
-    pub fn describe(&self, i: u16, month: (i32, u32), shown: [bool; SOURCES], palette: Palette) -> Card {
+    pub fn describe(
+        &self,
+        i: u16,
+        month: (i32, u32),
+        shown: [bool; SOURCES],
+        palette: Palette,
+    ) -> Card {
         let mut card = Card::default();
-        let Some(s) = self.list.get(i as usize) else { return card };
+        let Some(s) = self.list.get(i as usize) else {
+            return card;
+        };
         let country = self.country_name(s).unwrap_or_else(|| s.country.clone());
         let share = self.share(i as usize);
         let Some((f, out, used)) = self.estimate(i as usize, month, shown) else {
@@ -283,22 +370,71 @@ impl States {
         };
         let made: f32 = out.iter().sum();
         card.summary = format!("{period}: about {} from its plants (est.), about {} used ({:.1}% of {country}'s by population).", format_power(made), format_power(used), share * 100.0);
-        let installed = self.capacity(i as usize, month, shown).unwrap_or([0.0; SOURCES]);
+        let installed = self
+            .capacity(i as usize, month, shown)
+            .unwrap_or([0.0; SOURCES]);
         let total: f32 = installed.iter().sum();
         // Made against used, on one scale.
-        let mut sums = Meters { title: String::new(), max: made.max(used), rows: Vec::new(), caption: String::new() };
-        let parts = Source::ALL.into_iter().filter(|s| out[*s as usize] > 0.0).map(|s| Part { hatched: s.fossil(), ..Part::solid(out[s as usize], palette.colour(s)) }).collect();
-        sums.rows.push(Meter { label: "Plants (est.)".to_string(), segments: parts, text: format_power(made) });
-        sums.rows.push(Meter { label: "Use (est.)".to_string(), segments: vec![Part { ink: true, ..Part::solid(used, crate::energy::DEMAND) }], text: format!("\u{2248} {}", format_power(used)) });
+        let mut sums = Meters {
+            title: String::new(),
+            max: made.max(used),
+            rows: Vec::new(),
+            caption: String::new(),
+        };
+        let parts = Source::ALL
+            .into_iter()
+            .filter(|s| out[*s as usize] > 0.0)
+            .map(|s| Part {
+                hatched: s.fossil(),
+                ..Part::solid(out[s as usize], palette.colour(s))
+            })
+            .collect();
+        sums.rows.push(Meter {
+            label: "Plants (est.)".to_string(),
+            segments: parts,
+            text: format_power(made),
+        });
+        sums.rows.push(Meter {
+            label: "Use (est.)".to_string(),
+            segments: vec![Part {
+                ink: true,
+                ..Part::solid(used, crate::energy::DEMAND)
+            }],
+            text: format!("\u{2248} {}", format_power(used)),
+        });
         card.meters.push(sums);
-        let rows: Vec<Source> = Source::ALL.into_iter().filter(|s| installed[*s as usize] > 0.0).collect();
+        let rows: Vec<Source> = Source::ALL
+            .into_iter()
+            .filter(|s| installed[*s as usize] > 0.0)
+            .collect();
         if !rows.is_empty() {
-            let mut by = Meters { title: "Plants by source (GEM)".to_string(), max: rows.iter().map(|s| installed[*s as usize]).fold(0.0, f32::max), rows: Vec::new(), caption: String::new() };
+            let mut by = Meters {
+                title: "Plants by source (GEM)".to_string(),
+                max: rows
+                    .iter()
+                    .map(|s| installed[*s as usize])
+                    .fold(0.0, f32::max),
+                rows: Vec::new(),
+                caption: String::new(),
+            };
             for s in rows {
                 let (kw, o) = (installed[s as usize], out[s as usize]);
                 let colour = palette.colour(s);
-                let segments = vec![Part { hatched: s.fossil(), ..Part::solid(o, colour) }, Part { alpha: 60, ..Part::solid(kw - o, colour) }];
-                by.rows.push(Meter { label: s.name().to_string(), segments, text: format!("{} of {}", format_power(o), format_power(kw)) });
+                let segments = vec![
+                    Part {
+                        hatched: s.fossil(),
+                        ..Part::solid(o, colour)
+                    },
+                    Part {
+                        alpha: 60,
+                        ..Part::solid(kw - o, colour)
+                    },
+                ];
+                by.rows.push(Meter {
+                    label: s.name().to_string(),
+                    segments,
+                    text: format!("{} of {}", format_power(o), format_power(kw)),
+                });
             }
             by.caption = format!("Solid: estimated output; faint: the rest of the {} installed in Global Energy Monitor's plants inside the outline.", format_power(total));
             card.meters.push(by);
@@ -311,20 +447,49 @@ impl States {
             card.facts.push(("ISO 3166-2".to_string(), s.iso.clone()));
         }
         let people = group_thousands(s.population);
-        card.facts.push(("Population".to_string(), if s.estimated { format!("about {people} (est.)") } else { people }));
-        card.facts.push(("Share of the country".to_string(), format!("{:.2}%", share * 100.0)));
+        card.facts.push((
+            "Population".to_string(),
+            if s.estimated {
+                format!("about {people} (est.)")
+            } else {
+                people
+            },
+        ));
+        card.facts.push((
+            "Share of the country".to_string(),
+            format!("{:.2}%", share * 100.0),
+        ));
         let whole = f.demand.filter(|d| *d > 0.0);
-        card.facts.push((if whole.is_some() { "Country's use" } else { "Country's generation" }.to_string(), format_power(whole.unwrap_or(f.generation))));
+        card.facts.push((
+            if whole.is_some() {
+                "Country's use"
+            } else {
+                "Country's generation"
+            }
+            .to_string(),
+            format_power(whole.unwrap_or(f.generation)),
+        ));
         let estimate = Plants::bundled().and_then(|p| p.estimate(&s.country, month_index(month)));
         let gap: f32 = match &estimate {
-            Some(e) => e.gap().iter().zip(shown).filter(|g| g.1).map(|g| *g.0).sum(),
+            Some(e) => e
+                .gap()
+                .iter()
+                .zip(shown)
+                .filter(|g| g.1)
+                .map(|g| *g.0)
+                .sum(),
             None => f.kw(shown).iter().sum(),
         };
         if gap > 0.0 {
-            card.facts.push(("Country, not in plant list".to_string(), format!("{} (est.)", format_power(gap))));
+            card.facts.push((
+                "Country, not in plant list".to_string(),
+                format!("{} (est.)", format_power(gap)),
+            ));
         }
         card.notes.push("Output estimated: each plant's capacity times its country's capacity factor for its source in the month, Ember's generation over the capacity in the plant list, at most a plausible ceiling for its kind (solar 30%).".to_string());
-        card.notes.push(format!("Use estimated: {country}'s use shared out by population."));
+        card.notes.push(format!(
+            "Use estimated: {country}'s use shared out by population."
+        ));
         card.notes.push("Not in plant list: the country's generation that its plants in the list cannot account for, such as rooftop solar and small units; it is not placed in any state.".to_string());
         card.notes.push("Plants: Global Energy Monitor, Global Integrated Power Tracker, September 2026 release (CC BY 4.0); filtered by status and size, so small units and rooftop solar are missing.".to_string());
         if s.estimated {
@@ -355,7 +520,18 @@ fn inside(rings: &[Vec<[f64; 2]>], lat: f64, lon: f64) -> bool {
 }
 
 fn polygon(rings: &[Vec<[f64; 2]>]) -> Item {
-    let rings = rings.iter().map(|r| r.iter().map(|p| Pos { lat: p[0].to_radians(), lon: p[1].to_radians(), alt: None }).collect()).collect();
+    let rings = rings
+        .iter()
+        .map(|r| {
+            r.iter()
+                .map(|p| Pos {
+                    lat: p[0].to_radians(),
+                    lon: p[1].to_radians(),
+                    alt: None,
+                })
+                .collect()
+        })
+        .collect();
     Item::new("", Shape::Polygon(rings))
 }
 
@@ -374,24 +550,53 @@ mod tests {
         assert!(s.count() > 2500, "{} states", s.count());
         let countries = Countries::bundled().unwrap();
         for st in s.all() {
-            assert!(countries.get(&st.country).is_some(), "{} ({}) has no country", st.name, st.country);
+            assert!(
+                countries.get(&st.country).is_some(),
+                "{} ({}) has no country",
+                st.name,
+                st.country
+            );
             assert!(!st.rings.is_empty() && st.rings.iter().all(|r| r.len() >= 3));
-            assert!((-90.0..=90.0).contains(&st.label[0]) && (-180.0..=180.0).contains(&st.label[1]));
+            assert!(
+                (-90.0..=90.0).contains(&st.label[0]) && (-180.0..=180.0).contains(&st.label[1])
+            );
         }
-        let idf = s.all().iter().find(|st| inside(&st.rings, 48.86, 2.35)).expect("Paris lies in a state");
-        assert_eq!((idf.name.as_str(), idf.country.as_str()), ("Île-de-France", "FRA"));
-        assert!((idf.label[0] - 48.7).abs() < 0.5 && (idf.label[1] - 2.5).abs() < 0.7, "{:?}", idf.label);
-        assert!(s.all().iter().any(|st| st.iso == "US-CA" && st.country == "USA"));
+        let idf = s
+            .all()
+            .iter()
+            .find(|st| inside(&st.rings, 48.86, 2.35))
+            .expect("Paris lies in a state");
+        assert_eq!(
+            (idf.name.as_str(), idf.country.as_str()),
+            ("Île-de-France", "FRA")
+        );
+        assert!(
+            (idf.label[0] - 48.7).abs() < 0.5 && (idf.label[1] - 2.5).abs() < 0.7,
+            "{:?}",
+            idf.label
+        );
+        assert!(s
+            .all()
+            .iter()
+            .any(|st| st.iso == "US-CA" && st.country == "USA"));
     }
 
     #[test]
     fn fine_units_are_merged_into_regions_like_germanys_states() {
         let s = states();
         let count = |code: &str| s.all().iter().filter(|st| st.country == code).count();
-        assert!((10..=20).contains(&count("FRA")), "France: {}", count("FRA"));
+        assert!(
+            (10..=20).contains(&count("FRA")),
+            "France: {}",
+            count("FRA")
+        );
         assert!((18..=22).contains(&count("ITA")), "Italy: {}", count("ITA"));
         assert!((15..=20).contains(&count("ESP")), "Spain: {}", count("ESP"));
-        assert!((4..=13).contains(&count("GBR")), "United Kingdom: {}", count("GBR"));
+        assert!(
+            (4..=13).contains(&count("GBR")),
+            "United Kingdom: {}",
+            count("GBR")
+        );
         assert_eq!(count("POL"), 16);
         assert_eq!(count("USA"), 51);
         // Merged outlines are one piece where the region is, not a ring per department.
@@ -399,8 +604,16 @@ mod tests {
         assert_eq!(bzh.iso, "FR-BRE");
         assert!(bzh.rings.len() <= 3, "{} rings", bzh.rings.len());
         assert!((3_000_000..4_000_000).contains(&bzh.population));
-        let ni = s.all().iter().find(|st| st.name == "Northern Ireland").unwrap();
-        assert!((1_500_000..2_500_000).contains(&ni.population), "{}", ni.population);
+        let ni = s
+            .all()
+            .iter()
+            .find(|st| st.name == "Northern Ireland")
+            .unwrap();
+        assert!(
+            (1_500_000..2_500_000).contains(&ni.population),
+            "{}",
+            ni.population
+        );
     }
 
     #[test]
@@ -409,7 +622,10 @@ mod tests {
         assert!(s.all().iter().all(|st| st.country != "DEU"));
         // No world state stands in Germany: its bars at the States level are BKG's alone.
         let de = Countries::bundled().unwrap().get("DEU").unwrap();
-        assert!(s.all().iter().all(|st| !de.contains(st.label[0], st.label[1]) || st.country != "DEU"));
+        assert!(s
+            .all()
+            .iter()
+            .all(|st| !de.contains(st.label[0], st.label[1]) || st.country != "DEU"));
         let all = [true; SOURCES];
         let bars = s.bars((2024, 6), all, false);
         assert!(bars.iter().all(|b| matches!(b.subject, Subject::State(_))));
@@ -424,15 +640,28 @@ mod tests {
         let s = states();
         let owid = Owid::bundled().unwrap();
         let mut checked = 0;
-        for code in ["USA", "CHN", "IND", "BRA", "FRA", "GBR", "ITA", "ESP", "POL", "JPN", "NGA", "IDN", "RUS", "CAN", "AUS", "MEX", "ZAF", "EGY", "TUR", "AUT"] {
-            let want = owid.country(code).and_then(|c| c.latest_year(crate::owid::Series::Population, 2024)).map(|p| p.1).unwrap();
+        for code in [
+            "USA", "CHN", "IND", "BRA", "FRA", "GBR", "ITA", "ESP", "POL", "JPN", "NGA", "IDN",
+            "RUS", "CAN", "AUS", "MEX", "ZAF", "EGY", "TUR", "AUT",
+        ] {
+            let want = owid
+                .country(code)
+                .and_then(|c| c.latest_year(crate::owid::Series::Population, 2024))
+                .map(|p| p.1)
+                .unwrap();
             let got = s.country_people(code);
-            assert!((got / want - 1.0).abs() < 0.2, "{code}: states sum to {got}, OWID has {want}");
+            assert!(
+                (got / want - 1.0).abs() < 0.2,
+                "{code}: states sum to {got}, OWID has {want}"
+            );
             checked += 1;
         }
         assert_eq!(checked, 20);
         // Every country's shares add up to one.
-        let fr: f64 = (0..s.count()).filter(|&i| s.all()[i].country == "FRA").map(|i| s.share(i)).sum();
+        let fr: f64 = (0..s.count())
+            .filter(|&i| s.all()[i].country == "FRA")
+            .map(|i| s.share(i))
+            .sum();
         assert!((fr - 1.0).abs() < 1e-9);
     }
 
@@ -445,7 +674,12 @@ mod tests {
         let plants = Plants::bundled().unwrap();
         let by_state = Plants::bundled_by_state().unwrap();
         let bars = s.bars(month, all, true);
-        let fra: Vec<&Bar> = bars.iter().filter(|b| matches!(b.subject, Subject::State(i) if s.all()[i as usize].country == "FRA")).collect();
+        let fra: Vec<&Bar> = bars
+            .iter()
+            .filter(
+                |b| matches!(b.subject, Subject::State(i) if s.all()[i as usize].country == "FRA"),
+            )
+            .collect();
         let c = Owid::bundled().unwrap().country("FRA").unwrap();
         let f = Figures::of(c, month).unwrap();
         // Use beside the bars: the country's, by population.
@@ -453,20 +687,31 @@ mod tests {
         assert!((used / f.demand.unwrap() - 1.0).abs() < 0.01, "{used}");
         // Each bar is its plants' estimated output, plant by plant.
         for b in &fra {
-            let Subject::State(i) = b.subject else { unreachable!() };
+            let Subject::State(i) = b.subject else {
+                unreachable!()
+            };
             let list = &by_state[i as usize];
             let mut sum = [0.0f32; SOURCES];
             for &p in list {
                 let pl = &plants.plants[p as usize];
-                sum[pl.source as usize] += pl.kw(m) * plants.estimate("FRA", m).unwrap().factor_of(pl.class());
+                sum[pl.source as usize] +=
+                    pl.kw(m) * plants.estimate("FRA", m).unwrap().factor_of(pl.class());
             }
             for (got, want) in b.kw.iter().zip(sum) {
-                assert!((got - want).abs() <= 1e-3 * want.max(1.0), "{got} against {want}");
+                assert!(
+                    (got - want).abs() <= 1e-3 * want.max(1.0),
+                    "{got} against {want}"
+                );
             }
         }
         // The states' plants and those in no state make the country's plants; with the gap, Ember's.
-        let placed: Vec<u32> = (0..s.count()).filter(|&i| s.country(i) == "FRA").flat_map(|i| by_state[i].clone()).collect();
-        let unplaced: Vec<u32> = (0..plants.count() as u32).filter(|&i| plants.code(i) == "FRA" && !placed.contains(&i)).collect();
+        let placed: Vec<u32> = (0..s.count())
+            .filter(|&i| s.country(i) == "FRA")
+            .flat_map(|i| by_state[i].clone())
+            .collect();
+        let unplaced: Vec<u32> = (0..plants.count() as u32)
+            .filter(|&i| plants.code(i) == "FRA" && !placed.contains(&i))
+            .collect();
         let (a, b) = (plants.output(&placed, m), plants.output(&unplaced, m));
         let e = plants.estimate("FRA", m).unwrap();
         let (made, gap) = (e.plants(), e.gap());
@@ -475,17 +720,42 @@ mod tests {
             if g != src as usize {
                 continue;
             }
-            let summed: f32 = Source::ALL.iter().filter(|t| crate::world_output::group(**t) as usize == g).map(|t| a[*t as usize] + b[*t as usize]).sum();
-            assert!((summed - made[g]).abs() <= 1e-3 * made[g].max(1.0), "{src:?}: {summed} against {}", made[g]);
-            assert!(gap[g] >= 0.0 && (made[g] + gap[g] - e.generation[g]).abs() <= 1e-3 * e.generation[g].max(1.0));
+            let summed: f32 = Source::ALL
+                .iter()
+                .filter(|t| crate::world_output::group(**t) as usize == g)
+                .map(|t| a[*t as usize] + b[*t as usize])
+                .sum();
+            assert!(
+                (summed - made[g]).abs() <= 1e-3 * made[g].max(1.0),
+                "{src:?}: {summed} against {}",
+                made[g]
+            );
+            assert!(
+                gap[g] >= 0.0
+                    && (made[g] + gap[g] - e.generation[g]).abs()
+                        <= 1e-3 * e.generation[g].max(1.0)
+            );
         }
         // Brittany's card: the plants and the country's line.
         let i = s.all().iter().position(|st| st.iso == "FR-BRE").unwrap();
         let card = s.describe(i as u16, month, all, Palette::Standard);
-        assert!(card.summary.contains("of France's by population"), "{}", card.summary);
-        assert!(card.facts.iter().any(|f| f.0 == "Country" && f.1 == "France"));
-        assert!(card.facts.iter().any(|f| f.0 == "ISO 3166-2" && f.1 == "FR-BRE"));
-        assert!(card.meters[0].rows.iter().any(|r| r.label == "Plants (est.)"));
+        assert!(
+            card.summary.contains("of France's by population"),
+            "{}",
+            card.summary
+        );
+        assert!(card
+            .facts
+            .iter()
+            .any(|f| f.0 == "Country" && f.1 == "France"));
+        assert!(card
+            .facts
+            .iter()
+            .any(|f| f.0 == "ISO 3166-2" && f.1 == "FR-BRE"));
+        assert!(card.meters[0]
+            .rows
+            .iter()
+            .any(|r| r.label == "Plants (est.)"));
         assert!(card.notes.iter().any(|n| n.contains("Not in plant list")));
         assert_eq!(s.title(i as u16), "Bretagne, France");
     }
@@ -493,10 +763,23 @@ mod tests {
     #[test]
     fn the_chosen_state_is_drawn_last() {
         let s = states();
-        let mut out = Imported { name: "Energy".to_string(), items: Vec::new(), truncated: false };
-        s.outlines(&mut out, Some(Subject::State(5)), (2024, 6), [true; SOURCES], Palette::Standard);
+        let mut out = Imported {
+            name: "Energy".to_string(),
+            items: Vec::new(),
+            truncated: false,
+        };
+        s.outlines(
+            &mut out,
+            Some(Subject::State(5)),
+            (2024, 6),
+            [true; SOURCES],
+            Palette::Standard,
+        );
         assert_eq!(out.items.len(), s.count());
-        assert_eq!(out.items.last().and_then(|i| i.outline).map(|o| o.width), Some(SELECTED.width));
+        assert_eq!(
+            out.items.last().and_then(|i| i.outline).map(|o| o.width),
+            Some(SELECTED.width)
+        );
     }
 
     #[test]

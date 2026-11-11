@@ -53,7 +53,13 @@ impl Cli {
     /// Adds the service named by `--add-service` to the library and says what happened.
     pub fn run_add(&self, fetcher: &Fetcher) -> Result<String, String> {
         let typed = self.add.as_deref().unwrap_or("");
-        let opts = AddOptions { name: self.name.clone(), credit: self.credit.clone(), layer: self.layer.clone(), tms: self.tms, max_zoom: self.max_zoom };
+        let opts = AddOptions {
+            name: self.name.clone(),
+            credit: self.credit.clone(),
+            layer: self.layer.clone(),
+            tms: self.tms,
+            max_zoom: self.max_zoom,
+        };
         let p = service_lib::prepare(typed, &opts, &|url| fetch_text(fetcher, url))?;
         let mut library = self.library();
         library.add(p.service.clone())?;
@@ -64,7 +70,11 @@ impl Cli {
             p.service.shown_credit()
         );
         if p.layers.len() > 1 {
-            out.push_str(&format!("\nIt offers {} layers; this one is {}. Add another with --service-layer NAME:", p.layers.len(), p.service.layer));
+            out.push_str(&format!(
+                "\nIt offers {} layers; this one is {}. Add another with --service-layer NAME:",
+                p.layers.len(),
+                p.service.layer
+            ));
             for (id, title) in p.layers.iter().take(40) {
                 out.push_str(&format!("\n  {id}  {title}"));
             }
@@ -77,14 +87,24 @@ impl Cli {
         let library = self.library();
         let mut out = String::from("Your library:\n");
         for s in library.services() {
-            out.push_str(&format!("  {} [{}]  credit: {}\n", s.name, s.kind.name(), s.shown_credit()));
+            out.push_str(&format!(
+                "  {} [{}]  credit: {}\n",
+                s.name,
+                s.kind.name(),
+                s.shown_credit()
+            ));
         }
         if library.services().is_empty() {
             out.push_str("  (none; add one with --add-service ADDRESS)\n");
         }
         out.push_str("Directory:\n");
         for s in service_lib::directory() {
-            out.push_str(&format!("  {} [{}]  credit: {}\n", s.name, s.kind.name(), s.shown_credit()));
+            out.push_str(&format!(
+                "  {} [{}]  credit: {}\n",
+                s.name,
+                s.kind.name(),
+                s.shown_credit()
+            ));
         }
         out
     }
@@ -112,7 +132,12 @@ pub struct Control {
 
 /// Looks a name up among the library and the directory.
 fn find(library: &Library, name: &str) -> Result<Service, String> {
-    let all: Vec<Service> = library.services().iter().chain(service_lib::directory()).cloned().collect();
+    let all: Vec<Service> = library
+        .services()
+        .iter()
+        .chain(service_lib::directory())
+        .cloned()
+        .collect();
     Library::find(&all, name).cloned()
 }
 
@@ -161,7 +186,12 @@ impl Control {
     }
 
     /// Applies what the command line chose. Names must exist, or the program says so and stops.
-    pub fn choose_at_start(&mut self, base: Option<&str>, overlay: Option<&str>, opacity: Option<f32>) -> Result<(), String> {
+    pub fn choose_at_start(
+        &mut self,
+        base: Option<&str>,
+        overlay: Option<&str>,
+        opacity: Option<f32>,
+    ) -> Result<(), String> {
         if (base.is_some() || overlay.is_some()) && !self.earth {
             return Err("Map services are shown on Earth only.".into());
         }
@@ -181,10 +211,21 @@ impl Control {
     }
 
     fn rows(&self) -> Vec<Row> {
-        let mut rows: Vec<Row> = self.library.services().iter().map(|s| Row { service: s.clone(), saved: true }).collect();
+        let mut rows: Vec<Row> = self
+            .library
+            .services()
+            .iter()
+            .map(|s| Row {
+                service: s.clone(),
+                saved: true,
+            })
+            .collect();
         for d in service_lib::directory() {
             if !rows.iter().any(|r| r.service.id == d.id) {
-                rows.push(Row { service: d.clone(), saved: false });
+                rows.push(Row {
+                    service: d.clone(),
+                    saved: false,
+                });
             }
         }
         rows
@@ -202,7 +243,11 @@ impl Control {
 
     /// The services of the library, as (identifier, name), for choosing a base.
     pub fn library_choices(&self) -> Vec<(String, String)> {
-        self.library.services().iter().map(|s| (s.id.clone(), s.name.clone())).collect()
+        self.library
+            .services()
+            .iter()
+            .map(|s| (s.id.clone(), s.name.clone()))
+            .collect()
     }
 
     /// Uses the library service with this identifier as the base, or the usual imagery for
@@ -240,7 +285,11 @@ impl Control {
     }
 
     pub fn toggle(&mut self) {
-        self.notice = self.library.notice.clone().filter(|_| !self.picker.is_open());
+        self.notice = self
+            .library
+            .notice
+            .clone()
+            .filter(|_| !self.picker.is_open());
         if !self.earth {
             self.notice = Some("Map services are shown on Earth only.".into());
         }
@@ -301,7 +350,10 @@ impl Control {
 
     fn remove(&mut self, row: &Row) {
         if !row.saved {
-            self.notice = Some(format!("{} is in the built-in directory and cannot be removed.", row.service.name));
+            self.notice = Some(format!(
+                "{} is in the built-in directory and cannot be removed.",
+                row.service.name
+            ));
             return;
         }
         if self.base.as_deref() == Some(&row.service.id) {
@@ -328,7 +380,9 @@ impl Control {
         let fetcher = fetcher.clone();
         let adder = self.adder.get_or_insert_with(|| {
             Worker::new(false, Duration::ZERO, move |typed: String| {
-                service_lib::prepare(&typed, &AddOptions::default(), &|url| fetch_text(&fetcher, url))
+                service_lib::prepare(&typed, &AddOptions::default(), &|url| {
+                    fetch_text(&fetcher, url)
+                })
             })
         });
         adder.submit(typed.to_string());
@@ -336,7 +390,9 @@ impl Control {
 
     /// Takes in a finished addition. True if the panel changed.
     pub fn poll(&mut self) -> bool {
-        let Some(result) = self.adder.as_ref().and_then(Worker::poll) else { return false };
+        let Some(result) = self.adder.as_ref().and_then(Worker::poll) else {
+            return false;
+        };
         self.adding = false;
         self.notice = Some(match result {
             Ok(p) => match self.library.add(p.service.clone()) {
@@ -365,7 +421,12 @@ impl Control {
             } else {
                 String::new()
             };
-            format!("{}{} [{}]{role}", if r.saved { "" } else { "+ " }, r.service.name, r.service.kind.name())
+            format!(
+                "{}{} [{}]{role}",
+                if r.saved { "" } else { "+ " },
+                r.service.name,
+                r.service.kind.name()
+            )
         };
         let mut text = self.picker.panel_text(
             "Map services",
@@ -375,7 +436,12 @@ impl Control {
             "Enter: base   O: overlay   +/-: opacity   A: add   Delete: remove\nUp/Down: choose   G or Esc: close   (+ : from the directory)",
         );
         for (what, id) in [("Base", &self.base), ("Overlay", &self.overlay)] {
-            let Some(r) = id.as_ref().and_then(|id| rows.iter().find(|r| &r.service.id == id)) else { continue };
+            let Some(r) = id
+                .as_ref()
+                .and_then(|id| rows.iter().find(|r| &r.service.id == id))
+            else {
+                continue;
+            };
             let source = service_lib::source_for(&r.service);
             if let Some(p) = service_lib::problem_text(source) {
                 text.push_str(&format!("\n{what} {}: {p}", r.service.name));
@@ -393,9 +459,15 @@ impl Control {
 pub fn fetch_text(fetcher: &Fetcher, url: &str) -> Result<Vec<u8>, String> {
     fetcher.fetch_service(url).map_err(|e| match e {
         FetchError::Missing => "The service says there is nothing at that address.".to_string(),
-        FetchError::Paused(_) => "The server is being left alone for a while after errors.".to_string(),
-        FetchError::Transient if fetcher.is_offline() => "Offline: the service cannot be asked.".to_string(),
-        FetchError::Transient | FetchError::Busy(_) => "The server did not answer or sent an error.".to_string(),
+        FetchError::Paused(_) => {
+            "The server is being left alone for a while after errors.".to_string()
+        }
+        FetchError::Transient if fetcher.is_offline() => {
+            "Offline: the service cannot be asked.".to_string()
+        }
+        FetchError::Transient | FetchError::Busy(_) => {
+            "The server did not answer or sent an error.".to_string()
+        }
     })
 }
 
@@ -407,7 +479,11 @@ mod tests {
     fn control_with(n: usize) -> Control {
         let mut lib = Library::in_memory();
         for i in 0..n {
-            let mut s = xyz_service(&format!("https://ui{i}.example/{{z}}/{{x}}/{{y}}.png"), false).unwrap();
+            let mut s = xyz_service(
+                &format!("https://ui{i}.example/{{z}}/{{x}}/{{y}}.png"),
+                false,
+            )
+            .unwrap();
             s.name = format!("Ui {i}");
             s.assign_id();
             lib.add(s).unwrap();
@@ -422,14 +498,23 @@ mod tests {
         let c = control_with(2);
         let text = c.panel_text();
         assert!(text.starts_with("Map services\n"));
-        assert!(text.contains("> Ui 0 [xyz]") && text.contains("  Ui 1 [xyz]"), "{text}");
+        assert!(
+            text.contains("> Ui 0 [xyz]") && text.contains("  Ui 1 [xyz]"),
+            "{text}"
+        );
         // Every directory entry is listed, after the library's own services.
         let library_end = text.find("  Ui 1 [xyz]").unwrap();
         let directory = service_lib::directory();
         assert!(!directory.is_empty());
         for d in directory {
-            let at = text.find(&format!("+ {} [", d.name)).unwrap_or_else(|| panic!("{} is not listed: {text}", d.name));
-            assert!(at > library_end, "{} is listed before the library: {text}", d.name);
+            let at = text
+                .find(&format!("+ {} [", d.name))
+                .unwrap_or_else(|| panic!("{} is not listed: {text}", d.name));
+            assert!(
+                at > library_end,
+                "{} is listed before the library: {text}",
+                d.name
+            );
         }
     }
 
@@ -450,7 +535,10 @@ mod tests {
         c.key(Cmd::List(Key::Down));
         c.key(Cmd::ToggleOverlay);
         let t = c.panel_text();
-        assert!(t.contains("Ui 0 [xyz] (base)") && t.contains("Ui 1 [xyz] (overlay 60%)"), "{t}");
+        assert!(
+            t.contains("Ui 0 [xyz] (base)") && t.contains("Ui 1 [xyz] (overlay 60%)"),
+            "{t}"
+        );
         c.key(Cmd::Louder);
         c.key(Cmd::Louder);
         assert!(c.panel_text().contains("overlay 80%"));
@@ -473,7 +561,10 @@ mod tests {
         let first = &service_lib::directory()[0];
         c.key(Cmd::List(Key::Delete));
         let t = c.panel_text();
-        assert!(t.contains("cannot be removed") && t.contains(&format!("> + {} [", first.name)), "{t}");
+        assert!(
+            t.contains("cannot be removed") && t.contains(&format!("> + {} [", first.name)),
+            "{t}"
+        );
     }
 
     #[test]
@@ -486,7 +577,12 @@ mod tests {
         assert_eq!(saved.len(), 1);
         assert_eq!(saved[0].id, first.id, "the chosen entry is the one saved");
         let t = c.panel_text();
-        assert!(t.contains(&format!("{} [", first.name)) && t.contains("(base)") && !t.contains(&format!("+ {} [", first.name)), "{t}");
+        assert!(
+            t.contains(&format!("{} [", first.name))
+                && t.contains("(base)")
+                && !t.contains(&format!("+ {} [", first.name)),
+            "{t}"
+        );
     }
 
     #[test]
@@ -498,10 +594,17 @@ mod tests {
     #[test]
     fn start_up_choices_must_name_real_services_on_earth() {
         let mut c = control_with(1);
-        assert!(c.choose_at_start(Some("nothing like it"), None, None).is_err());
-        assert!(c.choose_at_start(Some("ui 0"), Some("ui"), Some(0.25)).is_ok());
+        assert!(c
+            .choose_at_start(Some("nothing like it"), None, None)
+            .is_err());
+        assert!(c
+            .choose_at_start(Some("ui 0"), Some("ui"), Some(0.25))
+            .is_ok());
         assert!(c.panel_text().contains("(base)"));
         let mut moon = Control::new(Library::in_memory(), false);
-        assert!(moon.choose_at_start(Some("x"), None, None).unwrap_err().contains("Earth"));
+        assert!(moon
+            .choose_at_start(Some("x"), None, None)
+            .unwrap_err()
+            .contains("Earth"));
     }
 }

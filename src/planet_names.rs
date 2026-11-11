@@ -36,24 +36,53 @@ fn table() -> &'static HashMap<&'static str, (Arc<Vec<Label>>, Vec<Entry>)> {
         }
         by_body
             .into_iter()
-            .map(|(body, entries)| (body, (Arc::new(entries.iter().map(|e| e.label.clone()).collect()), entries)))
+            .map(|(body, entries)| {
+                (
+                    body,
+                    (
+                        Arc::new(entries.iter().map(|e| e.label.clone()).collect()),
+                        entries,
+                    ),
+                )
+            })
             .collect()
     })
 }
 
 fn parse(line: &'static str) -> Option<(&'static str, Entry)> {
     let mut f = line.split('\t');
-    let (body, name, lat, lon, diameter, kind) = (f.next()?, f.next()?, f.next()?, f.next()?, f.next()?, f.next()?);
-    let (lat, lon, diameter): (f64, f64, f64) = (lat.parse().ok()?, lon.parse().ok()?, diameter.parse().ok()?);
+    let (body, name, lat, lon, diameter, kind) = (
+        f.next()?,
+        f.next()?,
+        f.next()?,
+        f.next()?,
+        f.next()?,
+        f.next()?,
+    );
+    let (lat, lon, diameter): (f64, f64, f64) =
+        (lat.parse().ok()?, lon.parse().ok()?, diameter.parse().ok()?);
     if !(lat.is_finite() && lon.is_finite() && diameter.is_finite() && diameter > 0.0) {
         return None;
     }
     let diameter = diameter * 1000.0;
-    let style = if kind == "R" { LabelStyle::Region } else { LabelStyle::Feature };
-    let priority = -((diameter / PRIORITY_STEP).round().clamp(1.0, i32::MAX as f64 / 4.0) as i32);
+    let style = if kind == "R" {
+        LabelStyle::Region
+    } else {
+        LabelStyle::Feature
+    };
+    let priority = -((diameter / PRIORITY_STEP)
+        .round()
+        .clamp(1.0, i32::MAX as f64 / 4.0) as i32);
     // The Gazetteer gives planetocentric latitudes; the globe is drawn in geodetic ones.
     let lat = crate::geo::from_planetocentric(lat.to_radians(), body);
-    let label = Label { text: name.to_string(), style, priority, lat, lon: lon.to_radians(), along: None };
+    let label = Label {
+        text: name.to_string(),
+        style,
+        priority,
+        lat,
+        lon: lon.to_radians(),
+        along: None,
+    };
     Some((body, Entry { label, diameter }))
 }
 
@@ -64,7 +93,12 @@ pub fn labels(body: &str) -> Arc<Vec<Label>> {
 
 /// How far from the camera a feature's name may be shown, in metres.
 pub fn reach(label: &Label) -> f64 {
-    diameter(label) * if label.style == LabelStyle::Region { REGION_REACH } else { FEATURE_REACH }
+    diameter(label)
+        * if label.style == LabelStyle::Region {
+            REGION_REACH
+        } else {
+            FEATURE_REACH
+        }
 }
 
 /// The diameter of a named feature, in metres, from its label.
@@ -90,13 +124,19 @@ pub struct Near {
 /// The named features a place lies in, smallest first, then the nearest others; at most `n`.
 /// Positions in radians.
 pub fn nearest(body: &str, lat: f64, lon: f64, n: usize) -> Vec<Near> {
-    let Some((_, entries)) = table().get(body) else { return Vec::new() };
-    let radius = crate::body::all().iter().find(|b| b.id == body).map_or(1.0, |b| b.a);
+    let Some((_, entries)) = table().get(body) else {
+        return Vec::new();
+    };
+    let radius = crate::body::all()
+        .iter()
+        .find(|b| b.id == body)
+        .map_or(1.0, |b| b.a);
     let mut all: Vec<Near> = entries
         .iter()
         .map(|e| {
             let (la, lo) = (e.label.lat, e.label.lon);
-            let h = ((la - lat) / 2.0).sin().powi(2) + lat.cos() * la.cos() * ((lo - lon) / 2.0).sin().powi(2);
+            let h = ((la - lat) / 2.0).sin().powi(2)
+                + lat.cos() * la.cos() * ((lo - lon) / 2.0).sin().powi(2);
             let distance = 2.0 * h.sqrt().min(1.0).asin() * radius;
             Near {
                 name: e.label.text.clone(),
@@ -116,7 +156,12 @@ pub fn nearest(body: &str, lat: f64, lon: f64, n: usize) -> Vec<Near> {
         (false, false) => a.distance.total_cmp(&b.distance),
     });
     // A place inside a large region lies inside many; past the first few the nearest serve better.
-    let inside: Vec<Near> = all.iter().filter(|x| x.inside).take(n / 2).cloned().collect();
+    let inside: Vec<Near> = all
+        .iter()
+        .filter(|x| x.inside)
+        .take(n / 2)
+        .cloned()
+        .collect();
     let mut out = inside.clone();
     out.extend(all.into_iter().filter(|x| !x.inside).take(n - inside.len()));
     out
@@ -129,7 +174,9 @@ pub fn search(body: &str, query: &str) -> Vec<Place> {
     if q.is_empty() {
         return Vec::new();
     }
-    let Some((_, entries)) = table().get(body) else { return Vec::new() };
+    let Some((_, entries)) = table().get(body) else {
+        return Vec::new();
+    };
     let mut found: Vec<(u8, usize)> = entries
         .iter()
         .enumerate()
@@ -161,7 +208,12 @@ pub fn search(body: &str, query: &str) -> Vec<Place> {
                 name: e.label.text.clone(),
                 lat,
                 lon,
-                bbox: Some([(lat - half).max(-1.57), lon - across, (lat + half).min(1.57), lon + across]),
+                bbox: Some([
+                    (lat - half).max(-1.57),
+                    lon - across,
+                    (lat + half).min(1.57),
+                    lon + across,
+                ]),
             }
         })
         .collect()
@@ -194,7 +246,10 @@ mod tests {
         for body in ["moon", "mars", "mercury", "ceres", "vesta"] {
             let l = labels(body);
             assert!(l.len() > 50, "{body}: {}", l.len());
-            assert!(l.windows(2).all(|w| w[0].priority <= w[1].priority), "{body}");
+            assert!(
+                l.windows(2).all(|w| w[0].priority <= w[1].priority),
+                "{body}"
+            );
         }
         assert!(labels("moon").len() > 9000);
     }
@@ -205,7 +260,11 @@ mod tests {
         let olympus = mars.iter().find(|l| l.text == "Olympus Mons").unwrap();
         assert_eq!(olympus.style, LabelStyle::Feature);
         // About 600 km across: named from tens of thousands of kilometres away.
-        assert!((3.0e7..4.0e7).contains(&reach(olympus)), "{}", reach(olympus));
+        assert!(
+            (3.0e7..4.0e7).contains(&reach(olympus)),
+            "{}",
+            reach(olympus)
+        );
         let centric = crate::geo::to_planetocentric(olympus.lat, "mars").to_degrees();
         assert!((centric - 18.65).abs() < 0.01 && (olympus.lon.to_degrees() + 133.8).abs() < 0.01);
         let moon = labels("moon");
@@ -217,7 +276,12 @@ mod tests {
 
     #[test]
     fn a_place_lists_the_features_it_lies_in_then_the_nearest() {
-        let near = nearest("moon", (-43.31f64).to_radians(), (-11.36f64).to_radians(), 6);
+        let near = nearest(
+            "moon",
+            (-43.31f64).to_radians(),
+            (-11.36f64).to_radians(),
+            6,
+        );
         assert_eq!(near.len(), 6);
         assert!(near[0].inside, "{near:?}");
         assert!(near.iter().any(|x| x.name == "Tycho" && x.inside));
@@ -230,10 +294,15 @@ mod tests {
     fn search_finds_whole_names_first_and_ignores_accents() {
         let found = search("moon", "tycho");
         assert_eq!(found[0].name, "Tycho");
-        assert!(found.len() > 1 && found.len() <= MAX_RESULTS, "Tycho A and others follow");
+        assert!(
+            found.len() > 1 && found.len() <= MAX_RESULTS,
+            "Tycho A and others follow"
+        );
         let b = found[0].bbox.unwrap();
         assert!(b[0] < found[0].lat && found[0].lat < b[2]);
-        assert!(search("mars", "VALLES MARINERIS").iter().any(|p| p.name == "Valles Marineris"));
+        assert!(search("mars", "VALLES MARINERIS")
+            .iter()
+            .any(|p| p.name == "Valles Marineris"));
         assert!(search("mars", "  ").is_empty() && search("earth", "Paris").is_empty());
         assert_eq!(fold("Lacūs Mortis"), "lacus mortis");
     }

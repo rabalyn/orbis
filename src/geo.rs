@@ -30,7 +30,10 @@ fn planetographic(lat: f64, e2: f64) -> f64 {
 /// The geodetic latitude this program uses for a planetocentric one given by a body's maps,
 /// names and tracks (radians). `body` is the body's id; Earth's are left alone.
 pub fn from_planetocentric(lat: f64, body: &str) -> f64 {
-    let e2 = body::all().iter().find(|b| b.id == body).map_or(0.0, |b| b.e2);
+    let e2 = body::all()
+        .iter()
+        .find(|b| b.id == body)
+        .map_or(0.0, |b| b.e2);
     if body == body::EARTH.id {
         lat
     } else {
@@ -41,7 +44,10 @@ pub fn from_planetocentric(lat: f64, body: &str) -> f64 {
 /// The other way: the planetocentric latitude of a geodetic one, as other sources give positions
 /// on the body (radians).
 pub fn to_planetocentric(lat: f64, body: &str) -> f64 {
-    let e2 = body::all().iter().find(|b| b.id == body).map_or(0.0, |b| b.e2);
+    let e2 = body::all()
+        .iter()
+        .find(|b| b.id == body)
+        .map_or(0.0, |b| b.e2);
     if body == body::EARTH.id {
         lat
     } else {
@@ -79,7 +85,9 @@ impl Grid {
 
 /// The tiles at zoom 0.
 pub fn root_tiles() -> Vec<TileKey> {
-    (0..body::current().grid.columns(0) as u32).map(|x| TileKey::new(0, x, 0)).collect()
+    (0..body::current().grid.columns(0) as u32)
+        .map(|x| TileKey::new(0, x, 0))
+        .collect()
 }
 
 pub fn geodetic_to_ecef(lat: f64, lon: f64, h: f64) -> DVec3 {
@@ -268,9 +276,17 @@ mod tests {
 
     #[test]
     fn ecef_round_trip() {
-        for &(lat, lon, h) in &[(0.0, 0.0, 0.0), (0.8, 0.2, 3000.0), (-1.2, -3.0, 1e6), (1.55, 2.0, -50.0)] {
+        for &(lat, lon, h) in &[
+            (0.0, 0.0, 0.0),
+            (0.8, 0.2, 3000.0),
+            (-1.2, -3.0, 1e6),
+            (1.55, 2.0, -50.0),
+        ] {
             let (a, b, c) = ecef_to_geodetic(geodetic_to_ecef(lat, lon, h));
-            assert!((a - lat).abs() < 1e-9 && (b - lon).abs() < 1e-9 && (c - h).abs() < 1e-3, "{lat} {lon} {h}: {a} {b} {c}");
+            assert!(
+                (a - lat).abs() < 1e-9 && (b - lon).abs() < 1e-9 && (c - h).abs() < 1e-3,
+                "{lat} {lon} {h}: {a} {b} {c}"
+            );
         }
     }
 
@@ -317,14 +333,26 @@ mod tests {
     fn equirect_tiles_follow_the_wmts_layout() {
         let g = Grid::Equirect;
         // Zoom 0 is two tiles side by side, each 180 degrees square.
-        assert_eq!((g.columns(0), g.rows(0), g.columns(8), g.rows(8)), (2, 1, 512, 256));
+        assert_eq!(
+            (g.columns(0), g.rows(0), g.columns(8), g.rows(8)),
+            (2, 1, 512, 256)
+        );
         let west = TileKey::new(0, 0, 0);
         assert_eq!(west.lat_lon_on(g, 0.0, 0.0), (PI / 2.0, -PI));
         assert_eq!(west.lat_lon_on(g, 1.0, 1.0), (-PI / 2.0, 0.0));
-        assert_eq!(TileKey::new(0, 1, 0).lat_lon_on(g, 0.5, 0.5), (0.0, PI / 2.0));
+        assert_eq!(
+            TileKey::new(0, 1, 0).lat_lon_on(g, 0.5, 0.5),
+            (0.0, PI / 2.0)
+        );
         // Tycho, 43.3 S 11.2 W, at zoom 5: 64 columns, 32 rows, top left at 90 N 180 W.
         let k = TileKey::containing_on(g, -43.3f64.to_radians(), -11.2f64.to_radians(), 5);
-        assert_eq!((k.x, k.y), (((180.0 - 11.2) / 360.0 * 64.0) as u32, ((90.0 + 43.3) / 180.0 * 32.0) as u32));
+        assert_eq!(
+            (k.x, k.y),
+            (
+                ((180.0 - 11.2) / 360.0 * 64.0) as u32,
+                ((90.0 + 43.3) / 180.0 * 32.0) as u32
+            )
+        );
         let (lat, lon) = k.lat_lon_on(g, 0.5, 0.5);
         assert_eq!(TileKey::containing_on(g, lat, lon, 5), k);
         // The poles and the date line stay inside the grid.

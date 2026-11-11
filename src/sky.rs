@@ -38,7 +38,12 @@ pub fn decode_stars(bytes: &[u8]) -> Vec<SkyPoint> {
             let mag = c[4] as f32 / 20.0 - 1.5;
             let bv = c[5] as f32 / 50.0 - 0.5;
             let d = equatorial(ra, dec);
-            SkyPoint { dir: [d.x as f32, d.y as f32, d.z as f32], mag, colour: bv_colour(bv), radius: 0.0 }
+            SkyPoint {
+                dir: [d.x as f32, d.y as f32, d.z as f32],
+                mag,
+                colour: bv_colour(bv),
+                radius: 0.0,
+            }
         })
         .collect()
 }
@@ -109,7 +114,8 @@ pub fn limiting_magnitude(altitude: f64, sun_sin_altitude: Option<f64>, daylight
     let day = t * t * (3.0 - 2.0 * t);
     // A covered Sun dims the sky in proportion: the sky gets 2.5 log10(1 / light) magnitudes
     // fainter, which over the eleven magnitudes between day and night is a share of the day.
-    let day = day * (1.0 - (2.5 * (1.0 / daylight.max(1e-6)).log10() / (DARK - DAY)).clamp(0.0, 1.0));
+    let day =
+        day * (1.0 - (2.5 * (1.0 / daylight.max(1e-6)).log10() / (DARK - DAY)).clamp(0.0, 1.0));
     let air = (-altitude.max(0.0) / AIR_SCALE).exp();
     DARK + (DAY - DARK) * day * air
 }
@@ -154,7 +160,10 @@ mod tests {
     fn the_star_table_holds_the_naked_eye_stars() {
         let stars = star_points();
         assert!((4500..6500).contains(&stars.len()), "{}", stars.len());
-        assert!(stars.windows(2).all(|w| w[0].mag <= w[1].mag), "brightest first");
+        assert!(
+            stars.windows(2).all(|w| w[0].mag <= w[1].mag),
+            "brightest first"
+        );
         // Sirius: magnitude -1.44, RA 6h 45m, Dec -16.72°.
         let s = &stars[0];
         assert!((s.mag + 1.44).abs() < 0.06, "{}", s.mag);
@@ -167,7 +176,10 @@ mod tests {
             let t = equatorial(ra.to_radians(), dec.to_radians());
             stars
                 .iter()
-                .find(|s| (DVec3::new(s.dir[0] as f64, s.dir[1] as f64, s.dir[2] as f64) - t).length() < 0.002)
+                .find(|s| {
+                    (DVec3::new(s.dir[0] as f64, s.dir[1] as f64, s.dir[2] as f64) - t).length()
+                        < 0.002
+                })
                 .unwrap()
         };
         let betelgeuse = near(88.793, 7.407);
@@ -205,7 +217,10 @@ mod tests {
         assert!(night > 6.0 && noon < -4.0 && space > 6.4);
         let dusk = limiting_magnitude(0.0, Some(-0.1), 1.0);
         assert!(dusk < night && dusk > noon);
-        assert!(limiting_magnitude(0.0, None, 1.0) < -4.0, "flat light is day");
+        assert!(
+            limiting_magnitude(0.0, None, 1.0) < -4.0,
+            "flat light is day"
+        );
         // Totality darkens the day sky to near night; a partial eclipse hardly changes it.
         assert!(limiting_magnitude(0.0, Some(0.9), 1e-5) > 5.0);
         assert!(limiting_magnitude(0.0, Some(0.9), 0.5) < -3.0);

@@ -5,7 +5,10 @@ use crate::geo::{lat_to_merc_v, lon_to_merc_u, TileKey};
 use crate::import::{Imported, Item, Mark, Outline, Pos, Shape};
 use crate::overlay::OVERLAY_SIZE;
 use std::sync::Arc;
-use tiny_skia::{Color, FillRule, LineCap, LineJoin, Mask, Paint, PathBuilder, Pixmap, Stroke, StrokeDash, Transform};
+use tiny_skia::{
+    Color, FillRule, LineCap, LineJoin, Mask, Paint, PathBuilder, Pixmap, Stroke, StrokeDash,
+    Transform,
+};
 
 /// Overlay texels per screen pixel where a tile is about to split, as for the roads.
 const TEXELS_PER_PIXEL: f32 = 2.0;
@@ -24,14 +27,19 @@ const DOT_RING: [u8; 4] = [210, 40, 40, 255];
 
 /// Whether anything imported can show in the tile.
 pub fn touches(docs: &[Arc<Imported>], tile: TileKey) -> bool {
-    docs.iter().flat_map(|d| d.items.iter()).any(|i| item_touches(i, tile))
+    docs.iter()
+        .flat_map(|d| d.items.iter())
+        .any(|i| item_touches(i, tile))
 }
 
 fn item_touches(item: &Item, tile: TileKey) -> bool {
     let [west, east, north, south] = tile_box(tile);
     let [s, w, n, e] = item.extent;
     let (u0, u1) = (lon_to_merc_u(w), lon_to_merc_u(e));
-    let (v0, v1) = (lat_to_merc_v(n.min(MAX_LAT)), lat_to_merc_v(s.max(-MAX_LAT)));
+    let (v0, v1) = (
+        lat_to_merc_v(n.min(MAX_LAT)),
+        lat_to_merc_v(s.max(-MAX_LAT)),
+    );
     // An item that spans most of the world may wrap round the back.
     ((u1 - u0 > 0.5) || (u1 >= west && u0 <= east)) && v1 >= north && v0 <= south
 }
@@ -40,7 +48,12 @@ fn item_touches(item: &Item, tile: TileKey) -> bool {
 fn tile_box(tile: TileKey) -> [f64; 4] {
     let n = (1u64 << tile.z) as f64;
     let pad = MARGIN / OVERLAY_SIZE as f64 / n;
-    [tile.x as f64 / n - pad, (tile.x + 1) as f64 / n + pad, tile.y as f64 / n - pad, (tile.y + 1) as f64 / n + pad]
+    [
+        tile.x as f64 / n - pad,
+        (tile.x + 1) as f64 / n + pad,
+        tile.y as f64 / n - pad,
+        (tile.y + 1) as f64 / n + pad,
+    ]
 }
 
 /// Texel coordinates in `tile`, with longitude unwrapped along the sequence so that a line
@@ -63,7 +76,10 @@ fn project(tile: TileKey, points: &[Pos]) -> (Vec<(f64, f64)>, bool) {
         }
         last_u = Some(u + offset);
         let v = lat_to_merc_v(p.lat.clamp(-MAX_LAT, MAX_LAT));
-        out.push((((u + offset) * n - tile.x as f64) * OVERLAY_SIZE as f64, (v * n - tile.y as f64) * OVERLAY_SIZE as f64));
+        out.push((
+            ((u + offset) * n - tile.x as f64) * OVERLAY_SIZE as f64,
+            (v * n - tile.y as f64) * OVERLAY_SIZE as f64,
+        ));
     }
     (out, wrapped)
 }
@@ -72,7 +88,10 @@ fn project(tile: TileKey, points: &[Pos]) -> (Vec<(f64, f64)>, bool) {
 fn thin(points: &[(f64, f64)], keep_last: bool) -> Vec<(f64, f64)> {
     let mut out: Vec<(f64, f64)> = Vec::with_capacity(points.len().min(4096));
     for &p in points {
-        if out.last().is_none_or(|l| (l.0 - p.0).hypot(l.1 - p.1) >= MIN_STEP) {
+        if out
+            .last()
+            .is_none_or(|l| (l.0 - p.0).hypot(l.1 - p.1) >= MIN_STEP)
+        {
             out.push(p);
         }
     }
@@ -89,7 +108,12 @@ fn clip_segment(a: (f64, f64), b: (f64, f64)) -> Option<((f64, f64), (f64, f64))
     let (lo, hi) = (-MARGIN, OVERLAY_SIZE as f64 + MARGIN);
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let (mut t0, mut t1) = (0.0f64, 1.0f64);
-    for (p, q) in [(-dx, a.0 - lo), (dx, hi - a.0), (-dy, a.1 - lo), (dy, hi - a.1)] {
+    for (p, q) in [
+        (-dx, a.0 - lo),
+        (dx, hi - a.0),
+        (-dy, a.1 - lo),
+        (dy, hi - a.1),
+    ] {
         if p == 0.0 {
             if q < 0.0 {
                 return None;
@@ -106,7 +130,10 @@ fn clip_segment(a: (f64, f64), b: (f64, f64)) -> Option<((f64, f64), (f64, f64))
             }
         }
     }
-    Some(((a.0 + t0 * dx, a.1 + t0 * dy), (a.0 + t1 * dx, a.1 + t1 * dy)))
+    Some((
+        (a.0 + t0 * dx, a.1 + t0 * dy),
+        (a.0 + t1 * dx, a.1 + t1 * dy),
+    ))
 }
 
 /// Cuts a ring to the same square (Sutherland and Hodgman).
@@ -164,10 +191,15 @@ fn paint(color: [u8; 4]) -> Paint<'static> {
 }
 
 fn stroke(width: f32) -> Stroke {
-    Stroke { width, line_cap: LineCap::Round, line_join: LineJoin::Round, ..Stroke::default() }
+    Stroke {
+        width,
+        line_cap: LineCap::Round,
+        line_join: LineJoin::Round,
+        ..Stroke::default()
+    }
 }
 
-fn draw_line(pixmap: &mut Pixmap, points: &[(f64, f64)]) {
+fn draw_line(pixmap: &mut Pixmap, points: &[(f64, f64)], style: Option<Outline>) {
     let mut path = PathBuilder::new();
     let mut pen: Option<(f64, f64)> = None;
     for w in thin(points, true).windows(2) {
@@ -182,16 +214,44 @@ fn draw_line(pixmap: &mut Pixmap, points: &[(f64, f64)]) {
         pen = Some(b);
     }
     let Some(path) = path.finish() else { return };
-    let width = 2.4 * TEXELS_PER_PIXEL;
-    pixmap.stroke_path(&path, &paint([20, 20, 30, 190]), &stroke(width + 1.6 * TEXELS_PER_PIXEL), Transform::identity(), None);
-    pixmap.stroke_path(&path, &paint(LINE), &stroke(width), Transform::identity(), None);
+    let style = style.unwrap_or(Outline {
+        edge: LINE,
+        fill: LINE,
+        width: 2.4,
+        dashed: false,
+    });
+    let width = style.width.clamp(1.0, 12.0) * TEXELS_PER_PIXEL;
+    let mut edge = stroke(width);
+    let mut halo = stroke(width + 1.6 * TEXELS_PER_PIXEL);
+    if style.dashed {
+        let dash = StrokeDash::new(vec![6.0 * TEXELS_PER_PIXEL, 4.0 * TEXELS_PER_PIXEL], 0.0);
+        edge.line_cap = LineCap::Butt;
+        halo.line_cap = LineCap::Butt;
+        (edge.dash, halo.dash) = (dash.clone(), dash);
+    }
+    pixmap.stroke_path(
+        &path,
+        &paint([20, 20, 30, 190]),
+        &halo,
+        Transform::identity(),
+        None,
+    );
+    pixmap.stroke_path(
+        &path,
+        &paint(style.edge),
+        &edge,
+        Transform::identity(),
+        None,
+    );
 }
 
 fn draw_area(pixmap: &mut Pixmap, rings: &[Vec<(f64, f64)>], style: Option<Outline>) {
     let mut path = PathBuilder::new();
     for ring in rings {
         let ring = clip_ring(&thin(ring, false));
-        let Some((first, rest)) = ring.split_first() else { continue };
+        let Some((first, rest)) = ring.split_first() else {
+            continue;
+        };
         if rest.len() < 2 {
             continue;
         }
@@ -202,12 +262,23 @@ fn draw_area(pixmap: &mut Pixmap, rings: &[Vec<(f64, f64)>], style: Option<Outli
         path.close();
     }
     let Some(path) = path.finish() else { return };
-    let style = style.unwrap_or(Outline { edge: AREA_EDGE, fill: AREA_FILL, width: 1.8, dashed: false });
+    let style = style.unwrap_or(Outline {
+        edge: AREA_EDGE,
+        fill: AREA_FILL,
+        width: 1.8,
+        dashed: false,
+    });
     if style.fill[3] > 0 {
         if style.dashed {
             hatch(pixmap, &path, style.fill);
         } else {
-            pixmap.fill_path(&path, &paint(style.fill), FillRule::EvenOdd, Transform::identity(), None);
+            pixmap.fill_path(
+                &path,
+                &paint(style.fill),
+                FillRule::EvenOdd,
+                Transform::identity(),
+                None,
+            );
         }
     }
     let width = style.width * TEXELS_PER_PIXEL;
@@ -221,7 +292,13 @@ fn draw_area(pixmap: &mut Pixmap, rings: &[Vec<(f64, f64)>], style: Option<Outli
         (edge.dash, under.dash) = (dash.clone(), dash);
     }
     pixmap.stroke_path(&path, &paint(halo), &under, Transform::identity(), None);
-    pixmap.stroke_path(&path, &paint(style.edge), &edge, Transform::identity(), None);
+    pixmap.stroke_path(
+        &path,
+        &paint(style.edge),
+        &edge,
+        Transform::identity(),
+        None,
+    );
 }
 
 /// Dashes and gaps of a dashed edge, in pixels on the screen.
@@ -235,10 +312,18 @@ const HATCH_WIDTH: f32 = 2.6;
 /// than the flat fill would be, since they cover only part of the area; the rest gets a faint
 /// wash of the colour, so that the area still reads as one.
 fn hatch(pixmap: &mut Pixmap, path: &tiny_skia::Path, fill: [u8; 4]) {
-    let Some(mut mask) = Mask::new(pixmap.width(), pixmap.height()) else { return };
+    let Some(mut mask) = Mask::new(pixmap.width(), pixmap.height()) else {
+        return;
+    };
     mask.fill_path(path, FillRule::EvenOdd, true, Transform::identity());
     let wash = [fill[0], fill[1], fill[2], fill[3] / 3];
-    pixmap.fill_path(path, &paint(wash), FillRule::EvenOdd, Transform::identity(), None);
+    pixmap.fill_path(
+        path,
+        &paint(wash),
+        FillRule::EvenOdd,
+        Transform::identity(),
+        None,
+    );
     let (w, h) = (pixmap.width() as f32, pixmap.height() as f32);
     let step = HATCH_STEP * TEXELS_PER_PIXEL;
     let mut lines = PathBuilder::new();
@@ -250,10 +335,21 @@ fn hatch(pixmap: &mut Pixmap, path: &tiny_skia::Path, fill: [u8; 4]) {
         k += step;
     }
     let Some(lines) = lines.finish() else { return };
-    let strong = [fill[0], fill[1], fill[2], (fill[3] as u16 * 2).min(255) as u8];
+    let strong = [
+        fill[0],
+        fill[1],
+        fill[2],
+        (fill[3] as u16 * 2).min(255) as u8,
+    ];
     let mut s = stroke(HATCH_WIDTH * TEXELS_PER_PIXEL);
     s.line_cap = LineCap::Butt;
-    pixmap.stroke_path(&lines, &paint(strong), &s, Transform::identity(), Some(&mask));
+    pixmap.stroke_path(
+        &lines,
+        &paint(strong),
+        &s,
+        Transform::identity(),
+        Some(&mask),
+    );
 }
 
 fn draw_dot(pixmap: &mut Pixmap, (x, y): (f64, f64), mark: Option<Mark>) {
@@ -264,14 +360,38 @@ fn draw_dot(pixmap: &mut Pixmap, (x, y): (f64, f64), mark: Option<Mark>) {
     let mut path = PathBuilder::new();
     let (outer, inner, ring, fill) = match mark {
         // A sized marker is a translucent disc with a dark ring and a bright centre.
-        Some(m) => (m.radius * TEXELS_PER_PIXEL, m.radius * 0.55 * TEXELS_PER_PIXEL, [20, 20, 30, 230], [m.colour[0], m.colour[1], m.colour[2], m.colour[3]]),
-        None => (4.5 * TEXELS_PER_PIXEL, 2.8 * TEXELS_PER_PIXEL, DOT_RING, DOT),
+        Some(m) => (
+            m.radius * TEXELS_PER_PIXEL,
+            m.radius * 0.55 * TEXELS_PER_PIXEL,
+            [20, 20, 30, 230],
+            [m.colour[0], m.colour[1], m.colour[2], m.colour[3]],
+        ),
+        None => (
+            4.5 * TEXELS_PER_PIXEL,
+            2.8 * TEXELS_PER_PIXEL,
+            DOT_RING,
+            DOT,
+        ),
     };
     path.push_circle(x as f32, y as f32, outer);
     let Some(path) = path.finish() else { return };
-    pixmap.fill_path(&path, &paint(ring), FillRule::Winding, Transform::identity(), None);
+    pixmap.fill_path(
+        &path,
+        &paint(ring),
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+    );
     let mut body = PathBuilder::new();
-    body.push_circle(x as f32, y as f32, if mark.is_some() { (outer - 1.2 * TEXELS_PER_PIXEL).max(1.0) } else { 0.0 });
+    body.push_circle(
+        x as f32,
+        y as f32,
+        if mark.is_some() {
+            (outer - 1.2 * TEXELS_PER_PIXEL).max(1.0)
+        } else {
+            0.0
+        },
+    );
     if mark.is_some() {
         if let Some(body) = body.finish() {
             let mut p = paint(fill);
@@ -282,31 +402,48 @@ fn draw_dot(pixmap: &mut Pixmap, (x, y): (f64, f64), mark: Option<Mark>) {
     let mut centre = PathBuilder::new();
     centre.push_circle(x as f32, y as f32, inner);
     if let Some(centre) = centre.finish() {
-        pixmap.fill_path(&centre, &paint(fill), FillRule::Winding, Transform::identity(), None);
+        pixmap.fill_path(
+            &centre,
+            &paint(fill),
+            FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
     }
 }
 
 /// Draws what is imported onto `pixmap`, which covers `tile`. Areas first, then lines, then
 /// points, so that points stay on top.
 pub fn draw(pixmap: &mut Pixmap, docs: &[Arc<Imported>], tile: TileKey) {
-    let items = || docs.iter().flat_map(|d| d.items.iter()).filter(|i| item_touches(i, tile));
+    let items = || {
+        docs.iter()
+            .flat_map(|d| d.items.iter())
+            .filter(|i| item_touches(i, tile))
+    };
     for item in items() {
         if let Shape::Polygon(rings) = &item.shape {
-            draw_projected(pixmap, tile, rings.iter().map(Vec::as_slice), |p, r| draw_area(p, r, item.outline));
+            draw_projected(pixmap, tile, rings.iter().map(Vec::as_slice), |p, r| {
+                draw_area(p, r, item.outline)
+            });
         }
     }
     for item in items() {
         if let Shape::Line(line) = &item.shape {
             draw_projected(pixmap, tile, std::iter::once(line.as_slice()), |p, r| {
                 for l in r {
-                    draw_line(p, l);
+                    draw_line(p, l, item.outline);
                 }
             });
         }
     }
     for item in items() {
         if let Shape::Point(p) = &item.shape {
-            draw_projected(pixmap, tile, std::iter::once(std::slice::from_ref(p)), |pm, r| draw_dot(pm, r[0][0], item.mark));
+            draw_projected(
+                pixmap,
+                tile,
+                std::iter::once(std::slice::from_ref(p)),
+                |pm, r| draw_dot(pm, r[0][0], item.mark),
+            );
         }
     }
 }
@@ -330,7 +467,10 @@ fn draw_projected<'a>(
     if wrapped {
         let world = (1u64 << tile.z) as f64 * OVERLAY_SIZE as f64;
         for shift in [-world, world] {
-            let moved: Vec<Vec<(f64, f64)>> = projected.iter().map(|s| s.iter().map(|p| (p.0 + shift, p.1)).collect()).collect();
+            let moved: Vec<Vec<(f64, f64)>> = projected
+                .iter()
+                .map(|s| s.iter().map(|p| (p.0 + shift, p.1)).collect())
+                .collect();
             f(pixmap, &moved);
         }
     }
@@ -342,12 +482,23 @@ mod tests {
     use crate::import;
 
     fn pos(lat: f64, lon: f64) -> Pos {
-        Pos { lat: lat.to_radians(), lon: lon.to_radians(), alt: None }
+        Pos {
+            lat: lat.to_radians(),
+            lon: lon.to_radians(),
+            alt: None,
+        }
     }
 
     fn docs(items: Vec<(&str, Shape)>) -> Vec<Arc<Imported>> {
-        let items = items.into_iter().map(|(n, s)| import::Item::new(n, s)).collect();
-        vec![Arc::new(Imported { name: "t".into(), items, truncated: false })]
+        let items = items
+            .into_iter()
+            .map(|(n, s)| import::Item::new(n, s))
+            .collect();
+        vec![Arc::new(Imported {
+            name: "t".into(),
+            items,
+            truncated: false,
+        })]
     }
 
     fn alpha(p: &Pixmap, x: u32, y: u32) -> u8 {
@@ -358,22 +509,57 @@ mod tests {
     fn a_line_is_drawn_where_it_runs() {
         // The tile at zoom 3 covering 0..45 degrees east and the equator northwards.
         let tile = TileKey::new(3, 4, 3);
-        let d = docs(vec![("l", Shape::Line(vec![pos(1.0, 1.0), pos(1.0, 44.0)]))]);
+        let d = docs(vec![(
+            "l",
+            Shape::Line(vec![pos(1.0, 1.0), pos(1.0, 44.0)]),
+        )]);
         assert!(touches(&d, tile));
         let mut pm = Pixmap::new(OVERLAY_SIZE, OVERLAY_SIZE).unwrap();
         draw(&mut pm, &d, tile);
         // Close to the bottom edge of the tile, where latitude 1 lies.
-        let y = (0..OVERLAY_SIZE).find(|y| alpha(&pm, 256, *y) > 200).expect("drawn");
+        let y = (0..OVERLAY_SIZE)
+            .find(|y| alpha(&pm, 256, *y) > 200)
+            .expect("drawn");
         assert!(y > 480, "{y}");
         assert_eq!(alpha(&pm, 256, 100), 0);
-        assert!(!touches(&d, TileKey::new(3, 0, 3)), "a tile elsewhere has nothing");
+        assert!(
+            !touches(&d, TileKey::new(3, 0, 3)),
+            "a tile elsewhere has nothing"
+        );
+    }
+
+    #[test]
+    fn custom_track_colour_width_and_dotted_style_reach_the_raster() {
+        let tile = TileKey::new(3, 4, 3);
+        let mut item =
+            import::Item::new("styled", Shape::Line(vec![pos(1.0, 1.0), pos(1.0, 44.0)]));
+        item.outline = Some(Outline {
+            edge: [240, 10, 20, 255],
+            fill: [240, 10, 20, 255],
+            width: 7.0,
+            dashed: true,
+        });
+        let docs = vec![Arc::new(Imported {
+            name: "styled".into(),
+            items: vec![item],
+            truncated: false,
+        })];
+        let mut pm = Pixmap::new(OVERLAY_SIZE, OVERLAY_SIZE).unwrap();
+        draw(&mut pm, &docs, tile);
+        assert!(pm
+            .data()
+            .chunks(4)
+            .any(|p| p[0] > 180 && p[1] < 80 && p[2] < 80 && p[3] > 100));
     }
 
     #[test]
     fn an_area_is_filled_except_for_its_hole() {
         let tile = TileKey::new(3, 4, 3);
         let ring = |a: f64, b: f64| vec![pos(a, a), pos(a, b), pos(b, b), pos(b, a), pos(a, a)];
-        let d = docs(vec![("a", Shape::Polygon(vec![ring(5.0, 40.0), ring(15.0, 30.0)]))]);
+        let d = docs(vec![(
+            "a",
+            Shape::Polygon(vec![ring(5.0, 40.0), ring(15.0, 30.0)]),
+        )]);
         let mut pm = Pixmap::new(OVERLAY_SIZE, OVERLAY_SIZE).unwrap();
         draw(&mut pm, &d, tile);
         let inside = alpha(&pm, 100, 420);
@@ -393,7 +579,10 @@ mod tests {
 
     #[test]
     fn a_line_over_the_antimeridian_is_cut_not_wrapped_round_the_world() {
-        let d = docs(vec![("l", Shape::Line(vec![pos(0.5, 179.0), pos(0.5, -179.0)]))]);
+        let d = docs(vec![(
+            "l",
+            Shape::Line(vec![pos(0.5, 179.0), pos(0.5, -179.0)]),
+        )]);
         // The easternmost tile at zoom 2 has the first part, the westernmost the second.
         let (east, west) = (TileKey::new(2, 3, 2), TileKey::new(2, 0, 2));
         let middle = TileKey::new(2, 2, 2);
@@ -423,7 +612,10 @@ mod tests {
 
     #[test]
     fn the_whole_world_wrap_does_not_hide_items_from_distant_tiles() {
-        let d = docs(vec![("w", Shape::Line(vec![pos(0.0, -170.0), pos(0.0, 170.0)]))]);
+        let d = docs(vec![(
+            "w",
+            Shape::Line(vec![pos(0.0, -170.0), pos(0.0, 170.0)]),
+        )]);
         assert!(touches(&d, TileKey::new(1, 0, 0)) || touches(&d, TileKey::new(1, 0, 1)));
     }
 }

@@ -31,14 +31,18 @@ const ARGUMENTS: [(f64, f64); 13] = [
 ];
 
 /// Coefficients of sin(E1..E13) for the pole's right ascension.
-const RA_TERMS: [f64; 13] =
-    [-3.8787, -0.1204, 0.0700, -0.0172, 0.0, 0.0072, 0.0, 0.0, 0.0, -0.0052, 0.0, 0.0, 0.0043];
+const RA_TERMS: [f64; 13] = [
+    -3.8787, -0.1204, 0.0700, -0.0172, 0.0, 0.0072, 0.0, 0.0, 0.0, -0.0052, 0.0, 0.0, 0.0043,
+];
 /// Coefficients of cos(E1..E13) for the pole's declination.
-const DEC_TERMS: [f64; 13] =
-    [1.5419, 0.0239, -0.0278, 0.0068, 0.0, -0.0029, 0.0009, 0.0, 0.0, 0.0008, 0.0, 0.0, -0.0009];
+const DEC_TERMS: [f64; 13] = [
+    1.5419, 0.0239, -0.0278, 0.0068, 0.0, -0.0029, 0.0009, 0.0, 0.0, 0.0008, 0.0, 0.0, -0.0009,
+];
 /// Coefficients of sin(E1..E13) for the prime meridian angle.
-const W_TERMS: [f64; 13] =
-    [3.5610, 0.1208, -0.0642, 0.0158, 0.0252, -0.0066, -0.0047, -0.0046, 0.0028, 0.0052, 0.0040, 0.0019, -0.0044];
+const W_TERMS: [f64; 13] = [
+    3.5610, 0.1208, -0.0642, 0.0158, 0.0252, -0.0066, -0.0047, -0.0046, 0.0028, 0.0052, 0.0040,
+    0.0019, -0.0044,
+];
 
 /// Right ascension and declination of the north pole (ICRF, about J2000), and the prime
 /// meridian angle W, all in radians. UT is taken as TDB; the difference is about a minute,
@@ -46,19 +50,30 @@ const W_TERMS: [f64; 13] =
 pub fn pole_and_meridian(unix: f64) -> (f64, f64, f64) {
     let d = unix / 86_400.0 + 2_440_587.5 - 2_451_545.0;
     let t = d / 36_525.0;
-    let e: Vec<f64> = ARGUMENTS.iter().map(|(a, rate)| (a + rate * d).to_radians()).collect();
-    let sum = |terms: &[f64; 13], f: fn(f64) -> f64| -> f64 { terms.iter().zip(&e).map(|(c, e)| c * f(*e)).sum() };
+    let e: Vec<f64> = ARGUMENTS
+        .iter()
+        .map(|(a, rate)| (a + rate * d).to_radians())
+        .collect();
+    let sum = |terms: &[f64; 13], f: fn(f64) -> f64| -> f64 {
+        terms.iter().zip(&e).map(|(c, e)| c * f(*e)).sum()
+    };
     let ra = 269.9949 + 0.0031 * t + sum(&RA_TERMS, f64::sin);
     let dec = 66.5392 + 0.0130 * t + sum(&DEC_TERMS, f64::cos);
     let w = 38.3213 + 13.176_358_15 * d - 1.4e-12 * d * d + sum(&W_TERMS, f64::sin);
-    (ra.to_radians(), dec.to_radians(), w.rem_euclid(360.0).to_radians())
+    (
+        ra.to_radians(),
+        dec.to_radians(),
+        w.rem_euclid(360.0).to_radians(),
+    )
 }
 
 /// From J2000 equatorial directions to the Moon-fixed frame: the IAU report's
 /// R3(W) R1(90° - dec) R3(90° + ra), written for rotating vectors.
 pub fn fixed_frame(unix: f64) -> DMat3 {
     let (ra, dec, w) = pole_and_meridian(unix);
-    DMat3::from_rotation_z(-w) * DMat3::from_rotation_x(-(PI / 2.0 - dec)) * DMat3::from_rotation_z(-(PI / 2.0 + ra))
+    DMat3::from_rotation_z(-w)
+        * DMat3::from_rotation_x(-(PI / 2.0 - dec))
+        * DMat3::from_rotation_z(-(PI / 2.0 + ra))
 }
 
 /// The Sun's direction in J2000 equatorial coordinates, as seen from the Earth-Moon system.
@@ -91,14 +106,30 @@ mod tests {
     fn j2000_values_are_the_published_ones() {
         // At J2000 the report gives the pole as 269.9949 + (-3.8787 sin 125.045 ...) etc.
         let (ra, dec, w) = pole_and_meridian(at("2000-01-01T12:00:00Z"));
-        assert!((ra.to_degrees() - 266.855).abs() < 0.01, "{}", ra.to_degrees());
-        assert!((dec.to_degrees() - 65.6411).abs() < 0.01, "{}", dec.to_degrees());
-        assert!((w.to_degrees() - 41.1954).abs() < 0.01, "{}", w.to_degrees());
+        assert!(
+            (ra.to_degrees() - 266.855).abs() < 0.01,
+            "{}",
+            ra.to_degrees()
+        );
+        assert!(
+            (dec.to_degrees() - 65.6411).abs() < 0.01,
+            "{}",
+            dec.to_degrees()
+        );
+        assert!(
+            (w.to_degrees() - 41.1954).abs() < 0.01,
+            "{}",
+            w.to_degrees()
+        );
     }
 
     #[test]
     fn the_pole_maps_to_the_z_axis() {
-        for s in ["2000-01-01T12:00:00Z", "2026-03-01T00:00:00Z", "2040-09-09T09:09:00Z"] {
+        for s in [
+            "2000-01-01T12:00:00Z",
+            "2026-03-01T00:00:00Z",
+            "2040-09-09T09:09:00Z",
+        ] {
             let (ra, dec, _) = pole_and_meridian(at(s));
             let pole = equatorial(ra, dec);
             let p = fixed_frame(at(s)) * pole;
@@ -133,10 +164,16 @@ mod tests {
             "2031-12-24T07:00:00Z",
         ] {
             let t = at(s);
-            let moon = planets::bodies(t).into_iter().find(|b| b.name == "Moon").unwrap();
+            let moon = planets::bodies(t)
+                .into_iter()
+                .find(|b| b.name == "Moon")
+                .unwrap();
             let earth = fixed_frame(t) * (-moon.dir);
             let (lat, lon) = lat_lon(earth);
-            assert!(lat.abs() < 8.5 && lon.abs() < 9.5, "{s}: sub-Earth point {lat:.2} {lon:.2}");
+            assert!(
+                lat.abs() < 8.5 && lon.abs() < 9.5,
+                "{s}: sub-Earth point {lat:.2} {lon:.2}"
+            );
         }
     }
 

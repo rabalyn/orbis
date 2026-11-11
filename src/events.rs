@@ -70,7 +70,12 @@ pub struct Event {
 
 impl Event {
     pub fn row(&self) -> String {
-        format!("{}  {}  {}", format_utc(self.time, false).trim_end_matches(" UTC"), self.title, self.detail)
+        format!(
+            "{}  {}  {}",
+            format_utc(self.time, false).trim_end_matches(" UTC"),
+            self.title,
+            self.detail
+        )
     }
 
     pub fn from_eclipse(e: &Eclipse) -> Event {
@@ -88,11 +93,19 @@ impl Event {
                 let note = format!(
                     "Greatest eclipse {when}, gamma {:.3}{}",
                     s.gamma,
-                    if s.central { "" } else { ". The shadow's axis misses the Earth." }
+                    if s.central {
+                        ""
+                    } else {
+                        ". The shadow's axis misses the Earth."
+                    }
                 );
                 let mut detail = format!("mag {:.3}", s.magnitude);
                 if let Some(d) = s.duration {
-                    detail.push_str(&format!("  {}m{:02}s", (d / 60.0).floor(), (d % 60.0).round().min(59.0)));
+                    detail.push_str(&format!(
+                        "  {}m{:02}s",
+                        (d / 60.0).floor(),
+                        (d % 60.0).round().min(59.0)
+                    ));
                 }
                 Event {
                     source: "eclipse",
@@ -114,7 +127,13 @@ impl Event {
                     LunarKind::Partial => "Partial lunar",
                     LunarKind::Penumbral => "Penumbral lunar",
                 };
-                let hours = |s: f64| format!("{}h{:02}m", (s / 3600.0).floor(), ((s % 3600.0) / 60.0).round().min(59.0));
+                let hours = |s: f64| {
+                    format!(
+                        "{}h{:02}m",
+                        (s / 3600.0).floor(),
+                        ((s % 3600.0) / 60.0).round().min(59.0)
+                    )
+                };
                 let mut detail = match l.kind {
                     LunarKind::Penumbral => format!("mag {:.2}", l.penumbral_magnitude),
                     _ => format!("mag {:.2}", l.umbral_magnitude),
@@ -122,7 +141,12 @@ impl Event {
                 if let Some(d) = l.total_duration.or(l.partial_duration) {
                     detail.push_str(&format!("  {}", hours(d)));
                 }
-                let mut note = format!("Greatest eclipse {}, gamma {:.3}. In the penumbra for {}", format_utc(l.time, true), l.gamma, hours(l.penumbral_duration));
+                let mut note = format!(
+                    "Greatest eclipse {}, gamma {:.3}. In the penumbra for {}",
+                    format_utc(l.time, true),
+                    l.gamma,
+                    hours(l.penumbral_duration)
+                );
                 if let Some(d) = l.partial_duration {
                     note.push_str(&format!(", partly in the umbra for {}", hours(d)));
                 }
@@ -170,7 +194,9 @@ impl EventList {
     }
 
     fn refresh(&mut self) {
-        self.visible = (0..self.events.len()).filter(|&i| !self.hidden[self.events[i].kind.filter()]).collect();
+        self.visible = (0..self.events.len())
+            .filter(|&i| !self.hidden[self.events[i].kind.filter()])
+            .collect();
         self.revision += 1;
         self.picker.clamp(self.visible.len());
     }
@@ -199,7 +225,11 @@ impl EventList {
     /// The events to mark on the globe for a clock at `time`: shown ones with a marker that
     /// are at most `half` seconds away, as indices for `marked`.
     pub fn marked_near(&self, time: f64, half: f64) -> Vec<usize> {
-        self.visible.iter().copied().filter(|&j| self.events[j].kind.marked() && (self.events[j].time - time).abs() <= half).collect()
+        self.visible
+            .iter()
+            .copied()
+            .filter(|&j| self.events[j].kind.marked() && (self.events[j].time - time).abs() <= half)
+            .collect()
     }
 
     pub fn marked(&self, j: usize) -> &Event {
@@ -208,7 +238,11 @@ impl EventList {
 
     /// The row of the event nearest in time to `time`.
     pub fn nearest_to(&self, time: f64) -> Option<usize> {
-        (0..self.len()).min_by(|&a, &b| (self.visible_time(a) - time).abs().total_cmp(&(self.visible_time(b) - time).abs()))
+        (0..self.len()).min_by(|&a, &b| {
+            (self.visible_time(a) - time)
+                .abs()
+                .total_cmp(&(self.visible_time(b) - time).abs())
+        })
     }
 
     fn visible_time(&self, i: usize) -> f64 {
@@ -218,7 +252,12 @@ impl EventList {
     pub fn panel_text(&self, title: &str) -> String {
         let mut filters = String::new();
         for (i, name) in FILTER_NAMES.iter().enumerate() {
-            filters.push_str(&format!("{}{} {}  ", i + 1, if self.shown(i) { "+" } else { "-" }, name));
+            filters.push_str(&format!(
+                "{}{} {}  ",
+                i + 1,
+                if self.shown(i) { "+" } else { "-" },
+                name
+            ));
         }
         let mut text = self.picker.panel_text(
             title,
@@ -240,7 +279,19 @@ mod tests {
     use super::*;
 
     fn event(source: &'static str, time: f64) -> Event {
-        Event { source, kind: Kind::SolarEclipse, time, lat: 0.0, lon: 0.0, distance: 1.0, set_clock: true, title: "T".into(), detail: String::new(), note: String::new(), marker: 0.0 }
+        Event {
+            source,
+            kind: Kind::SolarEclipse,
+            time,
+            lat: 0.0,
+            lon: 0.0,
+            distance: 1.0,
+            set_clock: true,
+            title: "T".into(),
+            detail: String::new(),
+            note: String::new(),
+            marker: 0.0,
+        }
     }
 
     #[test]
@@ -248,9 +299,19 @@ mod tests {
         let mut list = EventList::default();
         list.set_source("a", vec![event("a", 30.0), event("a", 10.0)]);
         list.set_source("b", vec![event("b", 20.0)]);
-        assert_eq!((0..3).map(|i| list.get(i).unwrap().time).collect::<Vec<_>>(), [10.0, 20.0, 30.0]);
+        assert_eq!(
+            (0..3)
+                .map(|i| list.get(i).unwrap().time)
+                .collect::<Vec<_>>(),
+            [10.0, 20.0, 30.0]
+        );
         list.set_source("a", vec![event("a", 5.0)]);
-        assert_eq!((0..list.len()).map(|i| list.get(i).unwrap().time).collect::<Vec<_>>(), [5.0, 20.0]);
+        assert_eq!(
+            (0..list.len())
+                .map(|i| list.get(i).unwrap().time)
+                .collect::<Vec<_>>(),
+            [5.0, 20.0]
+        );
         assert_eq!(list.nearest_to(18.0), Some(1));
     }
 
@@ -260,10 +321,23 @@ mod tests {
         let mut quake = event("quakes", 100.0);
         quake.kind = Kind::Earthquake;
         quake.marker = 5.0;
-        list.set_source("quakes", vec![quake.clone(), Event { time: 9000.0, ..quake }]);
+        list.set_source(
+            "quakes",
+            vec![
+                quake.clone(),
+                Event {
+                    time: 9000.0,
+                    ..quake
+                },
+            ],
+        );
         list.set_source("eclipse", vec![event("eclipse", 150.0)]);
         assert_eq!(list.len(), 3);
-        assert_eq!(list.marked_near(120.0, 100.0).len(), 1, "eclipses and far events are not marked");
+        assert_eq!(
+            list.marked_near(120.0, 100.0).len(),
+            1,
+            "eclipses and far events are not marked"
+        );
         let before = list.revision;
         assert!(!list.toggle_filter(4));
         assert_eq!(list.len(), 2);

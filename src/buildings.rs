@@ -113,7 +113,9 @@ fn inside(rings: &[Vec<[f32; 2]>], p: [f32; 2]) -> bool {
     for ring in rings {
         for pair in ring.windows(2) {
             let (a, b) = (pair[0], pair[1]);
-            if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) {
+            if (a[1] > p[1]) != (b[1] > p[1])
+                && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0])
+            {
                 odd = !odd;
             }
         }
@@ -134,10 +136,17 @@ pub fn wall_colours(buildings: &[Building], picture: &image::RgbaImage) -> Vec<[
     buildings
         .iter()
         .map(|b| {
-            let Some(outer) = b.rings.first().filter(|r| r.len() >= 4) else { return [0; 4] };
-            let (lo, hi) = outer.iter().fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), p| {
-                ([lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])])
-            });
+            let Some(outer) = b.rings.first().filter(|r| r.len() >= 4) else {
+                return [0; 4];
+            };
+            let (lo, hi) = outer
+                .iter()
+                .fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), p| {
+                    (
+                        [lo[0].min(p[0]), lo[1].min(p[1])],
+                        [hi[0].max(p[0]), hi[1].max(p[1])],
+                    )
+                });
             // Red, green and blue summed, and the count of samples with imagery.
             let mut sum = [0u32; 4];
             let add = |sum: &mut [u32; 4], c: [u8; 4]| {
@@ -159,12 +168,16 @@ pub fn wall_colours(buildings: &[Building], picture: &image::RgbaImage) -> Vec<[
             }
             if sum[3] == 0 {
                 // Too thin for the samples to land in it.
-                add(&mut sum, pixel([(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0]));
+                add(
+                    &mut sum,
+                    pixel([(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0]),
+                );
             }
             if sum[3] == 0 {
                 return [0; 4];
             }
-            let c = [0, 1, 2].map(|i| wall_from_roof(sum[i] as f32 / sum[3] as f32, DEFAULT_COLOUR[i]));
+            let c =
+                [0, 1, 2].map(|i| wall_from_roof(sum[i] as f32 / sum[3] as f32, DEFAULT_COLOUR[i]));
             [c[0], c[1], c[2], 255]
         })
         .collect()
@@ -213,7 +226,9 @@ pub fn build_mesh(
         if vertices.len() >= MAX_VERTICES {
             break;
         }
-        let Some(outer) = building.rings.first() else { continue };
+        let Some(outer) = building.rings.first() else {
+            continue;
+        };
         // Rings are closed, so the repeated last point does not count.
         let corners = &outer[..outer.len().saturating_sub(1)];
         if corners.len() < 3 || footprint_area(corners) < MIN_FOOTPRINT_AREA {
@@ -222,7 +237,9 @@ pub fn build_mesh(
         }
         // The roof height comes from the middle, so that buildings on slopes stay level.
         let count = corners.len() as f64;
-        let (sx, sy) = corners.iter().fold((0.0, 0.0), |s, p| (s.0 + p[0] as f64, s.1 + p[1] as f64));
+        let (sx, sy) = corners
+            .iter()
+            .fold((0.0, 0.0), |s, p| (s.0 + p[0] as f64, s.1 + p[1] as f64));
         let middle = ground((sx / count).clamp(0.0, 1.0), (sy / count).clamp(0.0, 1.0));
         let step = (corners.len() / 8).max(1);
         let lowest = corners
@@ -240,7 +257,9 @@ pub fn build_mesh(
         let colour = base_colour(building);
         let position = |p: [f32; 2], height: f32| -> [f32; 3] {
             let (lat, lon) = key.lat_lon(p[0] as f64, p[1] as f64);
-            (geodetic_to_ecef(lat, lon, height as f64) - center).as_vec3().to_array()
+            (geodetic_to_ecef(lat, lon, height as f64) - center)
+                .as_vec3()
+                .to_array()
         };
 
         // The roof.
@@ -257,14 +276,22 @@ pub fn build_mesh(
             }
             for p in &ring[..ring.len() - 1] {
                 flat.push([p[0] as f64, p[1] as f64]);
-                vertices.push(BuildingVertex { pos: position(*p, top), colour: roof_colour, roof: roof_uv(*p) });
+                vertices.push(BuildingVertex {
+                    pos: position(*p, top),
+                    colour: roof_colour,
+                    roof: roof_uv(*p),
+                });
             }
         }
         earcut.earcut(flat.iter().copied(), &holes, &mut triangles);
         for t in triangles.chunks_exact(3) {
             // In tile coordinates y runs south, so a positive area here means the triangle
             // winds counter-clockwise seen from above, which makes it face upwards.
-            let (a, b, c) = (flat[t[0] as usize], flat[t[1] as usize], flat[t[2] as usize]);
+            let (a, b, c) = (
+                flat[t[0] as usize],
+                flat[t[1] as usize],
+                flat[t[2] as usize],
+            );
             let area = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
             let [i, j, k] = [t[0], t[1], t[2]].map(|n| roof_start + n);
             if area < 0.0 {
@@ -281,13 +308,32 @@ pub fn build_mesh(
                 if on_cut(a, b) {
                     continue;
                 }
-                let (up, down) = (wall_shaded(colour, WALL_SHADE), wall_shaded(colour, WALL_SHADE * WALL_BASE_SHADE));
+                let (up, down) = (
+                    wall_shaded(colour, WALL_SHADE),
+                    wall_shaded(colour, WALL_SHADE * WALL_BASE_SHADE),
+                );
                 let start = vertices.len() as u32;
                 let roof = wall_index(index);
-                vertices.push(BuildingVertex { pos: position(a, top), colour: up, roof });
-                vertices.push(BuildingVertex { pos: position(b, top), colour: up, roof });
-                vertices.push(BuildingVertex { pos: position(a, bottom), colour: down, roof });
-                vertices.push(BuildingVertex { pos: position(b, bottom), colour: down, roof });
+                vertices.push(BuildingVertex {
+                    pos: position(a, top),
+                    colour: up,
+                    roof,
+                });
+                vertices.push(BuildingVertex {
+                    pos: position(b, top),
+                    colour: up,
+                    roof,
+                });
+                vertices.push(BuildingVertex {
+                    pos: position(a, bottom),
+                    colour: down,
+                    roof,
+                });
+                vertices.push(BuildingVertex {
+                    pos: position(b, bottom),
+                    colour: down,
+                    roof,
+                });
                 // Wound to face outwards, so that a camera inside a building can see out.
                 indices.extend([start, start + 1, start + 2, start + 1, start + 3, start + 2]);
             }
@@ -296,7 +342,11 @@ pub fn build_mesh(
     if indices.is_empty() {
         return None;
     }
-    Some(BuildingMesh { center, vertices, indices })
+    Some(BuildingMesh {
+        center,
+        vertices,
+        indices,
+    })
 }
 
 #[cfg(test)]
@@ -309,11 +359,23 @@ mod tests {
     const FLAT: &dyn Fn(f64, f64) -> f32 = &|_, _| 600.0;
 
     fn square(x: f32, y: f32, size: f32) -> Vec<[f32; 2]> {
-        vec![[x, y], [x + size, y], [x + size, y + size], [x, y + size], [x, y]]
+        vec![
+            [x, y],
+            [x + size, y],
+            [x + size, y + size],
+            [x, y + size],
+            [x, y],
+        ]
     }
 
     fn building(rings: Vec<Vec<[f32; 2]>>) -> Building {
-        Building { rings, height: 20.0, min_height: 0.0, colour: None, zone: None }
+        Building {
+            rings,
+            height: 20.0,
+            min_height: 0.0,
+            colour: None,
+            zone: None,
+        }
     }
 
     fn heights(mesh: &BuildingMesh) -> Vec<f64> {
@@ -328,11 +390,19 @@ mod tests {
         let mesh = build_mesh(KEY, &[building(vec![square(0.4, 0.4, 0.1)])], FLAT).unwrap();
         assert_eq!(mesh.vertices.len(), 4 + 4 * 4);
         assert_eq!(mesh.indices.len(), 2 * 3 + 4 * 6);
-        assert!(mesh.indices.iter().all(|i| (*i as usize) < mesh.vertices.len()));
+        assert!(mesh
+            .indices
+            .iter()
+            .all(|i| (*i as usize) < mesh.vertices.len()));
         let h = heights(&mesh);
-        let (lo, hi) = h.iter().fold((f64::MAX, f64::MIN), |r, v| (r.0.min(*v), r.1.max(*v)));
+        let (lo, hi) = h
+            .iter()
+            .fold((f64::MAX, f64::MIN), |r, v| (r.0.min(*v), r.1.max(*v)));
         assert!((hi - 620.0).abs() < 0.1, "roof at {hi}");
-        assert!((lo - 597.0).abs() < 0.1, "base reaches below ground, at {lo}");
+        assert!(
+            (lo - 597.0).abs() < 0.1,
+            "base reaches below ground, at {lo}"
+        );
     }
 
     /// Each triangle's front-face normal, and the triangle's middle, in world coordinates.
@@ -350,7 +420,13 @@ mod tests {
     #[test]
     fn every_face_points_out_of_the_building() {
         // A courtyard, whose walls must face into the open space.
-        let hole = vec![[0.44, 0.44], [0.44, 0.46], [0.46, 0.46], [0.46, 0.44], [0.44, 0.44]];
+        let hole = vec![
+            [0.44, 0.44],
+            [0.44, 0.46],
+            [0.46, 0.46],
+            [0.46, 0.44],
+            [0.44, 0.44],
+        ];
         let mesh = build_mesh(KEY, &[building(vec![square(0.4, 0.4, 0.1), hole])], FLAT).unwrap();
         let (lat, lon) = KEY.lat_lon(0.45, 0.45);
         let middle = geodetic_to_ecef(lat, lon, 610.0);
@@ -370,10 +446,16 @@ mod tests {
             let mut off = at - middle;
             off -= up * off.dot(up);
             if off.length() < hole_half * 1.5 {
-                assert!(normal.dot(off) < 0.0, "a courtyard wall faces into the courtyard");
+                assert!(
+                    normal.dot(off) < 0.0,
+                    "a courtyard wall faces into the courtyard"
+                );
                 inner += 1;
             } else {
-                assert!(normal.dot(off) > 0.0, "an outer wall faces away from the building");
+                assert!(
+                    normal.dot(off) > 0.0,
+                    "an outer wall faces away from the building"
+                );
                 outer += 1;
             }
         }
@@ -382,7 +464,10 @@ mod tests {
 
     #[test]
     fn raised_parts_float_at_their_height() {
-        let b = Building { min_height: 12.0, ..building(vec![square(0.4, 0.4, 0.1)]) };
+        let b = Building {
+            min_height: 12.0,
+            ..building(vec![square(0.4, 0.4, 0.1)])
+        };
         let mesh = build_mesh(KEY, &[b], FLAT).unwrap();
         let lowest = heights(&mesh).into_iter().fold(f64::MAX, f64::min);
         assert!((lowest - 612.0).abs() < 0.1, "{lowest}");
@@ -402,7 +487,13 @@ mod tests {
 
     #[test]
     fn a_courtyard_stays_open() {
-        let hole = vec![[0.44, 0.44], [0.44, 0.46], [0.46, 0.46], [0.46, 0.44], [0.44, 0.44]];
+        let hole = vec![
+            [0.44, 0.44],
+            [0.44, 0.46],
+            [0.46, 0.46],
+            [0.46, 0.44],
+            [0.44, 0.44],
+        ];
         let mesh = build_mesh(KEY, &[building(vec![square(0.4, 0.4, 0.1), hole])], FLAT).unwrap();
         // 8 roof corners, 8 walls with 4 corners each.
         assert_eq!(mesh.vertices.len(), 8 + 8 * 4);
@@ -414,49 +505,92 @@ mod tests {
     fn no_wall_stands_where_a_footprint_was_cut_at_the_tile_edge() {
         let cut = vec![[0.9, 0.4], [1.02, 0.4], [1.02, 0.5], [0.9, 0.5], [0.9, 0.4]];
         let mesh = build_mesh(KEY, &[building(vec![cut])], FLAT).unwrap();
-        assert_eq!(mesh.vertices.len(), 4 + 3 * 4, "the east side is not walled");
+        assert_eq!(
+            mesh.vertices.len(),
+            4 + 3 * 4,
+            "the east side is not walled"
+        );
     }
 
     #[test]
     fn colours_are_softened_and_missing_ones_defaulted() {
         let plain = building(vec![square(0.4, 0.4, 0.1)]);
         assert_eq!(base_colour(&plain), DEFAULT_COLOUR.map(|c| c as f32));
-        let red = Building { colour: Some([255, 0, 0]), ..plain };
+        let red = Building {
+            colour: Some([255, 0, 0]),
+            ..plain
+        };
         let c = base_colour(&red);
         assert!(c[0] > c[1] && c[1] > 0.0 && c[0] < 255.0, "{c:?}");
     }
 
     #[test]
     fn zoned_buildings_take_their_zones_colour_darker_the_taller() {
-        let at = |zone, height| base_colour(&Building { zone: Some(zone), height, colour: Some([255, 0, 0]), ..building(vec![square(0.4, 0.4, 0.1)]) });
+        let at = |zone, height| {
+            base_colour(&Building {
+                zone: Some(zone),
+                height,
+                colour: Some([255, 0, 0]),
+                ..building(vec![square(0.4, 0.4, 0.1)])
+            })
+        };
         let (house, tower) = (at(Zone::Residential, 6.0), at(Zone::Residential, 80.0));
-        assert!(house[1] > house[0] && house[1] > house[2], "green, not the data's red: {house:?}");
-        assert!(tower.iter().sum::<f32>() < house.iter().sum::<f32>() * 0.5, "{house:?} {tower:?}");
+        assert!(
+            house[1] > house[0] && house[1] > house[2],
+            "green, not the data's red: {house:?}"
+        );
+        assert!(
+            tower.iter().sum::<f32>() < house.iter().sum::<f32>() * 0.5,
+            "{house:?} {tower:?}"
+        );
         let shop = at(Zone::Commercial, 10.0);
         assert!(shop[2] > shop[0] && shop[2] > shop[1], "blue: {shop:?}");
         let works = at(Zone::Industrial, 10.0);
-        assert!(works[0] > works[2] && works[1] > works[2] * 1.3, "yellow: {works:?}");
+        assert!(
+            works[0] > works[2] && works[1] > works[2] * 1.3,
+            "yellow: {works:?}"
+        );
         assert_eq!(density(3.0), 0.0);
         assert_eq!(density(500.0), 1.0);
         assert!((density(LOW_RISE * (HIGH_RISE / LOW_RISE).sqrt()) - 0.5).abs() < 1e-4);
     }
 
     fn roof_vertices(mesh: &BuildingMesh) -> Vec<&BuildingVertex> {
-        mesh.vertices.iter().filter(|v| v.colour[3] == 255).collect()
+        mesh.vertices
+            .iter()
+            .filter(|v| v.colour[3] == 255)
+            .collect()
     }
 
     #[test]
     fn roofs_carry_their_place_in_the_tile() {
-        let mesh = build_mesh(TileKey::new(14, 8000, 5000), &[building(vec![square(0.25, 0.5, 0.1)])], &|_, _| 0.0).unwrap();
+        let mesh = build_mesh(
+            TileKey::new(14, 8000, 5000),
+            &[building(vec![square(0.25, 0.5, 0.1)])],
+            &|_, _| 0.0,
+        )
+        .unwrap();
         let roof = roof_vertices(&mesh);
         assert_eq!(roof.len(), 4);
         let us: Vec<u16> = roof.iter().map(|v| v.roof[0]).collect();
         let vs: Vec<u16> = roof.iter().map(|v| v.roof[1]).collect();
         let at = |f: f32| (f * 65535.0).round() as u16;
-        assert_eq!((*us.iter().min().unwrap(), *us.iter().max().unwrap()), (at(0.25), at(0.35)));
-        assert_eq!((*vs.iter().min().unwrap(), *vs.iter().max().unwrap()), (at(0.5), at(0.6)));
+        assert_eq!(
+            (*us.iter().min().unwrap(), *us.iter().max().unwrap()),
+            (at(0.25), at(0.35))
+        );
+        assert_eq!(
+            (*vs.iter().min().unwrap(), *vs.iter().max().unwrap()),
+            (at(0.5), at(0.6))
+        );
         // A footprint cut at the tile's corner reaches the very edge of the picture and stays in it.
-        let cut = building(vec![vec![[-0.0001, -0.0001], [0.1, -0.0001], [0.1, 0.1], [-0.0001, 0.1], [-0.0001, -0.0001]]]);
+        let cut = building(vec![vec![
+            [-0.0001, -0.0001],
+            [0.1, -0.0001],
+            [0.1, 0.1],
+            [-0.0001, 0.1],
+            [-0.0001, -0.0001],
+        ]]);
         let mesh = build_mesh(TileKey::new(14, 8000, 5000), &[cut], &|_, _| 0.0).unwrap();
         let corners: Vec<[u16; 2]> = roof_vertices(&mesh).iter().map(|v| v.roof).collect();
         assert!(corners.contains(&[0, 0]), "{corners:?}");
@@ -465,15 +599,21 @@ mod tests {
 
     #[test]
     fn walls_carry_their_building_and_shading() {
-        let houses: Vec<Building> = (0..3).map(|i| building(vec![square(0.1 + 0.2 * i as f32, 0.4, 0.1)])).collect();
+        let houses: Vec<Building> = (0..3)
+            .map(|i| building(vec![square(0.1 + 0.2 * i as f32, 0.4, 0.1)]))
+            .collect();
         let mesh = build_mesh(TileKey::new(14, 8000, 5000), &houses, &|_, _| 0.0).unwrap();
-        let walls: Vec<&BuildingVertex> = mesh.vertices.iter().filter(|v| v.colour[3] < 255).collect();
+        let walls: Vec<&BuildingVertex> =
+            mesh.vertices.iter().filter(|v| v.colour[3] < 255).collect();
         assert_eq!(walls.len(), 3 * 4 * 4);
         for (n, w) in walls.iter().enumerate() {
             assert_eq!(w.roof, [(n / 16) as u16, 0], "the building's index");
         }
         let shades: Vec<u8> = walls.iter().map(|w| w.colour[3]).collect();
-        assert!(shades.contains(&217) && shades.contains(&156), "top and base: {shades:?}");
+        assert!(
+            shades.contains(&217) && shades.contains(&156),
+            "top and base: {shades:?}"
+        );
         assert_eq!(wall_index(70_000), [4464, 1]);
     }
 
@@ -498,10 +638,19 @@ mod tests {
             [w[0], w[1], w[2], 255]
         };
         assert_eq!(walls[0], wall([200.0, 0.0, 0.0]));
-        assert!(walls[0][0] > walls[0][1] + 50, "a red roof gives warm walls");
+        assert!(
+            walls[0][0] > walls[0][1] + 50,
+            "a red roof gives warm walls"
+        );
         assert_eq!(walls[1], wall([150.0; 3]), "half grey, half white");
-        assert!(walls[1][0] > 150, "a grey roof gives walls lighter than the roof");
-        assert_eq!(walls[2][3], 0, "no imagery: the walls keep their zone colour");
+        assert!(
+            walls[1][0] > 150,
+            "a grey roof gives walls lighter than the roof"
+        );
+        assert_eq!(
+            walls[2][3], 0,
+            "no imagery: the walls keep their zone colour"
+        );
         assert_eq!(walls[3], [0; 4]);
     }
 
@@ -518,21 +667,50 @@ mod tests {
         let bowtie = vec![[0.1, 0.1], [0.2, 0.2], [0.2, 0.1], [0.1, 0.2], [0.1, 0.1]];
         let repeated = vec![[0.3, 0.3], [0.3, 0.3], [0.3, 0.3], [0.3, 0.3], [0.3, 0.3]];
         let line = vec![[0.5, 0.5], [0.6, 0.5], [0.7, 0.5], [0.5, 0.5]];
-        let huge = vec![[-1e9, -1e9], [1e9, -1e9], [1e9, 1e9], [-1e9, 1e9], [-1e9, -1e9]];
+        let huge = vec![
+            [-1e9, -1e9],
+            [1e9, -1e9],
+            [1e9, 1e9],
+            [-1e9, 1e9],
+            [-1e9, -1e9],
+        ];
         // Rings that enclose no area (the bowtie's two halves cancel) give nothing to draw.
         for (name, ring) in [("bowtie", bowtie), ("repeated", repeated), ("line", line)] {
-            assert!(build_mesh(KEY, &[building(vec![ring])], FLAT).is_none(), "{name}");
+            assert!(
+                build_mesh(KEY, &[building(vec![ring])], FLAT).is_none(),
+                "{name}"
+            );
         }
         // A footprint far beyond the tile still gives a sound mesh: a roof, and no walls at the cut edges.
         let mesh = build_mesh(KEY, &[building(vec![huge])], FLAT).expect("a roof");
         assert_eq!((mesh.vertices.len(), mesh.indices.len()), (4, 6));
-        assert!(mesh.indices.iter().all(|i| (*i as usize) < mesh.vertices.len()));
-        assert!(mesh.vertices.iter().all(|v| v.pos.iter().all(|c| c.is_finite())));
+        assert!(mesh
+            .indices
+            .iter()
+            .all(|i| (*i as usize) < mesh.vertices.len()));
+        assert!(mesh
+            .vertices
+            .iter()
+            .all(|v| v.pos.iter().all(|c| c.is_finite())));
         // A degenerate ring among good ones does not disturb them.
         let good = build_mesh(KEY, &[building(vec![square(0.4, 0.4, 0.1)])], FLAT).unwrap();
-        let mixed = build_mesh(KEY, &[building(vec![vec![[0.3, 0.3]; 5]]), building(vec![square(0.4, 0.4, 0.1)])], FLAT).unwrap();
-        assert_eq!((mixed.vertices.len(), mixed.indices.len()), (good.vertices.len(), good.indices.len()));
-        assert!(footprint_area(&square(0.4, 0.4, 0.1)[..4]) > 0.0099 && footprint_area(&square(0.4, 0.4, 0.1)[..4]) < 0.0101);
+        let mixed = build_mesh(
+            KEY,
+            &[
+                building(vec![vec![[0.3, 0.3]; 5]]),
+                building(vec![square(0.4, 0.4, 0.1)]),
+            ],
+            FLAT,
+        )
+        .unwrap();
+        assert_eq!(
+            (mixed.vertices.len(), mixed.indices.len()),
+            (good.vertices.len(), good.indices.len())
+        );
+        assert!(
+            footprint_area(&square(0.4, 0.4, 0.1)[..4]) > 0.0099
+                && footprint_area(&square(0.4, 0.4, 0.1)[..4]) < 0.0101
+        );
     }
 
     #[test]

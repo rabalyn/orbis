@@ -46,8 +46,22 @@ struct Elements {
 
 const EARTH_MOON: Elements = Elements {
     name: "Earth",
-    at_epoch: [1.00000261, 0.01671123, -0.00001531, 100.46457166, 102.93768193, 0.0],
-    rate: [0.00000562, -0.00004392, -0.01294668, 35999.37244981, 0.32327364, 0.0],
+    at_epoch: [
+        1.00000261,
+        0.01671123,
+        -0.00001531,
+        100.46457166,
+        102.93768193,
+        0.0,
+    ],
+    rate: [
+        0.00000562,
+        -0.00004392,
+        -0.01294668,
+        35999.37244981,
+        0.32327364,
+        0.0,
+    ],
     // Earth's magnitude seen from elsewhere is its absolute magnitude, -3.99 (Mallama and
     // Hilton 2018), without a phase term.
     magnitude: [-3.99, 0.0, 0.0, 0.0],
@@ -57,36 +71,106 @@ const EARTH_MOON: Elements = Elements {
 const PLANETS: [Elements; 5] = [
     Elements {
         name: "Mercury",
-        at_epoch: [0.38709927, 0.20563593, 7.00497902, 252.25032350, 77.45779628, 48.33076593],
-        rate: [0.00000037, 0.00001906, -0.00594749, 149472.67411175, 0.16047689, -0.12534081],
+        at_epoch: [
+            0.38709927,
+            0.20563593,
+            7.00497902,
+            252.25032350,
+            77.45779628,
+            48.33076593,
+        ],
+        rate: [
+            0.00000037,
+            0.00001906,
+            -0.00594749,
+            149472.67411175,
+            0.16047689,
+            -0.12534081,
+        ],
         magnitude: [-0.42, 0.0380, -0.000273, 0.000002],
         colour: [0.85, 0.80, 0.75],
     },
     Elements {
         name: "Venus",
-        at_epoch: [0.72333566, 0.00677672, 3.39467605, 181.97909950, 131.60246718, 76.67984255],
-        rate: [0.00000390, -0.00004107, -0.00078890, 58517.81538729, 0.00268329, -0.27769418],
+        at_epoch: [
+            0.72333566,
+            0.00677672,
+            3.39467605,
+            181.97909950,
+            131.60246718,
+            76.67984255,
+        ],
+        rate: [
+            0.00000390,
+            -0.00004107,
+            -0.00078890,
+            58517.81538729,
+            0.00268329,
+            -0.27769418,
+        ],
         magnitude: [-4.40, 0.0009, 0.000239, -0.00000065],
         colour: [1.0, 0.97, 0.88],
     },
     Elements {
         name: "Mars",
-        at_epoch: [1.52371034, 0.09339410, 1.84969142, -4.55343205, -23.94362959, 49.55953891],
-        rate: [0.00001847, 0.00007882, -0.00813131, 19140.30268499, 0.44441088, -0.29257343],
+        at_epoch: [
+            1.52371034,
+            0.09339410,
+            1.84969142,
+            -4.55343205,
+            -23.94362959,
+            49.55953891,
+        ],
+        rate: [
+            0.00001847,
+            0.00007882,
+            -0.00813131,
+            19140.30268499,
+            0.44441088,
+            -0.29257343,
+        ],
         magnitude: [-1.52, 0.016, 0.0, 0.0],
         colour: [1.0, 0.55, 0.40],
     },
     Elements {
         name: "Jupiter",
-        at_epoch: [5.20288700, 0.04838624, 1.30439695, 34.39644051, 14.72847983, 100.47390909],
-        rate: [-0.00011607, -0.00013253, -0.00183714, 3034.74612775, 0.21252668, 0.20469106],
+        at_epoch: [
+            5.20288700,
+            0.04838624,
+            1.30439695,
+            34.39644051,
+            14.72847983,
+            100.47390909,
+        ],
+        rate: [
+            -0.00011607,
+            -0.00013253,
+            -0.00183714,
+            3034.74612775,
+            0.21252668,
+            0.20469106,
+        ],
         magnitude: [-9.40, 0.005, 0.0, 0.0],
         colour: [1.0, 0.93, 0.80],
     },
     Elements {
         name: "Saturn",
-        at_epoch: [9.53667594, 0.05386179, 2.48599187, 49.95424423, 92.59887831, 113.66242448],
-        rate: [-0.00125060, -0.00050991, 0.00193609, 1222.49362201, -0.41897216, -0.28867794],
+        at_epoch: [
+            9.53667594,
+            0.05386179,
+            2.48599187,
+            49.95424423,
+            92.59887831,
+            113.66242448,
+        ],
+        rate: [
+            -0.00125060,
+            -0.00050991,
+            0.00193609,
+            1222.49362201,
+            -0.41897216,
+            -0.28867794,
+        ],
         // The rings, which brighten it, are left out.
         magnitude: [-8.88, 0.0, 0.0, 0.0],
         colour: [1.0, 0.90, 0.65],
@@ -139,7 +223,8 @@ fn planets_seen_from(origin: DVec3, exclude: &str, t: f64) -> Vec<Body> {
             let geo = p - origin;
             let (r, delta) = (p.length(), geo.length());
             // The phase angle at the planet, between the Sun and the observer.
-            let cos_i = ((r * r + delta * delta - sun_distance * sun_distance) / (2.0 * r * delta)).clamp(-1.0, 1.0);
+            let cos_i = ((r * r + delta * delta - sun_distance * sun_distance) / (2.0 * r * delta))
+                .clamp(-1.0, 1.0);
             let i = cos_i.acos().to_degrees();
             let [m0, k1, k2, k3] = el.magnitude;
             let mag = m0 + 5.0 * (r * delta).log10() + k1 * i + k2 * i * i + k3 * i * i * i;
@@ -164,7 +249,10 @@ pub fn seen_from(origin: DVec3, exclude: &str, unix: f64) -> Vec<Body> {
 /// Mercury or Mars, from the JPL table above.
 pub fn heliocentric_of(name: &str, unix: f64) -> Option<DVec3> {
     let t = julian_centuries(unix);
-    std::iter::once(&EARTH_MOON).chain(PLANETS.iter()).find(|el| el.name == name).map(|el| heliocentric(el, t))
+    std::iter::once(&EARTH_MOON)
+        .chain(PLANETS.iter())
+        .find(|el| el.name == name)
+        .map(|el| heliocentric(el, t))
 }
 
 /// J2000 equatorial direction of the Sun seen from a heliocentric ecliptic position.
@@ -177,8 +265,7 @@ pub fn sun_from(origin: DVec3) -> DVec3 {
 /// who sees the Moon near the horizon.
 fn moon(t: f64) -> Body {
     let d = |deg: f64, rate: f64| (deg + rate * t).to_radians();
-    let lon = 218.32 + 481_267.881 * t
-        + 6.29 * d(135.0, 477_198.87).sin()
+    let lon = 218.32 + 481_267.881 * t + 6.29 * d(135.0, 477_198.87).sin()
         - 1.27 * d(259.3, -413_335.36).sin()
         + 0.66 * d(235.7, 890_534.22).sin()
         + 0.21 * d(269.9, 954_397.74).sin()
@@ -256,7 +343,10 @@ mod tests {
     /// Right ascension and declination of date, in degrees.
     fn of_date(dir: DVec3, unix: f64) -> (f64, f64) {
         let v = precession(julian_centuries(unix)) * dir;
-        (v.y.atan2(v.x).to_degrees().rem_euclid(360.0), v.z.asin().to_degrees())
+        (
+            v.y.atan2(v.x).to_degrees().rem_euclid(360.0),
+            v.z.asin().to_degrees(),
+        )
     }
 
     #[test]
@@ -276,7 +366,10 @@ mod tests {
         let (j, s) = (find(&all, "Jupiter"), find(&all, "Saturn"));
         assert!(separation(j, s) < 0.3, "{}", separation(j, s));
         let (ra, dec) = of_date(j, unix);
-        assert!((ra - 302.8).abs() < 0.5 && (dec + 20.5).abs() < 0.5, "{ra} {dec}");
+        assert!(
+            (ra - 302.8).abs() < 0.5 && (dec + 20.5).abs() < 0.5,
+            "{ra} {dec}"
+        );
     }
 
     #[test]
@@ -306,8 +399,15 @@ mod tests {
         assert!(separation(mars.dir, sun) > 170.0);
         let jupiter = all.iter().find(|b| b.name == "Jupiter").unwrap();
         assert!((jupiter.mag + 2.5).abs() < 0.4, "{}", jupiter.mag);
-        let venus = bodies(at("2025-02-10T00:00:00Z")).into_iter().find(|b| b.name == "Venus").unwrap();
-        assert!(venus.mag < -4.0, "Venus is brilliant in February 2025: {}", venus.mag);
+        let venus = bodies(at("2025-02-10T00:00:00Z"))
+            .into_iter()
+            .find(|b| b.name == "Venus")
+            .unwrap();
+        assert!(
+            venus.mag < -4.0,
+            "Venus is brilliant in February 2025: {}",
+            venus.mag
+        );
     }
 
     #[test]
@@ -352,12 +452,19 @@ mod tests {
     fn the_discs_in_the_sky_have_their_true_angular_size() {
         // The Moon from the Earth is about half a degree across (0.49 to 0.56 degrees over its orbit),
         // the Earth from the Moon about 1.9 degrees (1.8 to 2.1). The shader draws these radii unchanged.
-        for s in ["2025-05-12T16:56:00Z", "2025-12-04T12:00:00Z", "2026-03-01T00:00:00Z"] {
+        for s in [
+            "2025-05-12T16:56:00Z",
+            "2025-12-04T12:00:00Z",
+            "2026-03-01T00:00:00Z",
+        ] {
             let t = at(s);
             let moon = bodies(t).into_iter().find(|b| b.name == "Moon").unwrap();
             let width = 2.0 * moon.radius.to_degrees();
             assert!((0.49..0.56).contains(&width), "{s}: {width}");
-            let earth = bodies_from_moon(t).into_iter().find(|b| b.name == "Earth").unwrap();
+            let earth = bodies_from_moon(t)
+                .into_iter()
+                .find(|b| b.name == "Earth")
+                .unwrap();
             let width = 2.0 * earth.radius.to_degrees();
             assert!((1.8..2.1).contains(&width), "{s}: {width}");
         }

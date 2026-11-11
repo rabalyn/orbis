@@ -50,11 +50,22 @@ impl ClickClassifier {
         if let Some((t, first)) = self.pending {
             if now - t <= DOUBLE_S && first.pos.distance(pos) <= DOUBLE_PX {
                 self.pending = None;
-                return Some(Click { kind: ClickKind::Double, pos, mods });
+                return Some(Click {
+                    kind: ClickKind::Double,
+                    pos,
+                    mods,
+                });
             }
         }
         let earlier = self.pending.take().map(|p| p.1);
-        self.pending = Some((now, Click { kind: ClickKind::Single, pos, mods }));
+        self.pending = Some((
+            now,
+            Click {
+                kind: ClickKind::Single,
+                pos,
+                mods,
+            },
+        ));
         earlier
     }
 

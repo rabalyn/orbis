@@ -102,7 +102,10 @@ impl Projection {
             }
             Projection::HammerAitoff => {
                 let z = (1.0 + lat.cos() * (dlon / 2.0).cos()).sqrt();
-                (2.0 * SQRT2 * lat.cos() * (dlon / 2.0).sin() / z, SQRT2 * lat.sin() / z)
+                (
+                    2.0 * SQRT2 * lat.cos() * (dlon / 2.0).sin() / z,
+                    SQRT2 * lat.sin() / z,
+                )
             }
             Projection::Mercator => {
                 let lat = lat.clamp(-MERCATOR_LIMIT, MERCATOR_LIMIT);
@@ -147,12 +150,10 @@ impl Projection {
                 let dlon = 2.0 * (z * x).atan2(2.0 * (2.0 * z * z - 1.0));
                 Some(((z * y).clamp(-1.0, 1.0).asin(), dlon))
             }
-            Projection::Mercator => {
-                (x.abs() <= PI + EPS && y.abs() <= PI + EPS).then(|| (y.sinh().atan(), x.clamp(-PI, PI)))
-            }
-            Projection::PlateCarree => {
-                (x.abs() <= PI + EPS && y.abs() <= FRAC_PI_2 + EPS).then(|| (y.clamp(-FRAC_PI_2, FRAC_PI_2), x.clamp(-PI, PI)))
-            }
+            Projection::Mercator => (x.abs() <= PI + EPS && y.abs() <= PI + EPS)
+                .then(|| (y.sinh().atan(), x.clamp(-PI, PI))),
+            Projection::PlateCarree => (x.abs() <= PI + EPS && y.abs() <= FRAC_PI_2 + EPS)
+                .then(|| (y.clamp(-FRAC_PI_2, FRAC_PI_2), x.clamp(-PI, PI))),
         }
     }
 
@@ -281,12 +282,14 @@ impl AtlasView {
 
     /// The scale at which a texel of the finest imagery covers `OVERZOOM` pixels.
     pub fn max_scale(&self) -> f64 {
-        let texels_round = TILE_TEXELS * crate::body::current().grid.columns(crate::body::max_zoom()) as f64;
+        let texels_round =
+            TILE_TEXELS * crate::body::current().grid.columns(crate::body::max_zoom()) as f64;
         OVERZOOM * texels_round / TAU
     }
 
     pub fn project(&self, lat: f64, lon: f64) -> (f64, f64) {
-        self.projection.forward(lat, wrap_lon(lon - self.central_meridian))
+        self.projection
+            .forward(lat, wrap_lon(lon - self.central_meridian))
     }
 
     /// Where a point of the map is in the window, in pixels from the top left.
@@ -336,7 +339,9 @@ impl AtlasView {
     /// Keeps the scale in range and the middle of the window on the map.
     pub fn clamp(&mut self) {
         let fit = self.fit_scale();
-        self.scale = self.scale.clamp(fit.min(self.max_scale()), self.max_scale());
+        self.scale = self
+            .scale
+            .clamp(fit.min(self.max_scale()), self.max_scale());
         if self.scale <= fit * (1.0 + 1e-9) {
             // The whole map is in view, so it stays centred.
             self.centre = (0.0, 0.0);
@@ -408,7 +413,8 @@ impl AtlasView {
 
     /// The scale that shows about what a globe view at this distance shows.
     pub fn scale_for_distance(&self, distance: f64) -> f64 {
-        self.size.1 * crate::geo::radius() / (2.0 * (crate::camera::FOV_Y / 2.0).tan() * distance.max(1.0))
+        self.size.1 * crate::geo::radius()
+            / (2.0 * (crate::camera::FOV_Y / 2.0).tan() * distance.max(1.0))
     }
 
     /// Shows what a globe view of this place and distance shows. The whole Earth gives the whole map.
@@ -459,7 +465,10 @@ pub fn pieces(k: TileKey, central_meridian: f64) -> Vec<Piece> {
     cuts.into_iter()
         .map(|s| {
             let mid = lon0 + (s.0 + s.1) / 2.0 * width;
-            Piece { s, shift: ((mid - central_meridian) / TAU).round() * TAU }
+            Piece {
+                s,
+                shift: ((mid - central_meridian) / TAU).round() * TAU,
+            }
         })
         .collect()
 }
@@ -491,7 +500,9 @@ fn on_screen(v: &AtlasView, k: TileKey) -> bool {
             for i in 0..=N {
                 let s = piece.s.0 + (piece.s.1 - piece.s.0) * i as f64 / N as f64;
                 let (lat, _) = k.lat_lon(s, j as f64 / N as f64);
-                let (x, y) = v.projection.forward(lat, piece.rel_lon(k, s, v.central_meridian));
+                let (x, y) = v
+                    .projection
+                    .forward(lat, piece.rel_lon(k, s, v.central_meridian));
                 let (px, py) = v.screen_of((x, y));
                 lo = (lo.0.min(px), lo.1.min(py));
                 hi = (hi.0.max(px), hi.1.max(py));
@@ -499,7 +510,11 @@ fn on_screen(v: &AtlasView, k: TileKey) -> bool {
         }
         // Edges bow out between the samples.
         let pad = 0.05 * (hi.0 - lo.0).max(hi.1 - lo.1) + 2.0;
-        if hi.0 + pad >= 0.0 && lo.0 - pad <= v.size.0 && hi.1 + pad >= 0.0 && lo.1 - pad <= v.size.1 {
+        if hi.0 + pad >= 0.0
+            && lo.0 - pad <= v.size.0
+            && hi.1 + pad >= 0.0
+            && lo.1 - pad <= v.size.1
+        {
             return true;
         }
     }
@@ -508,12 +523,24 @@ fn on_screen(v: &AtlasView, k: TileKey) -> bool {
 
 /// Chooses the tiles to draw and to load for a map view. As on the globe, a tile is replaced
 /// by its children only once all of them can be drawn.
-pub fn select(v: &AtlasView, loaded: &impl Fn(TileKey) -> bool, max_z: fn(TileKey) -> u8) -> Selection {
+pub fn select(
+    v: &AtlasView,
+    loaded: &impl Fn(TileKey) -> bool,
+    max_z: fn(TileKey) -> u8,
+) -> Selection {
     let mut out = Selection::default();
     let mut wanted = Vec::new();
     let mut budget = MAX_TILES;
     for root in crate::geo::root_tiles() {
-        visit(v, root, loaded, max_z, &mut out.draw, &mut wanted, &mut budget);
+        visit(
+            v,
+            root,
+            loaded,
+            max_z,
+            &mut out.draw,
+            &mut wanted,
+            &mut budget,
+        );
     }
     wanted.sort_by(|a: &(u8, f64, TileKey), b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
     out.wanted = wanted.into_iter().map(|w| w.2).collect();
@@ -577,7 +604,11 @@ pub struct AtlasVertex {
 
 /// The upward normal of the ellipsoid at a latitude and longitude.
 fn surface_normal(lat: f64, lon: f64) -> [f32; 3] {
-    [(lat.cos() * lon.cos()) as f32, (lat.cos() * lon.sin()) as f32, lat.sin() as f32]
+    [
+        (lat.cos() * lon.cos()) as f32,
+        (lat.cos() * lon.sin()) as f32,
+        lat.sin() as f32,
+    ]
 }
 
 #[derive(Default)]
@@ -590,7 +621,10 @@ impl Mesh {
     fn cell_visible(&self, quad: [u32; 4]) -> bool {
         let p = |i: u32| self.vertices[i as usize].pos;
         let all = |f: &dyn Fn([f32; 2]) -> bool| quad.iter().all(|i| f(p(*i)));
-        !(all(&|p| p[0] < -1.0) || all(&|p| p[0] > 1.0) || all(&|p| p[1] < -1.0) || all(&|p| p[1] > 1.0))
+        !(all(&|p| p[0] < -1.0)
+            || all(&|p| p[0] > 1.0)
+            || all(&|p| p[1] < -1.0)
+            || all(&|p| p[1] > 1.0))
     }
 
     fn quad(&mut self, quad: [u32; 4]) {
@@ -618,7 +652,10 @@ pub fn add_tile(v: &AtlasView, k: TileKey, uv_rect: (f64, f64, f64), mesh: &mut 
                 let (nx, ny) = v.ndc_of(xy);
                 mesh.vertices.push(AtlasVertex {
                     pos: [nx as f32, ny as f32],
-                    uv: [(uv_rect.0 + s * uv_rect.2) as f32, (uv_rect.1 + t * uv_rect.2) as f32],
+                    uv: [
+                        (uv_rect.0 + s * uv_rect.2) as f32,
+                        (uv_rect.1 + t * uv_rect.2) as f32,
+                    ],
                     st: [s as f32, t as f32],
                     normal: surface_normal(lat, rel_lon + v.central_meridian),
                 });
@@ -641,7 +678,11 @@ const ICE_UV: [f32; 2] = [0.5, 0.25];
 /// The plain ground below the tiles: ocean everywhere, with ice south of the imagery and
 /// the Arctic Ocean to the north, where the tiles end. It also covers the map until tiles arrive.
 pub fn add_underlay(v: &AtlasView, imagery_limit: f64, mesh: &mut Mesh) {
-    let top = if v.projection == Projection::Mercator { MERCATOR_LIMIT } else { FRAC_PI_2 };
+    let top = if v.projection == Projection::Mercator {
+        MERCATOR_LIMIT
+    } else {
+        FRAC_PI_2
+    };
     let step = 2f64.to_radians();
     let mut lats = vec![-top];
     let mut lat = -top + step - (top % step);
@@ -660,7 +701,11 @@ pub fn add_underlay(v: &AtlasView, imagery_limit: f64, mesh: &mut Mesh) {
     lats.sort_by(f64::total_cmp);
     let segments = 72;
     for w in lats.windows(2) {
-        let uv = if w[1] <= -imagery_limit + 1e-9 { ICE_UV } else { OCEAN_UV };
+        let uv = if w[1] <= -imagery_limit + 1e-9 {
+            ICE_UV
+        } else {
+            OCEAN_UV
+        };
         for i in 0..segments {
             let (l0, l1) = (
                 -PI + TAU * i as f64 / segments as f64,
@@ -669,7 +714,12 @@ pub fn add_underlay(v: &AtlasView, imagery_limit: f64, mesh: &mut Mesh) {
             let first = mesh.vertices.len() as u32;
             for (lat, lon) in [(w[0], l0), (w[0], l1), (w[1], l0), (w[1], l1)] {
                 let (nx, ny) = v.ndc_of(v.projection.forward(lat, lon));
-                mesh.vertices.push(AtlasVertex { pos: [nx as f32, ny as f32], uv, st: [0.0, 0.0], normal: surface_normal(lat, lon + v.central_meridian) });
+                mesh.vertices.push(AtlasVertex {
+                    pos: [nx as f32, ny as f32],
+                    uv,
+                    st: [0.0, 0.0],
+                    normal: surface_normal(lat, lon + v.central_meridian),
+                });
             }
             mesh.quad([first, first + 1, first + 2, first + 3]);
         }
@@ -688,14 +738,20 @@ mod tests {
     #[test]
     fn every_projection_round_trips() {
         for p in Projection::ALL {
-            let limit = if p == Projection::Mercator { 85.0 } else { 89.9 };
+            let limit = if p == Projection::Mercator {
+                85.0
+            } else {
+                89.9
+            };
             let mut lat = -limit;
             while lat <= limit {
                 let mut lon = -179.9;
                 while lon <= 179.9 {
                     let (la, lo) = (f64::to_radians(lat), f64::to_radians(lon));
                     let (x, y) = p.forward(la, lo);
-                    let (la2, lo2) = p.inverse(x, y).unwrap_or_else(|| panic!("{p:?} lost {lat} {lon}"));
+                    let (la2, lo2) = p
+                        .inverse(x, y)
+                        .unwrap_or_else(|| panic!("{p:?} lost {lat} {lon}"));
                     assert!(near(la, la2, 1e-8), "{p:?} lat {lat} {lon}: {la} vs {la2}");
                     assert!(near(lo, lo2, 1e-7), "{p:?} lon {lat} {lon}: {lo} vs {lo2}");
                     lon += 17.3;
@@ -749,18 +805,42 @@ mod tests {
 
     #[test]
     fn the_other_projections_match_their_known_extents() {
-        assert!(near(Projection::Mollweide.forward(0.0, PI).0, 2.0 * SQRT2, 1e-12));
-        assert!(near(Projection::Mollweide.forward(FRAC_PI_2, 0.0).1, SQRT2, 1e-12));
-        assert!(near(Projection::HammerAitoff.forward(0.0, PI).0, 2.0 * SQRT2, 1e-12));
-        assert!(near(Projection::HammerAitoff.forward(FRAC_PI_2, 0.0).1, SQRT2, 1e-12));
+        assert!(near(
+            Projection::Mollweide.forward(0.0, PI).0,
+            2.0 * SQRT2,
+            1e-12
+        ));
+        assert!(near(
+            Projection::Mollweide.forward(FRAC_PI_2, 0.0).1,
+            SQRT2,
+            1e-12
+        ));
+        assert!(near(
+            Projection::HammerAitoff.forward(0.0, PI).0,
+            2.0 * SQRT2,
+            1e-12
+        ));
+        assert!(near(
+            Projection::HammerAitoff.forward(FRAC_PI_2, 0.0).1,
+            SQRT2,
+            1e-12
+        ));
         // Mollweide is equal-area too, so the ellipse has the area of the sphere.
         assert!(near(PI * 2.0 * SQRT2 * SQRT2, 4.0 * PI, 1e-12));
         // Mercator at 45 degrees.
-        assert!(near(Projection::Mercator.forward(PI / 4.0, 0.0).1, 0.881_373_587, 1e-8));
+        assert!(near(
+            Projection::Mercator.forward(PI / 4.0, 0.0).1,
+            0.881_373_587,
+            1e-8
+        ));
         // Mercator is clipped at the limit of the imagery, giving a square.
         let (_, top) = Projection::Mercator.forward(FRAC_PI_2, 0.0);
         assert!(near(top, PI, 1e-12));
-        assert!(near(Projection::PlateCarree.forward(0.3, 0.4).0, 0.4, 1e-15));
+        assert!(near(
+            Projection::PlateCarree.forward(0.3, 0.4).0,
+            0.4,
+            1e-15
+        ));
     }
 
     #[test]
@@ -769,8 +849,14 @@ mod tests {
             assert_eq!(Projection::parse(p.name()), Some(p));
             assert_eq!(p.next().previous(), p);
         }
-        assert_eq!(Projection::parse("equal-earth"), Some(Projection::EqualEarth));
-        assert_eq!(Projection::parse("plate-carree"), Some(Projection::PlateCarree));
+        assert_eq!(
+            Projection::parse("equal-earth"),
+            Some(Projection::EqualEarth)
+        );
+        assert_eq!(
+            Projection::parse("plate-carree"),
+            Some(Projection::PlateCarree)
+        );
         assert_eq!(Projection::parse("hammer"), Some(Projection::HammerAitoff));
         assert_eq!(Projection::parse("robinson"), None);
         let mut p = Projection::EqualEarth;
@@ -793,7 +879,10 @@ mod tests {
             let v = view(p);
             let (l, t) = v.screen_of((-p.half_width(), p.half_height()));
             let (r, b) = v.screen_of((p.half_width(), -p.half_height()));
-            assert!(l >= 0.0 && t >= 0.0 && r <= 1280.0 && b <= 800.0, "{p:?}: {l} {t} {r} {b}");
+            assert!(
+                l >= 0.0 && t >= 0.0 && r <= 1280.0 && b <= 800.0,
+                "{p:?}: {l} {t} {r} {b}"
+            );
             assert!(near(v.centre_lat_lon().0, 0.0, 1e-12));
         }
     }
@@ -806,7 +895,10 @@ mod tests {
         for _ in 0..8 {
             v.zoom_at(pointer, 1.5);
             let now = v.lat_lon_at(pointer.0, pointer.1).unwrap();
-            assert!(near(now.0, before.0, 1e-9) && near(now.1, before.1, 1e-9), "{now:?} {before:?}");
+            assert!(
+                near(now.0, before.0, 1e-9) && near(now.1, before.1, 1e-9),
+                "{now:?} {before:?}"
+            );
         }
         assert!(v.scale > view(Projection::EqualEarth).scale * 20.0);
     }
@@ -829,7 +921,10 @@ mod tests {
                 v.pan(dx, dy);
                 let (lat, lon) = v.centre_lat_lon();
                 assert!(lat.abs() <= FRAC_PI_2 + 1e-9 && lon.abs() <= PI + 1e-9);
-                assert!(p.inverse(v.centre.0, v.centre.1).is_some(), "{p:?} left the map");
+                assert!(
+                    p.inverse(v.centre.0, v.centre.1).is_some(),
+                    "{p:?} left the map"
+                );
             }
         }
     }
@@ -858,7 +953,10 @@ mod tests {
         for cm in [-3.0, 0.5, 2.9, 7.0] {
             v.set_central_meridian(cm);
             let (la, lo) = v.centre_lat_lon();
-            assert!(near(la, lat, 1e-6) && near(wrap_lon(lo - lon), 0.0, 1e-6), "{cm}");
+            assert!(
+                near(la, lat, 1e-6) && near(wrap_lon(lo - lon), 0.0, 1e-6),
+                "{cm}"
+            );
             assert!(v.central_meridian.abs() <= PI + 1e-12);
         }
     }
@@ -881,7 +979,9 @@ mod tests {
         assert_eq!(pieces(TileKey::new(2, 1, 1), 0.0).len(), 1);
         // With the central meridian at 0 east + 90, the seam is at 90 west.
         let cm = 90f64.to_radians();
-        let cut: Vec<_> = (0..4).flat_map(|x| pieces(TileKey::new(2, x, 1), cm)).collect();
+        let cut: Vec<_> = (0..4)
+            .flat_map(|x| pieces(TileKey::new(2, x, 1), cm))
+            .collect();
         assert_eq!(cut.len(), 4, "only the seam tile is cut: {cut:?}");
         let ps = pieces(TileKey::new(1, 0, 0), 45f64.to_radians());
         assert_eq!(ps.len(), 2);
@@ -915,8 +1015,14 @@ mod tests {
                         (1.0 - vert.pos[1] as f64) / 2.0 * 800.0,
                     ));
                     let w = p.half_width_at(y.clamp(-p.half_height(), p.half_height()));
-                    assert!(y.abs() <= p.half_height() * 1.0001 + 1e-4, "{p:?} cm={cm}: y={y}");
-                    assert!(x.abs() <= w * 1.0001 + 1e-4, "{p:?} cm={cm}: x={x} beyond {w}");
+                    assert!(
+                        y.abs() <= p.half_height() * 1.0001 + 1e-4,
+                        "{p:?} cm={cm}: y={y}"
+                    );
+                    assert!(
+                        x.abs() <= w * 1.0001 + 1e-4,
+                        "{p:?} cm={cm}: x={x} beyond {w}"
+                    );
                 }
             }
         }
@@ -928,7 +1034,10 @@ mod tests {
             mesh.indices.chunks(3).any(|t| {
                 let p = |i: u32| {
                     let q = mesh.vertices[i as usize].pos;
-                    ((q[0] as f64 + 1.0) / 2.0 * v.size.0, (1.0 - q[1] as f64) / 2.0 * v.size.1)
+                    (
+                        (q[0] as f64 + 1.0) / 2.0 * v.size.0,
+                        (1.0 - q[1] as f64) / 2.0 * v.size.1,
+                    )
                 };
                 let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
                 let d = |p1: (f64, f64), p2: (f64, f64), p3: (f64, f64)| {
@@ -1004,7 +1113,11 @@ mod tests {
                 v.pan(37.0, -11.0);
                 let s = settle(&v);
                 assert!(!s.draw.is_empty());
-                assert!(s.draw.len() < MAX_TILES, "{p:?} zoom {zoom}: {} tiles", s.draw.len());
+                assert!(
+                    s.draw.len() < MAX_TILES,
+                    "{p:?} zoom {zoom}: {} tiles",
+                    s.draw.len()
+                );
                 for (i, a) in s.draw.iter().enumerate() {
                     for b in &s.draw[i + 1..] {
                         assert!(!overlaps(*a, *b), "{a:?} overlaps {b:?}");

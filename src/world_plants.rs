@@ -52,7 +52,11 @@ pub struct Plant {
 
 impl Plant {
     pub fn kw(&self, month: u16) -> f32 {
-        self.units.iter().filter(|u| running(u, month)).map(|u| u.kw).sum()
+        self.units
+            .iter()
+            .filter(|u| running(u, month))
+            .map(|u| u.kw)
+            .sum()
     }
 
     pub fn running(&self, month: u16) -> usize {
@@ -101,7 +105,8 @@ impl Plants {
     /// The plants built into the program.
     pub fn bundled() -> Option<&'static Plants> {
         static DATA: std::sync::OnceLock<Option<Plants>> = std::sync::OnceLock::new();
-        DATA.get_or_init(|| Plants::parse(include_bytes!("../data/plants_world.bin"))).as_ref()
+        DATA.get_or_init(|| Plants::parse(include_bytes!("../data/plants_world.bin")))
+            .as_ref()
     }
 
     pub fn parse(data: &[u8]) -> Option<Plants> {
@@ -111,13 +116,17 @@ impl Plants {
         }
         let date = r.u32()? as i64;
         let release = (date / 10_000, date / 100 % 100, date % 100);
-        let release_month = ((release.0 - 1900) * 12 + release.1 - 1).clamp(0, OPEN as i64 - 1) as u16;
-        let strings = |r: &mut Reader, n: usize| (0..n).map(|_| r.string()).collect::<Option<Vec<String>>>();
+        let release_month =
+            ((release.0 - 1900) * 12 + release.1 - 1).clamp(0, OPEN as i64 - 1) as u16;
+        let strings =
+            |r: &mut Reader, n: usize| (0..n).map(|_| r.string()).collect::<Option<Vec<String>>>();
         let n = r.u16()? as usize;
         let codes = strings(&mut r, n)?;
         let mut distributed = Vec::new();
         for _ in 0..r.u16()? {
-            let c = u16::try_from(r.varint()?).ok().filter(|&c| (c as usize) < codes.len())?;
+            let c = u16::try_from(r.varint()?)
+                .ok()
+                .filter(|&c| (c as usize) < codes.len())?;
             distributed.push((c, r.varint()? as f32 * 100.0));
         }
         let n = r.u16()? as usize;
@@ -136,7 +145,9 @@ impl Plants {
         let mut plants = Vec::with_capacity(n);
         let (mut lat, mut lon) = (0i64, 0i64);
         for _ in 0..n {
-            let country = u16::try_from(r.varint()?).ok().filter(|&c| (c as usize) < codes.len())?;
+            let country = u16::try_from(r.varint()?)
+                .ok()
+                .filter(|&c| (c as usize) < codes.len())?;
             lat += r.varint()?;
             lon += r.varint()?;
             let source = *Source::ALL.get(r.u8()? as usize)?;
@@ -145,10 +156,16 @@ impl Plants {
                 return None;
             }
             let name = r.string()?;
-            let owner = u32::try_from(r.varint()?).ok().filter(|&o| o as usize <= owners.len())?;
-            let detail = u32::try_from(r.varint()?).ok().filter(|&d| d as usize <= details.len())?;
+            let owner = u32::try_from(r.varint()?)
+                .ok()
+                .filter(|&o| o as usize <= owners.len())?;
+            let detail = u32::try_from(r.varint()?)
+                .ok()
+                .filter(|&d| d as usize <= details.len())?;
             let wiki = r.string()?;
-            let count = usize::try_from(r.varint()?).ok().filter(|&c| c <= data.len())?;
+            let count = usize::try_from(r.varint()?)
+                .ok()
+                .filter(|&c| c <= data.len())?;
             let mut units = Vec::with_capacity(count);
             let mut unknown_start = 0u16;
             for _ in 0..count {
@@ -157,26 +174,64 @@ impl Plants {
                 let kw = r.varint()? as f32 * 100.0;
                 let unit = if start == 0 {
                     unknown_start += 1;
-                    Unit { start: release_month, end: OPEN, kw }
+                    Unit {
+                        start: release_month,
+                        end: OPEN,
+                        kw,
+                    }
                 } else {
                     let start = u16::try_from(start - 1).ok().filter(|&m| m < OPEN)?;
-                    let end = if ran == 0 { OPEN } else { u16::try_from(start as i64 + ran - 1).ok().filter(|&m| m < OPEN)? };
+                    let end = if ran == 0 {
+                        OPEN
+                    } else {
+                        u16::try_from(start as i64 + ran - 1)
+                            .ok()
+                            .filter(|&m| m < OPEN)?
+                    };
                     Unit { start, end, kw }
                 };
                 units.push(unit);
             }
             let deg = |v: i64| (v as f64 * 1e-4).to_radians();
-            let pumped = source == Source::Hydro && detail > 0 && details[detail as usize - 1].starts_with("pumped storage");
-            plants.push(Plant { country, lat: deg(lat), lon: deg(lon), source, kind, name, owner, detail, wiki, units, unknown_start, pumped });
+            let pumped = source == Source::Hydro
+                && detail > 0
+                && details[detail as usize - 1].starts_with("pumped storage");
+            plants.push(Plant {
+                country,
+                lat: deg(lat),
+                lon: deg(lon),
+                source,
+                kind,
+                name,
+                owner,
+                detail,
+                wiki,
+                units,
+                unknown_start,
+                pumped,
+            });
         }
         if r.at != data.len() {
             return None;
         }
         let mut cells: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
         for (i, p) in plants.iter().enumerate() {
-            cells.entry(cell_of(p.lat, p.lon)).or_default().push(i as u32);
+            cells
+                .entry(cell_of(p.lat, p.lon))
+                .or_default()
+                .push(i as u32);
         }
-        Some(Plants { release, codes, distributed, kinds, details, owners, plants, cells, estimates: Mutex::new(None) })
+        Some(Plants {
+            release,
+            codes,
+            distributed,
+            kinds,
+            details,
+            owners,
+            plants,
+            cells,
+            estimates: Mutex::new(None),
+        })
     }
 
     pub fn count(&self) -> usize {
@@ -186,13 +241,17 @@ impl Plants {
     /// The country code of a plant, as in `countries.rs`.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn code(&self, i: u32) -> &str {
-        self.plants.get(i as usize).map_or("", |p| &self.codes[p.country as usize])
+        self.plants
+            .get(i as usize)
+            .map_or("", |p| &self.codes[p.country as usize])
     }
 
     /// The countries' nationally aggregated distributed solar, in kW: code and capacity.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn distributed(&self) -> impl Iterator<Item = (&str, f32)> {
-        self.distributed.iter().map(|&(c, kw)| (self.codes[c as usize].as_str(), kw))
+        self.distributed
+            .iter()
+            .map(|&(c, kw)| (self.codes[c as usize].as_str(), kw))
     }
 
     /// The capacity of each country's plants running at `month`, by kind, in kW.
@@ -239,7 +298,9 @@ impl Plants {
         let mut kw = [0.0; SOURCES];
         for &i in plants {
             let p = &self.plants[i as usize];
-            let f = e.countries[p.country as usize].as_ref().map_or(0.0, |e| e.factor_of(p.class()));
+            let f = e.countries[p.country as usize]
+                .as_ref()
+                .map_or(0.0, |e| e.factor_of(p.class()));
             kw[p.source as usize] += p.kw(month) * f;
         }
         kw
@@ -247,12 +308,19 @@ impl Plants {
 
     /// The bars of the sites at `month`, with the sources in `shown`, within a cap of (lat, lon,
     /// radius in radians) around a point if `near`.
-    pub fn bars(&self, month: u16, shown: [bool; SOURCES], near: Option<(f64, f64, f64)>) -> Vec<Bar> {
+    pub fn bars(
+        &self,
+        month: u16,
+        shown: [bool; SOURCES],
+        near: Option<(f64, f64, f64)>,
+    ) -> Vec<Bar> {
         let mut bars = Vec::new();
         let estimates = self.estimates(month);
         let mut push = |i: u32| {
             let p = &self.plants[i as usize];
-            if !shown[p.source as usize] || near.is_some_and(|(lat, lon, r)| angle_between(p.lat, p.lon, lat, lon) > r) {
+            if !shown[p.source as usize]
+                || near.is_some_and(|(lat, lon, r)| angle_between(p.lat, p.lon, lat, lon) > r)
+            {
                 return;
             }
             let kw = p.kw(month);
@@ -261,8 +329,18 @@ impl Plants {
                 v[p.source as usize] = kw;
                 let e = estimates.countries[p.country as usize].as_ref();
                 let running = Some(e.map_or(0.0, |e| e.factor_of(p.class())));
-                let faint = e.is_some_and(|e| matches!(e.basis, crate::world_energy::Basis::Year(_)));
-                bars.push(Bar { lat: p.lat, lon: p.lon, kw: v, subject: Subject::Plant(i), demand: 0.0, faint, running, running_by_source: None });
+                let faint =
+                    e.is_some_and(|e| matches!(e.basis, crate::world_energy::Basis::Year(_)));
+                bars.push(Bar {
+                    lat: p.lat,
+                    lon: p.lon,
+                    kw: v,
+                    subject: Subject::Plant(i),
+                    demand: 0.0,
+                    faint,
+                    running,
+                    running_by_source: None,
+                });
             }
         };
         match near {
@@ -299,7 +377,9 @@ impl Plants {
         let bounds: Vec<[f64; 4]> = (0..states.count()).map(|i| states.bounds(i)).collect();
         for (n, p) in self.plants.iter().enumerate() {
             let (lat, lon) = (p.lat.to_degrees(), p.lon.to_degrees());
-            let Some(list) = of_country.get(self.codes[p.country as usize].as_str()) else { continue };
+            let Some(list) = of_country.get(self.codes[p.country as usize].as_str()) else {
+                continue;
+            };
             let hit = list.iter().copied().find(|&i| {
                 let [s, w, nn, e] = bounds[i];
                 lat >= s && lat <= nn && lon >= w && lon <= e && states.contains(i, lat, lon)
@@ -314,7 +394,8 @@ impl Plants {
     /// The bundled plants of each bundled state, worked out once.
     pub fn bundled_by_state() -> Option<&'static Vec<Vec<u32>>> {
         static DATA: std::sync::OnceLock<Option<Vec<Vec<u32>>>> = std::sync::OnceLock::new();
-        DATA.get_or_init(|| Some(Plants::bundled()?.by_state(States::bundled()?))).as_ref()
+        DATA.get_or_init(|| Some(Plants::bundled()?.by_state(States::bundled()?)))
+            .as_ref()
     }
 
     /// The installed capacity of `plants` by source at `month`, in kW.
@@ -329,7 +410,9 @@ impl Plants {
 
     /// The name of a plant and its country.
     pub fn title(&self, i: u32) -> String {
-        let Some(p) = self.plants.get(i as usize) else { return String::new() };
+        let Some(p) = self.plants.get(i as usize) else {
+            return String::new();
+        };
         match self.country_name(p) {
             Some(c) => format!("{}, {c}", p.name),
             None => p.name.clone(),
@@ -338,7 +421,9 @@ impl Plants {
 
     fn country_name(&self, p: &Plant) -> Option<String> {
         let code = &self.codes[p.country as usize];
-        Countries::bundled().and_then(|c| c.get(code)).map(|o| o.name.clone())
+        Countries::bundled()
+            .and_then(|c| c.get(code))
+            .map(|o| o.name.clone())
     }
 
     /// Where a plant stands, in radians.
@@ -348,7 +433,9 @@ impl Plants {
 
     /// GEM's type of a plant, such as "coal".
     pub fn kind(&self, i: u32) -> &str {
-        self.plants.get(i as usize).map_or("", |p| &self.kinds[p.kind as usize])
+        self.plants
+            .get(i as usize)
+            .map_or("", |p| &self.kinds[p.kind as usize])
     }
 
     pub fn owner(&self, i: u32) -> Option<&str> {
@@ -370,14 +457,21 @@ impl Plants {
     /// What the information box says about a plant at `month`.
     pub fn describe(&self, i: u32, month: u16, palette: Palette) -> Card {
         let mut card = Card::default();
-        let Some(p) = self.plants.get(i as usize) else { return card };
+        let Some(p) = self.plants.get(i as usize) else {
+            return card;
+        };
         let kw = p.kw(month);
         let all: f32 = p.units.iter().map(|u| u.kw).sum();
         let estimate = self.estimates(month).countries[p.country as usize].clone();
         let cf = estimate.as_ref().map_or(0.0, |e| e.factor_of(p.class()));
         let out = kw * cf;
         card.summary = if kw > 0.0 && estimate.is_some() {
-            format!("About {} running in {} (est.), of {} installed.", format_power(out), month_name(month), format_power(kw))
+            format!(
+                "About {} running in {} (est.), of {} installed.",
+                format_power(out),
+                month_name(month),
+                format_power(kw)
+            )
         } else if kw > 0.0 {
             format!("{} installed in {}.", format_power(kw), month_name(month))
         } else if p.units.iter().all(|u| u.start > month) {
@@ -390,30 +484,62 @@ impl Plants {
             title: String::new(),
             max: all.max(1.0),
             rows: {
-                let mut rows = vec![Meter { label: "Installed".to_string(), segments: vec![Part { alpha: 150, hatched: p.source.fossil(), ..Part::solid(kw, colour) }], text: format_power(kw) }];
+                let mut rows = vec![Meter {
+                    label: "Installed".to_string(),
+                    segments: vec![Part {
+                        alpha: 150,
+                        hatched: p.source.fossil(),
+                        ..Part::solid(kw, colour)
+                    }],
+                    text: format_power(kw),
+                }];
                 if estimate.is_some() && kw > 0.0 {
-                    let segments = vec![Part { hatched: p.source.fossil(), ..Part::solid(out, colour) }, Part { alpha: 60, ..Part::solid(kw - out, colour) }];
-                    rows.push(Meter { label: "Running (est.)".to_string(), segments, text: format_power(out) });
+                    let segments = vec![
+                        Part {
+                            hatched: p.source.fossil(),
+                            ..Part::solid(out, colour)
+                        },
+                        Part {
+                            alpha: 60,
+                            ..Part::solid(kw - out, colour)
+                        },
+                    ];
+                    rows.push(Meter {
+                        label: "Running (est.)".to_string(),
+                        segments,
+                        text: format_power(out),
+                    });
                 }
                 rows
             },
-            caption: if (all - kw).abs() > 0.5 { format!("Of {} over all its units' years.", format_power(all)) } else { String::new() },
+            caption: if (all - kw).abs() > 0.5 {
+                format!("Of {} over all its units' years.", format_power(all))
+            } else {
+                String::new()
+            },
         });
         let kind = self.kind(i);
-        let mut kind = kind.chars().next().map_or(String::new(), |c| c.to_uppercase().collect::<String>() + &kind[c.len_utf8()..]);
+        let mut kind = kind.chars().next().map_or(String::new(), |c| {
+            c.to_uppercase().collect::<String>() + &kind[c.len_utf8()..]
+        });
         if let Some(d) = self.detail(i) {
             kind.push_str(&format!(" ({d})"));
         }
         card.facts.push(("Type".to_string(), kind));
-        card.facts.push(("Drawn as".to_string(), p.source.name().to_string()));
+        card.facts
+            .push(("Drawn as".to_string(), p.source.name().to_string()));
         card.facts.push(("Capacity".to_string(), format_power(kw)));
         if let Some(e) = &estimate {
             let period = match e.basis {
                 crate::world_energy::Basis::Month(y, m) => crate::calibration::month_words((y, m)),
                 crate::world_energy::Basis::Year(y) => format!("{y} on average"),
             };
-            card.facts.push(("Output (est.)".to_string(), format_power(out)));
-            card.facts.push(("Capacity factor (est.)".to_string(), format!("{:.0}% ({period})", cf * 100.0)));
+            card.facts
+                .push(("Output (est.)".to_string(), format_power(out)));
+            card.facts.push((
+                "Capacity factor (est.)".to_string(),
+                format!("{:.0}% ({period})", cf * 100.0),
+            ));
         }
         let years = |months: Vec<u16>| {
             let lo = months.iter().min().map(|m| 1900 + m / 12);
@@ -425,38 +551,73 @@ impl Plants {
             }
         };
         // The units without a start year come first.
-        let known: Vec<u16> = p.units[(p.unknown_start as usize).min(p.units.len())..].iter().map(|u| u.start).collect();
+        let known: Vec<u16> = p.units[(p.unknown_start as usize).min(p.units.len())..]
+            .iter()
+            .map(|u| u.start)
+            .collect();
         let mut start = years(known);
         if p.unknown_start > 0 {
-            start = if start.is_empty() { "unknown".to_string() } else { format!("{start} (some units unknown)") };
+            start = if start.is_empty() {
+                "unknown".to_string()
+            } else {
+                format!("{start} (some units unknown)")
+            };
         }
         card.facts.push(("Start".to_string(), start));
-        let retired: Vec<u16> = p.units.iter().filter(|u| u.end != OPEN).map(|u| u.end.saturating_sub(12)).collect();
+        let retired: Vec<u16> = p
+            .units
+            .iter()
+            .filter(|u| u.end != OPEN)
+            .map(|u| u.end.saturating_sub(12))
+            .collect();
         if !retired.is_empty() {
             card.facts.push(("Retired".to_string(), years(retired)));
         }
         if p.units.len() > 1 {
-            card.facts.push(("Units".to_string(), format!("{} ({} running)", p.units.len(), p.running(month))));
+            card.facts.push((
+                "Units".to_string(),
+                format!("{} ({} running)", p.units.len(), p.running(month)),
+            ));
         }
         if let Some(o) = self.owner(i) {
             card.facts.push(("Owner".to_string(), o.to_string()));
         }
-        card.facts.push(("Country".to_string(), self.country_name(p).unwrap_or_else(|| self.codes[p.country as usize].clone())));
+        card.facts.push((
+            "Country".to_string(),
+            self.country_name(p)
+                .unwrap_or_else(|| self.codes[p.country as usize].clone()),
+        ));
         if let Some(url) = self.wiki_url(i) {
             card.links.push(("gem.wiki page".to_string(), url));
         }
-        card.notes.push("Installed capacity of the units of one source at one GEM location.".to_string());
+        card.notes
+            .push("Installed capacity of the units of one source at one GEM location.".to_string());
         match &estimate {
             Some(e) => {
                 let ceiling = MAX_FACTOR[p.class()];
-                let kind = if p.pumped { "pumped storage".to_string() } else { p.source.name().to_lowercase() };
-                let capped = if e.factor_of(p.class()) >= ceiling - 1e-4 { format!(" At the ceiling: the plants in the list cannot make all of Ember's figure, the rest counts as not in the plant list ({}).", format_power(e.gap()[crate::world_output::group(p.source) as usize])) } else { String::new() };
+                let kind = if p.pumped {
+                    "pumped storage".to_string()
+                } else {
+                    p.source.name().to_lowercase()
+                };
+                let capped = if e.factor_of(p.class()) >= ceiling - 1e-4 {
+                    format!(" At the ceiling: the plants in the list cannot make all of Ember's figure, the rest counts as not in the plant list ({}).", format_power(e.gap()[crate::world_output::group(p.source) as usize]))
+                } else {
+                    String::new()
+                };
                 card.notes.push(format!("Output estimated: the capacity times the country's capacity factor for {kind} in the month, Ember's generation (via Our World in Data) over the capacity Global Energy Monitor lists for the country running then, at most {:.0}% for {kind}. The same for every plant of its kind in the country.{capped}", ceiling * 100.0));
             }
-            None => card.notes.push("Ember has no generation for the country at this time: no output estimate.".to_string()),
+            None => card.notes.push(
+                "Ember has no generation for the country at this time: no output estimate."
+                    .to_string(),
+            ),
         }
         if p.unknown_start > 0 {
-            card.notes.push(format!("GEM gives no start year for {} of the units: they count from the release ({}) on.", p.unknown_start, month_name(self.release_month())));
+            card.notes.push(format!(
+                "GEM gives no start year for {} of the units: they count from the release ({}) on.",
+                p.unknown_start,
+                month_name(self.release_month())
+            ));
         }
         card.notes.push("Global Energy Monitor, Global Integrated Power Tracker, September 2026 release (CC BY 4.0); filtered by status and size, units merged into sites.".to_string());
         card
@@ -468,11 +629,15 @@ impl Plants {
 }
 
 fn cell_of(lat: f64, lon: f64) -> (i32, i32) {
-    ((lat.to_degrees() / CELL).floor() as i32, (lon.to_degrees() / CELL).floor() as i32)
+    (
+        (lat.to_degrees() / CELL).floor() as i32,
+        (lon.to_degrees() / CELL).floor() as i32,
+    )
 }
 
 fn angle_between(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    let h = ((lat2 - lat1) / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * ((lon2 - lon1) / 2.0).sin().powi(2);
+    let h = ((lat2 - lat1) / 2.0).sin().powi(2)
+        + lat1.cos() * lat2.cos() * ((lon2 - lon1) / 2.0).sin().powi(2);
     2.0 * h.sqrt().min(1.0).asin()
 }
 
@@ -488,7 +653,11 @@ mod tests {
     }
 
     fn find<'a>(p: &'a Plants, name: &str) -> (u32, &'a Plant) {
-        let i = p.plants.iter().position(|x| x.name == name).unwrap_or_else(|| panic!("no {name}"));
+        let i = p
+            .plants
+            .iter()
+            .position(|x| x.name == name)
+            .unwrap_or_else(|| panic!("no {name}"));
         (i as u32, &p.plants[i])
     }
 
@@ -501,10 +670,31 @@ mod tests {
         let p = fixture();
         assert_eq!(p.release, (2026, 9, 1));
         let names: Vec<&str> = p.plants.iter().map(|x| x.name.as_str()).collect();
-        for gone in ["Planned Solar Park", "Cancelled Coal", "Building Wind", "Shelved Gas", "Retired Unknown Year", "Tiny Solar", "Small Far Wind", "TZ Solar"] {
-            assert!(!names.contains(&gone), "{gone} should be left out: {names:?}");
+        for gone in [
+            "Planned Solar Park",
+            "Cancelled Coal",
+            "Building Wind",
+            "Shelved Gas",
+            "Retired Unknown Year",
+            "Tiny Solar",
+            "Small Far Wind",
+            "TZ Solar",
+        ] {
+            assert!(
+                !names.contains(&gone),
+                "{gone} should be left out: {names:?}"
+            );
         }
-        for kept in ["Kraftwerk Wien", "Alpen Wasser", "Pas Solar", "Old Coal Station", "Mothballed Gas", "North Sea Offshore", "Iowa Wind", "Big Far Solar"] {
+        for kept in [
+            "Kraftwerk Wien",
+            "Alpen Wasser",
+            "Pas Solar",
+            "Old Coal Station",
+            "Mothballed Gas",
+            "North Sea Offshore",
+            "Iowa Wind",
+            "Big Far Solar",
+        ] {
             assert!(names.contains(&kept), "{kept} missing: {names:?}");
         }
         // Germany comes from MaStR.
@@ -541,19 +731,42 @@ mod tests {
         assert_eq!(coal.kw(month(2016, 1)), 250_000.0);
         assert_eq!(coal.kw(month(1960, 1)), 0.0);
         assert_eq!(p.owner(i), Some("Coal Co; Other Co"));
-        assert_eq!(p.wiki_url(i).as_deref(), Some("https://www.gem.wiki/Old_Coal_Station"));
+        assert_eq!(
+            p.wiki_url(i).as_deref(),
+            Some("https://www.gem.wiki/Old_Coal_Station")
+        );
         let card = p.describe(i, month(2020, 1), Palette::Standard);
-        assert!(card.facts.iter().any(|f| f.0 == "Start" && f.1 == "1970\u{2013}1980"), "{:?}", card.facts);
-        assert!(card.facts.iter().any(|f| f.0 == "Retired" && f.1 == "2015"), "{:?}", card.facts);
-        assert!(card.facts.iter().any(|f| f.0 == "Owner" && f.1 == "Coal Co; Other Co"));
-        assert!(card.facts.iter().any(|f| f.0 == "Capacity" && f.1 == format_power(250_000.0)));
+        assert!(
+            card.facts
+                .iter()
+                .any(|f| f.0 == "Start" && f.1 == "1970\u{2013}1980"),
+            "{:?}",
+            card.facts
+        );
+        assert!(
+            card.facts.iter().any(|f| f.0 == "Retired" && f.1 == "2015"),
+            "{:?}",
+            card.facts
+        );
+        assert!(card
+            .facts
+            .iter()
+            .any(|f| f.0 == "Owner" && f.1 == "Coal Co; Other Co"));
+        assert!(card
+            .facts
+            .iter()
+            .any(|f| f.0 == "Capacity" && f.1 == format_power(250_000.0)));
         assert_eq!(card.links.len(), 1);
         // A unit without a start year counts from the release on.
         let (j, gas) = find(&p, "Mothballed Gas");
         assert_eq!(gas.unknown_start, 1);
         assert_eq!(gas.kw(month(2026, 8)), 0.0);
         assert_eq!(gas.kw(month(2026, 9)), 50_000.0);
-        assert!(p.describe(j, month(2026, 10), Palette::Standard).facts.iter().any(|f| f.0 == "Start" && f.1 == "unknown"));
+        assert!(p
+            .describe(j, month(2026, 10), Palette::Standard)
+            .facts
+            .iter()
+            .any(|f| f.0 == "Start" && f.1 == "unknown"));
     }
 
     #[test]
@@ -570,16 +783,32 @@ mod tests {
         let all = [true; SOURCES];
         let now = month(2025, 1);
         let every = p.bars(now, all, None);
-        assert!(every.iter().all(|b| matches!(b.subject, Subject::Plant(_)) && b.total() > 0.0));
+        assert!(every
+            .iter()
+            .all(|b| matches!(b.subject, Subject::Plant(_)) && b.total() > 0.0));
         let (vienna, _) = find(&p, "Kraftwerk Wien");
-        let near = p.bars(now, all, Some((48.2f64.to_radians(), 16.4f64.to_radians(), 0.01)));
-        assert_eq!(near.iter().map(|b| b.subject).collect::<Vec<_>>(), vec![Subject::Plant(vienna)]);
+        let near = p.bars(
+            now,
+            all,
+            Some((48.2f64.to_radians(), 16.4f64.to_radians(), 0.01)),
+        );
+        assert_eq!(
+            near.iter().map(|b| b.subject).collect::<Vec<_>>(),
+            vec![Subject::Plant(vienna)]
+        );
         let (fiji, _) = find(&p, "Diesel Island");
-        let east = p.bars(now, all, Some((-17.8f64.to_radians(), (-179.9f64).to_radians(), 0.01)));
+        let east = p.bars(
+            now,
+            all,
+            Some((-17.8f64.to_radians(), (-179.9f64).to_radians(), 0.01)),
+        );
         assert!(east.iter().any(|b| b.subject == Subject::Plant(fiji)));
         let mut solar_only = [false; SOURCES];
         solar_only[Source::Solar as usize] = true;
-        assert!(p.bars(now, solar_only, None).iter().all(|b| b.kw[Source::Solar as usize] == b.total()));
+        assert!(p
+            .bars(now, solar_only, None)
+            .iter()
+            .all(|b| b.kw[Source::Solar as usize] == b.total()));
     }
 
     #[test]
@@ -609,11 +838,25 @@ mod tests {
         assert!(p.count() > 40_000, "{}", p.count());
         assert!((0..p.count() as u32).all(|i| p.code(i) != "DEU"));
         let countries = Countries::bundled().unwrap();
-        let unknown: Vec<&str> = (0..p.count() as u32).map(|i| p.code(i)).filter(|c| countries.get(c).is_none()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+        let unknown: Vec<&str> = (0..p.count() as u32)
+            .map(|i| p.code(i))
+            .filter(|c| countries.get(c).is_none())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
         eprintln!("codes not in countries.bin: {unknown:?}");
-        assert!(unknown.len() <= 2, "codes not in countries.bin: {unknown:?}");
+        assert!(
+            unknown.len() <= 2,
+            "codes not in countries.bin: {unknown:?}"
+        );
         // Some large, well-known plants.
-        let kw = |name: &str| p.plants.iter().filter(|x| x.name.starts_with(name)).map(|x| x.kw(month(2025, 1))).sum::<f32>();
+        let kw = |name: &str| {
+            p.plants
+                .iter()
+                .filter(|x| x.name.starts_with(name))
+                .map(|x| x.kw(month(2025, 1)))
+                .sum::<f32>()
+        };
         assert!(kw("Three Gorges") > 15e6, "{}", kw("Three Gorges"));
         assert!(kw("Kashiwazaki") > 5e6, "{}", kw("Kashiwazaki"));
     }
@@ -626,19 +869,42 @@ mod tests {
         let by = Plants::bundled_by_state().unwrap();
         eprintln!("plants by state in {:?}", t.elapsed());
         let placed: usize = by.iter().map(Vec::len).sum();
-        assert!(placed as f64 > 0.85 * p.count() as f64, "{placed} of {}", p.count());
+        assert!(
+            placed as f64 > 0.85 * p.count() as f64,
+            "{placed} of {}",
+            p.count()
+        );
         let hubei = (0..s.count()).find(|&i| s.iso(i) == "CN-HB").unwrap();
         let kw = s.capacity(hubei, (2025, 1), [true; SOURCES]).unwrap();
-        assert!(kw[Source::Hydro as usize] > 22e6, "{}", kw[Source::Hydro as usize]);
+        assert!(
+            kw[Source::Hydro as usize] > 22e6,
+            "{}",
+            kw[Source::Hydro as usize]
+        );
         assert_eq!(kw, p.capacity(&by[hubei], month(2025, 1)));
     }
 
     /// The height of a lone bar drawn on flat ground, in metres.
-    fn drawn_height(bar: &Bar, scale: crate::energy::Scale, shares: Option<&[f32; SOURCES]>) -> f64 {
+    fn drawn_height(
+        bar: &Bar,
+        scale: crate::energy::Scale,
+        shares: Option<&[f32; SOURCES]>,
+    ) -> f64 {
         let base = crate::geo::geodetic_to_ecef(bar.lat, bar.lon, 0.0);
         let up = crate::geo::enu(bar.lat, bar.lon).2;
-        let m = crate::energy::mesh(std::slice::from_ref(bar), scale, base, &|_, _| 0.0, shares, &crate::energy::Style::default()).mesh;
-        m.vertices.iter().map(|v| glam::DVec3::new(v.pos[0] as f64, v.pos[1] as f64, v.pos[2] as f64).dot(up)).fold(0.0, f64::max)
+        let m = crate::energy::mesh(
+            std::slice::from_ref(bar),
+            scale,
+            base,
+            &|_, _| 0.0,
+            shares,
+            &crate::energy::Style::default(),
+        )
+        .mesh;
+        m.vertices
+            .iter()
+            .map(|v| glam::DVec3::new(v.pos[0] as f64, v.pos[1] as f64, v.pos[2] as f64).dot(up))
+            .fold(0.0, f64::max)
     }
 
     #[test]
@@ -649,31 +915,68 @@ mod tests {
         let all = [true; SOURCES];
         let p = Plants::bundled().unwrap();
         // A German site and a Polish plant of the Plants level, the latter given the former's capacity.
-        let de = e.bars(Level::Plants, now, all, Some((51.0f64.to_radians(), 10.0f64.to_radians(), 0.05))).into_iter().find(|b| matches!(b.subject, Subject::Site(_))).unwrap();
-        let mut pl = p.bars(now, all, Some((52.0f64.to_radians(), 19.0f64.to_radians(), 0.1))).into_iter().next().unwrap();
+        let de = e
+            .bars(
+                Level::Plants,
+                now,
+                all,
+                Some((51.0f64.to_radians(), 10.0f64.to_radians(), 0.05)),
+            )
+            .into_iter()
+            .find(|b| matches!(b.subject, Subject::Site(_)))
+            .unwrap();
+        let mut pl = p
+            .bars(
+                now,
+                all,
+                Some((52.0f64.to_radians(), 19.0f64.to_radians(), 0.1)),
+            )
+            .into_iter()
+            .next()
+            .unwrap();
         pl.kw = de.kw;
         let scale = Scale::for_view(e, Level::Plants, 50_000.0, 800.0);
-        let (a, b) = (drawn_height(&de, scale, None), drawn_height(&pl, scale, None));
-        assert!(a > 0.0 && (a / b - 1.0).abs() < 1e-3, "German site {a} m, world plant {b} m");
+        let (a, b) = (
+            drawn_height(&de, scale, None),
+            drawn_height(&pl, scale, None),
+        );
+        assert!(
+            a > 0.0 && (a / b - 1.0).abs() < 1e-3,
+            "German site {a} m, world plant {b} m"
+        );
         // 1 GW, either side of the border.
         let mut gw = [0.0; SOURCES];
         gw[Source::Gas as usize] = 1e6;
         let (mut de, mut pl) = (de, pl);
         de.kw = gw;
         pl.kw = gw;
-        assert!((drawn_height(&de, scale, None) / drawn_height(&pl, scale, None) - 1.0).abs() < 1e-3);
+        assert!(
+            (drawn_height(&de, scale, None) / drawn_height(&pl, scale, None) - 1.0).abs() < 1e-3
+        );
         assert!((drawn_height(&pl, scale, None) / (1e6 * scale.per_kw) - 1.0).abs() < 1e-3);
         // With SMARD's shares, Germany's columns split into running and idle parts of the same height.
         let shares = [0.3; SOURCES];
-        assert!((drawn_height(&de, scale, Some(&shares)) / drawn_height(&pl, scale, Some(&shares)) - 1.0).abs() < 1e-3);
+        assert!(
+            (drawn_height(&de, scale, Some(&shares)) / drawn_height(&pl, scale, Some(&shares))
+                - 1.0)
+                .abs()
+                < 1e-3
+        );
         // The States level: a German state's bar and a world state's of the same power.
         let s = States::bundled().unwrap();
-        let mut german = e.bars(Level::States, now, all, None).into_iter().next().unwrap();
+        let mut german = e
+            .bars(Level::States, now, all, None)
+            .into_iter()
+            .next()
+            .unwrap();
         let mut world = s.bars((2026, 1), all, false).into_iter().next().unwrap();
         german.kw = gw;
         world.kw = gw;
         let scale = Scale::for_view(e, Level::States, 2_000_000.0, 800.0);
-        assert!((drawn_height(&german, scale, None) / drawn_height(&world, scale, None) - 1.0).abs() < 1e-3);
+        assert!(
+            (drawn_height(&german, scale, None) / drawn_height(&world, scale, None) - 1.0).abs()
+                < 1e-3
+        );
     }
 
     #[test]
@@ -687,31 +990,62 @@ mod tests {
         let p = Plants::bundled().unwrap();
         let m = month(2025, 6);
         let bars = p.bars(m, [true; SOURCES], None);
-        assert!(bars.iter().all(|b| b.running.is_some_and(|r| (0.0..=1.0).contains(&r))));
-        let i = (0..p.count() as u32).find(|&i| p.code(i) == "FRA" && p.plants[i as usize].source == Source::Nuclear && p.plants[i as usize].kw(m) > 0.0).unwrap();
+        assert!(bars
+            .iter()
+            .all(|b| b.running.is_some_and(|r| (0.0..=1.0).contains(&r))));
+        let i = (0..p.count() as u32)
+            .find(|&i| {
+                p.code(i) == "FRA"
+                    && p.plants[i as usize].source == Source::Nuclear
+                    && p.plants[i as usize].kw(m) > 0.0
+            })
+            .unwrap();
         let e = p.estimate("FRA", m).unwrap();
-        let b = bars.iter().find(|b| b.subject == Subject::Plant(i)).unwrap();
+        let b = bars
+            .iter()
+            .find(|b| b.subject == Subject::Plant(i))
+            .unwrap();
         assert_eq!(b.running, Some(e.factor_of(Source::Nuclear as usize)));
         let card = p.describe(i, m, Palette::Standard);
-        assert!(card.facts.iter().any(|f| f.0 == "Capacity factor (est.)" && f.1.starts_with(&format!("{:.0}%", e.factor_of(Source::Nuclear as usize) * 100.0))), "{:?}", card.facts);
+        assert!(
+            card.facts.iter().any(|f| f.0 == "Capacity factor (est.)"
+                && f.1.starts_with(&format!(
+                    "{:.0}%",
+                    e.factor_of(Source::Nuclear as usize) * 100.0
+                ))),
+            "{:?}",
+            card.facts
+        );
         assert!(card.facts.iter().any(|f| f.0 == "Output (est.)"));
-        assert!(card.meters[0].rows.iter().any(|r| r.label == "Running (est.)"));
+        assert!(card.meters[0]
+            .rows
+            .iter()
+            .any(|r| r.label == "Running (est.)"));
         // Japan's listed solar cannot make Ember's figure at 30%: the rest is the gap, and the sums hold.
         let jp = p.estimate("JPN", m).unwrap();
         let solar = Source::Solar as usize;
         assert_eq!(jp.factor_of(solar), crate::world_output::MAX_FACTOR[solar]);
         assert!(jp.gap()[solar] > 0.0);
         for (s, g) in jp.generation.iter().enumerate() {
-            assert!((jp.plants()[s] + jp.gap()[s] - g).abs() <= 1e-3 * g.max(1.0), "{s}");
+            assert!(
+                (jp.plants()[s] + jp.gap()[s] - g).abs() <= 1e-3 * g.max(1.0),
+                "{s}"
+            );
         }
         // The country's card tells the plants' share and what is not in the list; Germany's not.
         let w = crate::world_energy::World::bundled().unwrap();
         let card_of = |code: &str| {
-            let k = (0..w.count() as u16).find(|&k| w.code(k) == Some(code)).unwrap();
+            let k = (0..w.count() as u16)
+                .find(|&k| w.code(k) == Some(code))
+                .unwrap();
             w.describe(k, (2025, 6), Palette::Standard, false)
         };
         let fra = card_of("FRA");
-        assert!(fra.facts.iter().any(|f| f.0 == "Plants account for"), "{:?}", fra.facts);
+        assert!(
+            fra.facts.iter().any(|f| f.0 == "Plants account for"),
+            "{:?}",
+            fra.facts
+        );
         assert!(fra.facts.iter().any(|f| f.0 == "Not in plant list"));
         let deu = card_of("DEU");
         assert!(!deu.facts.iter().any(|f| f.0 == "Plants account for"));

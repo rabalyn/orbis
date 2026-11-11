@@ -1,7 +1,7 @@
 //! Chooses which tiles to draw and which to load for a view.
 
-use crate::camera::{Basis, FOV_Y};
 use crate::body;
+use crate::camera::{Basis, FOV_Y};
 use crate::geo::{geodetic_to_ecef, radius, Grid, TileKey};
 use glam::DVec3;
 use std::collections::HashSet;
@@ -78,7 +78,10 @@ impl View {
         let width = TAU * a / body::current().grid.columns(k.z) as f64;
         let pad = TERRAIN_MARGIN + width * width / (8.0 * a) + width * 0.05;
         // Above the horizon: some sample faces the camera.
-        let above = s.points.iter().any(|p| (b.pos - *p).dot(p.normalize()) > -pad);
+        let above = s
+            .points
+            .iter()
+            .any(|p| (b.pos - *p).dot(p.normalize()) > -pad);
         if !above {
             return false;
         }
@@ -91,7 +94,9 @@ impl View {
             (-b.up - b.look * t).normalize(),
             -b.look,
         ];
-        sides.iter().all(|n| s.points.iter().any(|p| (*p - b.pos).dot(*n) < pad))
+        sides
+            .iter()
+            .all(|n| s.points.iter().any(|p| (*p - b.pos).dot(*n) < pad))
     }
 
     /// Distance to the nearest sample, and how many screen pixels one texel covers there.
@@ -113,7 +118,8 @@ impl View {
             Grid::Mercator => lat.cos(),
             Grid::Equirect => 1.0,
         };
-        let texel = TAU * radius() * squeeze / (body::current().grid.columns(k.z) as f64 * TILE_TEXELS);
+        let texel =
+            TAU * radius() * squeeze / (body::current().grid.columns(k.z) as f64 * TILE_TEXELS);
         let per_metre = self.height_px / (2.0 * (FOV_Y / 2.0).tan() * nearest.max(1.0));
         // Seen at a slant, a texel covers fewer pixels along the view direction. Averaging
         // both axes keeps grazing views from demanding full detail up to the horizon.
@@ -146,7 +152,10 @@ impl View {
         for k in drawn {
             above.extend((0..k.z).map(|z| k.ancestor(z)));
         }
-        let taken = Taken { drawn: drawn.iter().copied().collect(), above };
+        let taken = Taken {
+            drawn: drawn.iter().copied().collect(),
+            above,
+        };
         let mut out = Vec::new();
         for root in crate::geo::root_tiles() {
             self.visit_in(root, region, loaded, &taken, &mut out);
@@ -169,7 +178,11 @@ impl View {
         let centre = s.points[12];
         let a = radius();
         let width = TAU * a / body::current().grid.columns(k.z) as f64;
-        let reach = s.points.iter().map(|p| (*p - centre).length()).fold(0.0, f64::max);
+        let reach = s
+            .points
+            .iter()
+            .map(|p| (*p - centre).length())
+            .fold(0.0, f64::max);
         let pad = TERRAIN_MARGIN + width * width / (8.0 * a) + width * 0.05;
         if !region(centre, reach + pad) {
             return true;
@@ -233,7 +246,11 @@ impl View {
                 if !loaded(k) {
                     wanted.push((k.z, dist, k));
                 }
-                return if draw.len() > mark { Cover::Part } else { Cover::Nothing };
+                return if draw.len() > mark {
+                    Cover::Part
+                } else {
+                    Cover::Nothing
+                };
             }
         }
         if loaded(k) {
@@ -253,8 +270,21 @@ mod tests {
     use std::collections::HashSet;
 
     fn view(distance: f64, tilt: f64) -> View {
-        let cam = Camera { lat: 0.82, lon: 0.2, target_h: 0.0, distance, heading: 0.0, tilt, sky: 0.0 };
-        View { basis: cam.basis(), aspect: 1.5, height_px: 1000.0, max_z: |_| 16 }
+        let cam = Camera {
+            lat: 0.82,
+            lon: 0.2,
+            target_h: 0.0,
+            distance,
+            heading: 0.0,
+            tilt,
+            sky: 0.0,
+        };
+        View {
+            basis: cam.basis(),
+            aspect: 1.5,
+            height_px: 1000.0,
+            max_z: |_| 16,
+        }
     }
 
     /// Fetches everything wanted until the selection settles.
@@ -290,7 +320,14 @@ mod tests {
 
     #[test]
     fn closer_views_use_finer_tiles() {
-        let zmax = |d| settle(&view(d, 0.0)).draw.iter().map(|k| k.z).max().unwrap();
+        let zmax = |d| {
+            settle(&view(d, 0.0))
+                .draw
+                .iter()
+                .map(|k| k.z)
+                .max()
+                .unwrap()
+        };
         assert!(zmax(2.2e7) <= 4);
         assert!(zmax(100_000.0) > zmax(2.2e7));
         assert_eq!(zmax(100.0), 16);
@@ -311,7 +348,9 @@ mod tests {
         let everywhere = |_: DVec3, _: f64| true;
         // Nothing but the drawn tiles loaded: nothing to add.
         let have: HashSet<TileKey> = drawn.iter().copied().collect();
-        assert!(v.select_in(&everywhere, &|k| have.contains(&k), &drawn).is_empty());
+        assert!(v
+            .select_in(&everywhere, &|k| have.contains(&k), &drawn)
+            .is_empty());
         // With the world at zoom 3 loaded as well, only tiles clear of the drawn ones come back,
         // not overlapping each other.
         let mut more = have.clone();
@@ -323,7 +362,9 @@ mod tests {
             assert!(drawn.iter().all(|d| !overlaps(*a, *d)), "{a:?}");
             assert!(extra[i + 1..].iter().all(|b| !overlaps(*a, *b)));
         }
-        assert!(v.select_in(&|_, _| false, &|k| more.contains(&k), &drawn).is_empty());
+        assert!(v
+            .select_in(&|_, _| false, &|k| more.contains(&k), &drawn)
+            .is_empty());
     }
 
     #[test]
@@ -352,7 +393,11 @@ mod tests {
         let before = finest(&settled.draw).unwrap();
         // The drawn tile farthest from the view point is gone, with all its ancestors below
         // zoom 2, as when tilting up shows country never loaded.
-        let far = *settled.draw.iter().max_by_key(|k| k.x.abs_diff(at.ancestor(k.z).x) + k.y.abs_diff(at.ancestor(k.z).y)).unwrap();
+        let far = *settled
+            .draw
+            .iter()
+            .max_by_key(|k| k.x.abs_diff(at.ancestor(k.z).x) + k.y.abs_diff(at.ancestor(k.z).y))
+            .unwrap();
         let gone: HashSet<TileKey> = (2..=far.z).map(|z| far.ancestor(z)).collect();
         let mut have: HashSet<TileKey> = settled.draw.iter().copied().collect();
         for k in &settled.draw {
@@ -360,10 +405,20 @@ mod tests {
         }
         have.retain(|k| !gone.contains(k));
         let s = v.select(&|k| have.contains(&k));
-        assert_eq!(finest(&s.draw), Some(before), "the view point lost its detail");
-        assert!(s.wanted.contains(&far.ancestor(2)), "the missing part is asked for, coarsest first");
+        assert_eq!(
+            finest(&s.draw),
+            Some(before),
+            "the view point lost its detail"
+        );
+        assert!(
+            s.wanted.contains(&far.ancestor(2)),
+            "the missing part is asked for, coarsest first"
+        );
         for (i, a) in s.draw.iter().enumerate() {
-            assert!(s.draw[i + 1..].iter().all(|b| !overlaps(*a, *b)), "{a:?} overlaps");
+            assert!(
+                s.draw[i + 1..].iter().all(|b| !overlaps(*a, *b)),
+                "{a:?} overlaps"
+            );
         }
     }
 
@@ -380,7 +435,12 @@ mod tests {
         let s = v.select(&|k| have.contains(&k));
         let parent = missing.ancestor(missing.z - 1);
         assert!(s.draw.contains(&parent));
-        assert!(!s.draw.iter().any(|k| k.z == missing.z && k.ancestor(parent.z) == parent), "no sibling overlaps it");
+        assert!(
+            !s.draw
+                .iter()
+                .any(|k| k.z == missing.z && k.ancestor(parent.z) == parent),
+            "no sibling overlaps it"
+        );
     }
 
     #[test]
@@ -397,7 +457,10 @@ mod tests {
         for (d, t) in [(2.2e7, 0.0), (500_000.0, 1.0), (3_000.0, 1.3), (50.0, 0.0)] {
             let s = settle(&view(d, t));
             let at = TileKey::containing(0.82, 0.2, 16);
-            assert!(s.draw.iter().any(|k| at.ancestor(k.z) == *k), "uncovered at d={d}");
+            assert!(
+                s.draw.iter().any(|k| at.ancestor(k.z) == *k),
+                "uncovered at d={d}"
+            );
         }
     }
 }

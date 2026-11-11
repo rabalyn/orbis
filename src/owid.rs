@@ -259,7 +259,8 @@ impl Owid {
     /// The data built into the program.
     pub fn bundled() -> Option<&'static Owid> {
         static DATA: std::sync::OnceLock<Option<Owid>> = std::sync::OnceLock::new();
-        DATA.get_or_init(|| Owid::parse(include_bytes!("../data/owid_energy.bin"))).as_ref()
+        DATA.get_or_init(|| Owid::parse(include_bytes!("../data/owid_energy.bin")))
+            .as_ref()
     }
 
     pub fn parse(data: &[u8]) -> Option<Owid> {
@@ -291,14 +292,26 @@ impl Owid {
                     list[s as usize] = p;
                 }
             }
-            countries.push(Country { code, name, ember_from, yearly, monthly });
+            countries.push(Country {
+                code,
+                name,
+                ember_from,
+                yearly,
+                monthly,
+            });
         }
         countries.sort_by(|a, b| a.code.cmp(&b.code));
-        Some(Owid { retrieved, countries })
+        Some(Owid {
+            retrieved,
+            countries,
+        })
     }
 
     pub fn country(&self, code: &str) -> Option<&Country> {
-        let i = self.countries.binary_search_by(|c| c.code.as_str().cmp(code)).ok()?;
+        let i = self
+            .countries
+            .binary_search_by(|c| c.code.as_str().cmp(code))
+            .ok()?;
         Some(&self.countries[i])
     }
 
@@ -328,7 +341,13 @@ mod tests {
         assert!(close(de.year(Series::Population, 2025), 84_075_075.0));
         // The sources sum to the total, and the renewable ones to the share.
         let sum = |list: &[Series]| list.iter().map(|&s| de.year(s, 2025).unwrap()).sum::<f64>();
-        let renewable = sum(&[Series::Hydro, Series::Wind, Series::Solar, Series::Bioenergy, Series::OtherRenewables]);
+        let renewable = sum(&[
+            Series::Hydro,
+            Series::Wind,
+            Series::Solar,
+            Series::Bioenergy,
+            Series::OtherRenewables,
+        ]);
         let all = renewable + sum(&[Series::Coal, Series::Gas, Series::Oil, Series::Nuclear]);
         assert!((all - 500.47).abs() < 0.05, "{all}");
         assert!((renewable / all * 100.0 - 59.09).abs() < 0.05);
@@ -346,8 +365,17 @@ mod tests {
     fn bundled_has_the_countries_and_the_world() {
         let o = Owid::bundled().unwrap();
         assert!(o.countries().len() > 200);
-        assert!(o.countries().iter().all(|c| c.code.len() == 3 || c.code.starts_with("OWID_")));
-        assert!(o.country("OWID_WRL").unwrap().year(Series::Generation, 2025).unwrap() > 30_000.0);
+        assert!(o
+            .countries()
+            .iter()
+            .all(|c| c.code.len() == 3 || c.code.starts_with("OWID_")));
+        assert!(
+            o.country("OWID_WRL")
+                .unwrap()
+                .year(Series::Generation, 2025)
+                .unwrap()
+                > 30_000.0
+        );
         assert!(o.country("OWID_EUR").is_none());
         assert!(o.countries().iter().filter(|c| c.has_monthly()).count() > 80);
         assert!(o.retrieved >= 20261109);
@@ -366,10 +394,16 @@ mod tests {
         assert_eq!(de.latest_month(Series::Generation, y, m).unwrap().0, (y, m));
         // Ember's monthly series for Germany sums to about 6% less than its yearly one (470.6
         // against 500.5 TWh in 2025); milestone 3 looks into why.
-        let year: f64 = (1..=12).map(|m| de.month(Series::Generation, 2025, m).unwrap()).sum();
+        let year: f64 = (1..=12)
+            .map(|m| de.month(Series::Generation, 2025, m).unwrap())
+            .sum();
         assert!((year - 470.58).abs() < 0.5, "{year}");
-        assert!(de.month(Series::Demand, 2025, 1).unwrap() > de.month(Series::Demand, 2025, 7).unwrap());
-        assert!(de.month(Series::Solar, 2025, 6).unwrap() > de.month(Series::Solar, 2025, 12).unwrap());
+        assert!(
+            de.month(Series::Demand, 2025, 1).unwrap() > de.month(Series::Demand, 2025, 7).unwrap()
+        );
+        assert!(
+            de.month(Series::Solar, 2025, 6).unwrap() > de.month(Series::Solar, 2025, 12).unwrap()
+        );
         assert_eq!(de.month(Series::Population, 2025, 1), None);
         assert_eq!(de.month_source(Series::Solar), Source::Ember);
     }
@@ -382,7 +416,11 @@ mod tests {
         assert!(af.year(Series::Generation, 2024).is_some());
         assert_eq!(af.latest_month(Series::Generation, 2025, 6), None);
         // Kosovo, which has no ISO code of its own, is there by OWID's code.
-        assert!(o.country("OWID_KOS").unwrap().year(Series::Demand, 2025).is_some());
+        assert!(o
+            .country("OWID_KOS")
+            .unwrap()
+            .year(Series::Demand, 2025)
+            .is_some());
     }
 
     #[test]
@@ -398,7 +436,10 @@ mod tests {
         assert_eq!(de.latest_year(Series::Generation, 2100).unwrap().0, last);
         assert_eq!(de.latest_year(Series::Demand, 1989), None);
         // Before Ember's figures begin, OWID's generation is the Energy Institute's.
-        assert_eq!(de.year_source(Series::Generation, 1985), Source::EnergyInstitute);
+        assert_eq!(
+            de.year_source(Series::Generation, 1985),
+            Source::EnergyInstitute
+        );
         assert_eq!(de.year_source(Series::Generation, 1990), Source::Ember);
         assert_eq!(de.year_source(Series::Population, 2025), Source::Population);
     }
@@ -409,7 +450,9 @@ mod tests {
         assert_eq!(Series::CarbonIntensity.unit(), "g/kWh");
         assert_eq!(Source::EnergyInstitute.name(), "Energy Institute");
         assert!(CREDIT.contains("Our World in Data") && CREDIT.contains("Ember"));
-        assert!(Series::ALL.iter().all(|&s| Series::from_key(s.key()) == Some(s)));
+        assert!(Series::ALL
+            .iter()
+            .all(|&s| Series::from_key(s.key()) == Some(s)));
     }
 
     #[test]

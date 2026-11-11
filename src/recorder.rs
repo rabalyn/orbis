@@ -7,6 +7,7 @@
 //! written as it happens, so it survives a crash. When the images outgrow their limit the oldest
 //! are deleted, so the end of a long session is always there.
 
+use crate::wtime::Instant;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -17,7 +18,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use crate::wtime::Instant;
 
 /// Frames being copied by the GPU at one time.
 const MAX_IN_FLIGHT: usize = 4;
@@ -35,7 +35,12 @@ struct DiskBudget {
 
 impl DiskBudget {
     fn new(limit: u64) -> Self {
-        Self { limit, used: 0, kept: VecDeque::new(), deleted: 0 }
+        Self {
+            limit,
+            used: 0,
+            kept: VecDeque::new(),
+            deleted: 0,
+        }
     }
 
     /// Notes a new image and gives back the old ones that now have to go. The newest always stays.
@@ -58,7 +63,11 @@ fn tight_rgb(data: &[u8], width: u32, bytes_per_row: u32, blue_first: bool) -> V
     let mut rgb = Vec::with_capacity((data.len() / 4) * 3);
     for row in data.chunks(bytes_per_row as usize) {
         for p in row[..(width * 4) as usize].chunks_exact(4) {
-            let (r, b) = if blue_first { (p[2], p[0]) } else { (p[0], p[2]) };
+            let (r, b) = if blue_first {
+                (p[2], p[0])
+            } else {
+                (p[0], p[2])
+            };
             rgb.extend_from_slice(&[r, p[1], b]);
         }
     }
@@ -80,11 +89,17 @@ fn write_png(path: &Path, rgb: &[u8], width: u32, height: u32) -> Result<u64> {
 
 /// Makes the folder, and refuses one in use, so that nothing already there is overwritten.
 fn prepare(dir: &Path) -> Result<()> {
-    fs::create_dir_all(dir.join("frames")).with_context(|| format!("creating {}", dir.display()))?;
-    let used = fs::read_dir(dir)?.filter_map(Result::ok).any(|e| e.file_name() != "frames")
+    fs::create_dir_all(dir.join("frames"))
+        .with_context(|| format!("creating {}", dir.display()))?;
+    let used = fs::read_dir(dir)?
+        .filter_map(Result::ok)
+        .any(|e| e.file_name() != "frames")
         || fs::read_dir(dir.join("frames"))?.next().is_some();
     if used {
-        bail!("{} is not empty; --record needs a new folder for each recording", dir.display());
+        bail!(
+            "{} is not empty; --record needs a new folder for each recording",
+            dir.display()
+        );
     }
     Ok(())
 }
@@ -102,16 +117,32 @@ struct Image {
     data: Vec<u8>,
 }
 
-fn encoder_loop(queue: Arc<Mutex<Receiver<Image>>>, dir: PathBuf, budget: Arc<Mutex<DiskBudget>>, complained: Arc<AtomicBool>) {
+fn encoder_loop(
+    queue: Arc<Mutex<Receiver<Image>>>,
+    dir: PathBuf,
+    budget: Arc<Mutex<DiskBudget>>,
+    complained: Arc<AtomicBool>,
+) {
     loop {
         // The lock is only held while waiting, not while encoding.
-        let received = queue.lock().expect("no encoder panics while waiting").recv();
+        let received = queue
+            .lock()
+            .expect("no encoder panics while waiting")
+            .recv();
         let Ok(image) = received else { return };
-        let rgb = tight_rgb(&image.data, image.width, image.bytes_per_row, image.blue_first);
+        let rgb = tight_rgb(
+            &image.data,
+            image.width,
+            image.bytes_per_row,
+            image.blue_first,
+        );
         let path = dir.join(&image.name);
         match write_png(&path, &rgb, image.width, image.height) {
             Ok(bytes) => {
-                let old = budget.lock().expect("no encoder panics while counting").add(path, bytes);
+                let old = budget
+                    .lock()
+                    .expect("no encoder panics while counting")
+                    .add(path, bytes);
                 for file in old {
                     let _ = fs::remove_file(file);
                 }
@@ -147,7 +178,11 @@ impl Slot {
                     rows_per_image: Some(self.height),
                 },
             },
-            wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
         );
     }
 }
@@ -177,26 +212,45 @@ pub struct Recorder {
 
 impl Recorder {
     /// Starts a recording in a new folder. `format` is the window surface's.
-    pub fn start(dir: &Path, limit_gib: f64, device: wgpu::Device, format: wgpu::TextureFormat) -> Result<Self> {
+    pub fn start(
+        dir: &Path,
+        limit_gib: f64,
+        device: wgpu::Device,
+        format: wgpu::TextureFormat,
+    ) -> Result<Self> {
         use wgpu::TextureFormat as F;
         let blue_first = match format {
             F::Bgra8Unorm | F::Bgra8UnormSrgb => true,
             F::Rgba8Unorm | F::Rgba8UnormSrgb => false,
-            other => return Err(anyhow!("--record cannot read a window surface of format {other:?}")),
+            other => {
+                return Err(anyhow!(
+                    "--record cannot read a window surface of format {other:?}"
+                ))
+            }
         };
         prepare(dir)?;
         let log = File::create(dir.join("frames.jsonl")).context("creating the frame log")?;
-        let budget = Arc::new(Mutex::new(DiskBudget::new((limit_gib * (1u64 << 30) as f64) as u64)));
+        let budget = Arc::new(Mutex::new(DiskBudget::new(
+            (limit_gib * (1u64 << 30) as f64) as u64,
+        )));
         let complained = Arc::new(AtomicBool::new(false));
         let (images, queue) = mpsc::sync_channel(QUEUE);
         let queue = Arc::new(Mutex::new(queue));
         let encoders = (0..ENCODERS)
             .map(|_| {
-                let (queue, dir, budget, complained) = (queue.clone(), dir.to_path_buf(), budget.clone(), complained.clone());
+                let (queue, dir, budget, complained) = (
+                    queue.clone(),
+                    dir.to_path_buf(),
+                    budget.clone(),
+                    complained.clone(),
+                );
                 std::thread::spawn(move || encoder_loop(queue, dir, budget, complained))
             })
             .collect();
-        println!("recording to {} (the newest {limit_gib} GiB of images are kept)", dir.display());
+        println!(
+            "recording to {} (the newest {limit_gib} GiB of images are kept)",
+            dir.display()
+        );
         Ok(Self {
             dir: dir.to_path_buf(),
             device,
@@ -223,26 +277,39 @@ impl Recorder {
         self.free.retain(|b| b.size() == size);
         let buffer = match self.free.pop() {
             Some(b) => b,
-            None if self.in_flight.len() < MAX_IN_FLIGHT => self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("recording readback"),
-                size,
-                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }),
+            None if self.in_flight.len() < MAX_IN_FLIGHT => {
+                self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("recording readback"),
+                    size,
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
+            }
             None => {
                 self.lost += 1;
                 return (self.number, None);
             }
         };
-        (self.number, Some(Slot { number: self.number, buffer, width, height, bytes_per_row }))
+        (
+            self.number,
+            Some(Slot {
+                number: self.number,
+                buffer,
+                width,
+                height,
+                bytes_per_row,
+            }),
+        )
     }
 
     /// Asks for the pixels, once the frame's commands have been submitted.
     pub fn submitted(&mut self, slot: Slot) {
         let (done, mapped) = mpsc::channel();
-        slot.buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
-            let _ = done.send(result);
-        });
+        slot.buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = done.send(result);
+            });
         self.in_flight.push_back(InFlight { slot, mapped });
     }
 
@@ -265,7 +332,15 @@ impl Recorder {
     }
 
     fn finish(&mut self, slot: Slot, mapped: bool) {
-        let data = mapped.then(|| slot.buffer.slice(..).get_mapped_range().ok().map(|view| view.to_vec())).flatten();
+        let data = mapped
+            .then(|| {
+                slot.buffer
+                    .slice(..)
+                    .get_mapped_range()
+                    .ok()
+                    .map(|view| view.to_vec())
+            })
+            .flatten();
         if mapped {
             slot.buffer.unmap();
         }
@@ -295,7 +370,11 @@ impl Recorder {
     pub fn log_frame(&mut self, number: u64, has_image: bool, mut state: Value) {
         state["frame"] = json!(number);
         state["t"] = json!(self.started.elapsed().as_secs_f64());
-        state["image"] = if has_image { json!(image_name(number)) } else { Value::Null };
+        state["image"] = if has_image {
+            json!(image_name(number))
+        } else {
+            Value::Null
+        };
         state["cursor"] = json!(self.cursor);
         self.line(&state);
     }
@@ -341,7 +420,8 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("orbis-recorder-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("orbis-recorder-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         dir
     }

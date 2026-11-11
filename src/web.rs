@@ -55,7 +55,12 @@ impl Downloads {
     /// The answer, left in place: a job that is run again until all its answers are in needs
     /// those it already had, which it may not have kept.
     pub fn peek(&self, url: &str) -> Option<Answer> {
-        self.inner.lock().unwrap().done.get(url).map(|d| d.0.clone())
+        self.inner
+            .lock()
+            .unwrap()
+            .done
+            .get(url)
+            .map(|d| d.0.clone())
     }
 
     pub fn is_pending(&self, url: &str) -> bool {
@@ -68,7 +73,13 @@ impl Downloads {
     }
 
     pub fn in_flight(&self, host: &str) -> usize {
-        self.inner.lock().unwrap().per_host.get(host).copied().unwrap_or(0)
+        self.inner
+            .lock()
+            .unwrap()
+            .per_host
+            .get(host)
+            .copied()
+            .unwrap_or(0)
     }
 
     pub fn start(&self, url: &str, host: &str) {
@@ -102,12 +113,16 @@ pub async fn get(url: &str) -> Answer {
     match try_get(url).await {
         Ok(a) => a,
         Err(e) => {
-            let name = js_sys::Reflect::get(&e, &"name".into()).ok().and_then(|n| n.as_string());
+            let name = js_sys::Reflect::get(&e, &"name".into())
+                .ok()
+                .and_then(|n| n.as_string());
             if name.as_deref() == Some("TimeoutError") {
                 Answer::TimedOut
             } else {
                 // A refused cross-site request looks just like an unreachable server.
-                let text = js_sys::Reflect::get(&e, &"message".into()).ok().and_then(|n| n.as_string());
+                let text = js_sys::Reflect::get(&e, &"message".into())
+                    .ok()
+                    .and_then(|n| n.as_string());
                 Answer::Unreachable(text.unwrap_or_else(|| "request failed".into()))
             }
         }
@@ -121,7 +136,9 @@ async fn try_get(url: &str) -> Result<Answer, wasm_bindgen::JsValue> {
     init.set_mode(web_sys::RequestMode::Cors);
     init.set_signal(Some(&web_sys::AbortSignal::timeout_with_u32(TIMEOUT_MS)));
     let request = web_sys::Request::new_with_str_and_init(url, &init)?;
-    let response: web_sys::Response = JsFuture::from(window.fetch_with_request(&request)).await?.dyn_into()?;
+    let response: web_sys::Response = JsFuture::from(window.fetch_with_request(&request))
+        .await?
+        .dyn_into()?;
     let status = response.status();
     let retry_after = response
         .headers()
@@ -135,8 +152,14 @@ async fn try_get(url: &str) -> Result<Answer, wasm_bindgen::JsValue> {
             Ok(promise) => match JsFuture::from(promise).await {
                 Ok(buffer) => Ok(js_sys::Uint8Array::new(&buffer).to_vec()),
                 Err(e) => {
-                    let name = js_sys::Reflect::get(&e, &"name".into()).ok().and_then(|n| n.as_string());
-                    Err(if name.as_deref() == Some("TimeoutError") { BodyError::TimedOut } else { BodyError::Broken })
+                    let name = js_sys::Reflect::get(&e, &"name".into())
+                        .ok()
+                        .and_then(|n| n.as_string());
+                    Err(if name.as_deref() == Some("TimeoutError") {
+                        BodyError::TimedOut
+                    } else {
+                        BodyError::Broken
+                    })
                 }
             },
             Err(_) => Err(BodyError::Broken),
@@ -144,7 +167,11 @@ async fn try_get(url: &str) -> Result<Answer, wasm_bindgen::JsValue> {
     } else {
         Ok(Vec::new())
     };
-    Ok(Answer::Reply { status, retry_after, body })
+    Ok(Answer::Reply {
+        status,
+        retry_after,
+        body,
+    })
 }
 
 /// Writes to the browser console, where `eprintln!` would go nowhere.
@@ -164,14 +191,26 @@ pub fn canvas() -> Option<web_sys::HtmlCanvasElement> {
 /// The page address's options as command-line words: `?lat=46.5&tilt` is `--lat 46.5 --tilt`.
 /// The part after `#` counts too, so links can carry options without reloading the page.
 pub fn address_args() -> Vec<String> {
-    let Some(location) = web_sys::window().map(|w| w.location()) else { return Vec::new() };
+    let Some(location) = web_sys::window().map(|w| w.location()) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
-    for part in [location.search().unwrap_or_default(), location.hash().unwrap_or_default()] {
-        let Ok(params) = web_sys::UrlSearchParams::new_with_str(part.trim_start_matches(['?', '#'])) else { continue };
+    for part in [
+        location.search().unwrap_or_default(),
+        location.hash().unwrap_or_default(),
+    ] {
+        let Ok(params) =
+            web_sys::UrlSearchParams::new_with_str(part.trim_start_matches(['?', '#']))
+        else {
+            continue;
+        };
         let entries = js_sys::try_iter(&params.entries()).ok().flatten();
         for entry in entries.into_iter().flatten().flatten() {
             let pair = js_sys::Array::from(&entry);
-            let (Some(key), Some(value)) = (pair.get(0).as_string(), pair.get(1).as_string()) else { continue };
+            let (Some(key), Some(value)) = (pair.get(0).as_string(), pair.get(1).as_string())
+            else {
+                continue;
+            };
             if key.is_empty() {
                 continue;
             }
@@ -196,7 +235,9 @@ pub fn fail(why: &str) {
 }
 
 fn call_page(name: &str, text: &str) {
-    let Some(window) = web_sys::window() else { return };
+    let Some(window) = web_sys::window() else {
+        return;
+    };
     if let Ok(f) = js_sys::Reflect::get(&window, &name.into()) {
         if let Some(f) = f.dyn_ref::<js_sys::Function>() {
             let _ = f.call1(&wasm_bindgen::JsValue::NULL, &text.into());
@@ -221,7 +262,10 @@ pub fn has_budget() -> bool {
 /// Opens an address in a new tab.
 pub fn open(url: &str) -> Result<(), String> {
     let window = web_sys::window().ok_or("No window to open it from.")?;
-    window.open_with_url_and_target(url, "_blank").map(|_| ()).map_err(|_| "The browser did not open it.".to_string())
+    window
+        .open_with_url_and_target(url, "_blank")
+        .map(|_| ())
+        .map_err(|_| "The browser did not open it.".to_string())
 }
 
 thread_local! {

@@ -35,7 +35,11 @@ impl Pos {
     /// From degrees; `None` for anything that is not a position on the globe.
     fn from_degrees(lat: f64, lon: f64, alt: Option<f64>) -> Option<Pos> {
         let ok = lat.is_finite() && lon.is_finite() && lat.abs() <= 90.0 && lon.abs() <= 180.0;
-        ok.then(|| Pos { lat: lat.to_radians(), lon: lon.to_radians(), alt: alt.filter(|a| a.is_finite()) })
+        ok.then(|| Pos {
+            lat: lat.to_radians(),
+            lon: lon.to_radians(),
+            alt: alt.filter(|a| a.is_finite()),
+        })
     }
 }
 
@@ -76,10 +80,21 @@ pub struct Item {
 
 impl Item {
     pub fn new(name: &str, shape: Shape) -> Item {
-        let mut item = Item { name: clean(name), shape, extent: [0.0; 4], mark: None, outline: None };
+        let mut item = Item {
+            name: clean(name),
+            shape,
+            extent: [0.0; 4],
+            mark: None,
+            outline: None,
+        };
         let mut e = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
         for p in item.positions() {
-            e = [e[0].min(p.lat), e[1].min(p.lon), e[2].max(p.lat), e[3].max(p.lon)];
+            e = [
+                e[0].min(p.lat),
+                e[1].min(p.lon),
+                e[2].max(p.lat),
+                e[3].max(p.lon),
+            ];
         }
         item.extent = e;
         item
@@ -108,7 +123,10 @@ impl Item {
 
     /// Where to fly to see the item.
     pub fn target(&self) -> Option<Target> {
-        target_for(self.positions().map(|p| (p.lat, p.lon)), matches!(self.shape, Shape::Point(_)))
+        target_for(
+            self.positions().map(|p| (p.lat, p.lon)),
+            matches!(self.shape, Shape::Point(_)),
+        )
     }
 }
 
@@ -123,7 +141,13 @@ pub struct Imported {
 
 impl Imported {
     pub fn target(&self) -> Option<Target> {
-        target_for(self.items.iter().flat_map(|i| i.positions()).map(|p| (p.lat, p.lon)), false)
+        target_for(
+            self.items
+                .iter()
+                .flat_map(|i| i.positions())
+                .map(|p| (p.lat, p.lon)),
+            false,
+        )
     }
 }
 
@@ -186,8 +210,17 @@ fn target_for(points: impl Iterator<Item = (f64, f64)>, single: bool) -> Option<
     if lon > std::f64::consts::PI {
         lon -= 2.0 * std::f64::consts::PI;
     }
-    let place = Place { name: String::new(), lat: (s + n) / 2.0, lon, bbox: (!single).then_some([s, w, n, e]) };
-    Some(Target { lat: place.lat, lon: place.lon, distance: search::distance_for(&place) })
+    let place = Place {
+        name: String::new(),
+        lat: (s + n) / 2.0,
+        lon,
+        bbox: (!single).then_some([s, w, n, e]),
+    };
+    Some(Target {
+        lat: place.lat,
+        lon: place.lon,
+        distance: search::distance_for(&place),
+    })
 }
 
 /// Everything imported in this run.
@@ -255,13 +288,25 @@ impl Builder {
         if self.items.is_empty() {
             return Err(ImportError::Empty);
         }
-        Ok(Imported { name: clean(name), items: self.items, truncated: self.truncated })
+        Ok(Imported {
+            name: clean(name),
+            items: self.items,
+            truncated: self.truncated,
+        })
     }
 }
 
 fn clean(name: &str) -> String {
-    let s: String = name.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
-    s.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(MAX_NAME_CHARS).collect()
+    let s: String = name
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(MAX_NAME_CHARS)
+        .collect()
 }
 
 /// Reads a file from disk. `name` for the result comes from the file's name.
@@ -276,11 +321,16 @@ pub fn load_file(path: &Path) -> Result<Imported, ImportError> {
         return Err(ImportError::TooLarge);
     }
     let mut bytes = Vec::new();
-    file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes).map_err(io)?;
+    file.take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io)?;
     if bytes.len() as u64 > MAX_FILE_BYTES {
         return Err(ImportError::TooLarge);
     }
-    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
     parse(&bytes, &stem)
 }
 
@@ -325,11 +375,17 @@ fn xml_root(text: &str) -> Option<String> {
 
 fn position(v: &Value) -> Option<Pos> {
     let a = v.as_array()?;
-    Pos::from_degrees(a.get(1)?.as_f64()?, a.first()?.as_f64()?, a.get(2).and_then(Value::as_f64))
+    Pos::from_degrees(
+        a.get(1)?.as_f64()?,
+        a.first()?.as_f64()?,
+        a.get(2).and_then(Value::as_f64),
+    )
 }
 
 fn positions(v: &Value) -> Vec<Pos> {
-    v.as_array().map(|a| a.iter().filter_map(position).collect()).unwrap_or_default()
+    v.as_array()
+        .map(|a| a.iter().filter_map(position).collect())
+        .unwrap_or_default()
 }
 
 fn geojson_geometry(g: &Value, name: &str, out: &mut Builder, depth: usize) -> bool {
@@ -339,18 +395,31 @@ fn geojson_geometry(g: &Value, name: &str, out: &mut Builder, depth: usize) -> b
     let list = |v: &Value| v.as_array().cloned().unwrap_or_default();
     match g.get("type").and_then(Value::as_str) {
         Some("Point") => position(coords).is_none_or(|p| out.add(name, Shape::Point(p))),
-        Some("MultiPoint") => positions(coords).into_iter().all(|p| out.add(name, Shape::Point(p))),
+        Some("MultiPoint") => positions(coords)
+            .into_iter()
+            .all(|p| out.add(name, Shape::Point(p))),
         Some("LineString") => {
             let l = positions(coords);
             l.len() < 2 || out.add(name, Shape::Line(l))
         }
-        Some("MultiLineString") => list(coords).iter().map(positions).all(|l| l.len() < 2 || out.add(name, Shape::Line(l))),
+        Some("MultiLineString") => list(coords)
+            .iter()
+            .map(positions)
+            .all(|l| l.len() < 2 || out.add(name, Shape::Line(l))),
         Some("Polygon") => {
-            let rings: Vec<_> = list(coords).iter().map(positions).filter(|r| r.len() >= 3).collect();
+            let rings: Vec<_> = list(coords)
+                .iter()
+                .map(positions)
+                .filter(|r| r.len() >= 3)
+                .collect();
             rings.is_empty() || out.add(name, Shape::Polygon(rings))
         }
         Some("MultiPolygon") => list(coords).iter().all(|poly| {
-            let rings: Vec<_> = list(poly).iter().map(positions).filter(|r| r.len() >= 3).collect();
+            let rings: Vec<_> = list(poly)
+                .iter()
+                .map(positions)
+                .filter(|r| r.len() >= 3)
+                .collect();
             rings.is_empty() || out.add(name, Shape::Polygon(rings))
         }),
         Some("GeometryCollection") if depth < MAX_GEOMETRY_DEPTH => {
@@ -389,7 +458,8 @@ fn geojson_object(v: &Value, out: &mut Builder, depth: usize) -> bool {
 }
 
 pub fn geojson(text: &str, name: &str) -> Result<Imported, ImportError> {
-    let doc: Value = serde_json::from_str(text).map_err(|e| ImportError::Malformed(e.to_string()))?;
+    let doc: Value =
+        serde_json::from_str(text).map_err(|e| ImportError::Malformed(e.to_string()))?;
     if !doc.is_object() {
         return Err(ImportError::Malformed("not an object".into()));
     }
@@ -436,7 +506,10 @@ pub(crate) fn walk(text: &str, mut f: impl FnMut(Tok) -> bool) -> Result<(), Imp
     let mut seen_root = false;
     loop {
         let event = reader.read_event().map_err(|e| bad(&e))?;
-        let is_text = matches!(event, Event::Text(_) | Event::CData(_) | Event::GeneralRef(_));
+        let is_text = matches!(
+            event,
+            Event::Text(_) | Event::CData(_) | Event::GeneralRef(_)
+        );
         if !is_text && !pending.is_empty() && !f(Tok::Text(std::mem::take(&mut pending))) {
             return Ok(());
         }
@@ -474,7 +547,9 @@ pub(crate) fn walk(text: &str, mut f: impl FnMut(Tok) -> bool) -> Result<(), Imp
         }
     }
     if seen_root && depth != 0 {
-        return Err(ImportError::Malformed("the file ends inside an element".into()));
+        return Err(ImportError::Malformed(
+            "the file ends inside an element".into(),
+        ));
     }
     if !seen_root {
         return Err(ImportError::Malformed("no elements".into()));
@@ -624,7 +699,9 @@ pub fn kml(text: &str, name: &str) -> Result<Imported, ImportError> {
             Tok::Close(n) => {
                 path.pop();
                 match n.as_str() {
-                    "Polygon" if !rings.is_empty() => shapes.push(Shape::Polygon(std::mem::take(&mut rings))),
+                    "Polygon" if !rings.is_empty() => {
+                        shapes.push(Shape::Polygon(std::mem::take(&mut rings)))
+                    }
                     "Placemark" => {
                         in_placemark = false;
                         for s in shapes.drain(..) {
@@ -655,12 +732,17 @@ pub fn kmz(bytes: &[u8], name: &str) -> Result<Imported, ImportError> {
     }
     let mut chosen: Option<usize> = None;
     for i in 0..archive.len() {
-        let Ok(entry) = archive.by_index_raw(i) else { continue };
+        let Ok(entry) = archive.by_index_raw(i) else {
+            continue;
+        };
         // Names that would climb out of a folder are never used.
         if entry.is_dir() || entry.enclosed_name().is_none() {
             continue;
         }
-        let lower = entry.name().map(|n| n.to_ascii_lowercase()).unwrap_or_default();
+        let lower = entry
+            .name()
+            .map(|n| n.to_ascii_lowercase())
+            .unwrap_or_default();
         if lower == "doc.kml" {
             chosen = Some(i);
             break;
@@ -675,7 +757,10 @@ pub fn kmz(bytes: &[u8], name: &str) -> Result<Imported, ImportError> {
         return Err(ImportError::TooLarge);
     }
     let mut data = Vec::new();
-    entry.take(MAX_FILE_BYTES + 1).read_to_end(&mut data).map_err(|e| ImportError::Malformed(e.to_string()))?;
+    entry
+        .take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut data)
+        .map_err(|e| ImportError::Malformed(e.to_string()))?;
     if data.len() as u64 > MAX_FILE_BYTES {
         return Err(ImportError::TooLarge);
     }
@@ -686,7 +771,13 @@ pub fn kmz(bytes: &[u8], name: &str) -> Result<Imported, ImportError> {
 // ---- IGC ----
 
 /// Degrees from `DDMMmmm` or `DDDMMmmm` and a hemisphere letter.
-fn igc_angle(digits: &str, degree_digits: usize, hemisphere: char, plus: char, minus: char) -> Option<f64> {
+fn igc_angle(
+    digits: &str,
+    degree_digits: usize,
+    hemisphere: char,
+    plus: char,
+    minus: char,
+) -> Option<f64> {
     if digits.len() != degree_digits + 5 || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
@@ -719,17 +810,26 @@ pub fn igc(text: &str, name: &str) -> Result<Imported, ImportError> {
     let mut line: Vec<Pos> = Vec::new();
     for record in text.lines() {
         let record = record.trim_end();
-        let Some(kind) = record.chars().next() else { continue };
+        let Some(kind) = record.chars().next() else {
+            continue;
+        };
         match kind {
             'H' if record.len() >= 5 => match record.get(2..5) {
                 Some("PLT") => pilot = h_value(record, 5),
                 Some("GTY") => glider = h_value(record, 5),
                 Some("DTE") => {
                     // "HFDTE020716" or "HFDTEDATE:020716,01".
-                    let digits: String = h_value(record, 5).chars().take_while(char::is_ascii_digit).collect();
+                    let digits: String = h_value(record, 5)
+                        .chars()
+                        .take_while(char::is_ascii_digit)
+                        .collect();
                     if digits.len() >= 6 {
                         let (d, m, y) = (&digits[0..2], &digits[2..4], &digits[4..6]);
-                        let century = if y.parse::<u32>().unwrap_or(0) < 80 { "20" } else { "19" };
+                        let century = if y.parse::<u32>().unwrap_or(0) < 80 {
+                            "20"
+                        } else {
+                            "19"
+                        };
                         date = format!("{century}{y}-{m}-{d}");
                     }
                 }
@@ -749,7 +849,10 @@ pub fn igc(text: &str, name: &str) -> Result<Imported, ImportError> {
             _ => {}
         }
     }
-    let mut parts: Vec<&str> = [pilot.as_str(), glider.as_str()].into_iter().filter(|s| !s.is_empty()).collect();
+    let mut parts: Vec<&str> = [pilot.as_str(), glider.as_str()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect();
     if parts.is_empty() {
         parts.push("Flight");
     }
@@ -788,18 +891,32 @@ mod tests {
         let g = gpx(GPX, "f").unwrap();
         assert_eq!(g.items.len(), 3, "{:?}", g.items);
         assert_eq!(g.items[0].name, "Hut & view");
-        let Shape::Point(p) = g.items[0].shape else { panic!() };
+        let Shape::Point(p) = g.items[0].shape else {
+            panic!()
+        };
         assert!((p.lat.to_degrees() - 46.5).abs() < 1e-9 && p.alt == Some(2000.5));
-        let Shape::Line(l) = &g.items[1].shape else { panic!() };
-        assert_eq!((g.items[1].name.as_str(), l.len()), ("Ridge", 2), "the bad point and the one-point segment are dropped");
+        let Shape::Line(l) = &g.items[1].shape else {
+            panic!()
+        };
+        assert_eq!(
+            (g.items[1].name.as_str(), l.len()),
+            ("Ridge", 2),
+            "the bad point and the one-point segment are dropped"
+        );
         assert_eq!(l[0].alt, Some(1000.0));
         assert_eq!(g.items[2].name, "Road");
     }
 
     #[test]
     fn gpx_that_is_broken_is_an_error_not_a_panic() {
-        assert!(matches!(gpx("<gpx><wpt lat=\"1\" lon=\"2\">", "f"), Err(ImportError::Malformed(_))));
-        assert!(matches!(gpx("<gpx></wpt></gpx>", "f"), Err(ImportError::Malformed(_))));
+        assert!(matches!(
+            gpx("<gpx><wpt lat=\"1\" lon=\"2\">", "f"),
+            Err(ImportError::Malformed(_))
+        ));
+        assert!(matches!(
+            gpx("<gpx></wpt></gpx>", "f"),
+            Err(ImportError::Malformed(_))
+        ));
         assert_eq!(gpx("<gpx/>", "f"), Err(ImportError::Empty));
         assert!(gpx("", "f").is_err());
         let deep = "<a>".repeat(500);
@@ -837,13 +954,23 @@ mod tests {
         let k = kml(KML, "f").unwrap();
         let names: Vec<_> = k.items.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, ["Peak", "Trail", "Meadow", "Both", "Both"]);
-        let Shape::Point(p) = k.items[0].shape else { panic!() };
+        let Shape::Point(p) = k.items[0].shape else {
+            panic!()
+        };
         assert_eq!(p.alt, Some(3000.0));
-        let Shape::Line(l) = &k.items[1].shape else { panic!() };
+        let Shape::Line(l) = &k.items[1].shape else {
+            panic!()
+        };
         assert_eq!(l.len(), 3);
         assert_eq!(l[2].alt, None);
-        let Shape::Polygon(r) = &k.items[2].shape else { panic!() };
-        assert_eq!((r.len(), r[0].len(), r[1].len()), (2, 4, 4), "outer ring first, then the hole");
+        let Shape::Polygon(r) = &k.items[2].shape else {
+            panic!()
+        };
+        assert_eq!(
+            (r.len(), r[0].len(), r[1].len()),
+            (2, 4, 4),
+            "outer ring first, then the hole"
+        );
         assert!(matches!(k.items[4].shape, Shape::Line(_)));
     }
 
@@ -854,7 +981,9 @@ mod tests {
         let t = "<kml><Placemark><Point><coordinates>abc,def 200,100 1,2</coordinates></Point></Placemark></kml>";
         let k = kml(t, "f").unwrap();
         assert_eq!(k.items.len(), 1, "bad tuples are skipped: {:?}", k.items);
-        let Shape::Point(p) = k.items[0].shape else { panic!() };
+        let Shape::Point(p) = k.items[0].shape else {
+            panic!()
+        };
         assert!((p.lon.to_degrees() - 1.0).abs() < 1e-9);
     }
 
@@ -863,7 +992,8 @@ mod tests {
         let mut cursor = std::io::Cursor::new(Vec::new());
         let mut w = zip::ZipWriter::new(&mut cursor);
         for (name, data) in entries {
-            w.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            w.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
             w.write_all(data).unwrap();
         }
         w.finish().unwrap();
@@ -872,7 +1002,11 @@ mod tests {
 
     #[test]
     fn kmz_reads_the_kml_inside() {
-        let z = make_zip(&[("images/a.png", b"x"), ("../evil.kml", b"<kml/>"), ("doc.kml", KML.as_bytes())]);
+        let z = make_zip(&[
+            ("images/a.png", b"x"),
+            ("../evil.kml", b"<kml/>"),
+            ("doc.kml", KML.as_bytes()),
+        ]);
         let k = parse(&z, "f").unwrap();
         assert_eq!(k.items.len(), 5);
         let z = make_zip(&[("a/other.KML", KML.as_bytes())]);
@@ -881,8 +1015,14 @@ mod tests {
 
     #[test]
     fn kmz_without_usable_content_is_an_error() {
-        assert!(matches!(parse(&make_zip(&[("a.txt", b"x")]), "f"), Err(ImportError::Malformed(_))));
-        assert!(matches!(parse(&make_zip(&[("../x.kml", KML.as_bytes())]), "f"), Err(ImportError::Malformed(_))));
+        assert!(matches!(
+            parse(&make_zip(&[("a.txt", b"x")]), "f"),
+            Err(ImportError::Malformed(_))
+        ));
+        assert!(matches!(
+            parse(&make_zip(&[("../x.kml", KML.as_bytes())]), "f"),
+            Err(ImportError::Malformed(_))
+        ));
         assert!(parse(b"PK\x03\x04garbage", "f").is_err());
     }
 
@@ -909,10 +1049,17 @@ mod tests {
         let g = geojson(GEOJSON, "f").unwrap();
         let names: Vec<_> = g.items.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, ["A", "B", "", "M", "M", "G"]);
-        let Shape::Point(p) = g.items[0].shape else { panic!() };
-        assert!((p.lat.to_degrees() - 46.5).abs() < 1e-9 && (p.lon.to_degrees() - 11.8).abs() < 1e-9, "longitude comes first");
+        let Shape::Point(p) = g.items[0].shape else {
+            panic!()
+        };
+        assert!(
+            (p.lat.to_degrees() - 46.5).abs() < 1e-9 && (p.lon.to_degrees() - 11.8).abs() < 1e-9,
+            "longitude comes first"
+        );
         assert_eq!(p.alt, Some(2000.0));
-        let Shape::Line(l) = &g.items[1].shape else { panic!() };
+        let Shape::Line(l) = &g.items[1].shape else {
+            panic!()
+        };
         assert_eq!(l.len(), 2);
         assert!(matches!(g.items[2].shape, Shape::Polygon(_)));
     }
@@ -921,10 +1068,20 @@ mod tests {
     fn geojson_accepts_a_bare_geometry_and_rejects_nonsense() {
         let g = geojson(r#"{"type":"Point","coordinates":[1,2]}"#, "f").unwrap();
         assert_eq!(g.items.len(), 1);
-        for t in ["{", "[]", r#"{"type":"FeatureCollection"}"#, r#"{"type":"Point","coordinates":[999,2]}"#, r#"{"type":"Nope"}"#] {
+        for t in [
+            "{",
+            "[]",
+            r#"{"type":"FeatureCollection"}"#,
+            r#"{"type":"Point","coordinates":[999,2]}"#,
+            r#"{"type":"Nope"}"#,
+        ] {
             assert!(geojson(t, "f").is_err(), "{t}");
         }
-        let nested = format!("{}{}", r#"{"type":"GeometryCollection","geometries":["#.repeat(50), "]}".repeat(50));
+        let nested = format!(
+            "{}{}",
+            r#"{"type":"GeometryCollection","geometries":["#.repeat(50),
+            "]}".repeat(50)
+        );
         assert!(geojson(&nested, "f").is_err());
     }
 
@@ -943,10 +1100,15 @@ LXXX ignored\r\n";
         let g = igc(IGC, "f").unwrap();
         assert_eq!(g.items.len(), 1);
         assert_eq!(g.items[0].name, "Jane Doe, Example 3 (2016-07-02)");
-        let Shape::Line(l) = &g.items[0].shape else { panic!() };
+        let Shape::Line(l) = &g.items[0].shape else {
+            panic!()
+        };
         assert_eq!(l.len(), 3, "the short record is skipped");
         assert!((l[0].lat.to_degrees() - (52.0 + 6.343 / 60.0)).abs() < 1e-9);
-        assert!((l[0].lon.to_degrees() + (6.198 / 60.0)).abs() < 1e-9, "west is negative");
+        assert!(
+            (l[0].lon.to_degrees() + (6.198 / 60.0)).abs() < 1e-9,
+            "west is negative"
+        );
         assert_eq!(l[0].alt, Some(558.0), "the GNSS altitude");
         assert!(l[2].lat < 0.0, "south is negative");
     }
@@ -955,7 +1117,8 @@ LXXX ignored\r\n";
     fn igc_without_fixes_or_with_nonsense_is_an_error() {
         assert_eq!(igc("AXXX\r\nHFDTE020716\r\n", "f"), Err(ImportError::Empty));
         assert!(igc("B\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}", "f").is_err());
-        let bad = "AXXX\nB1101359999999N00006198WA0058700558\nB1101355206343N00006198WA0058700558\n";
+        let bad =
+            "AXXX\nB1101359999999N00006198WA0058700558\nB1101355206343N00006198WA0058700558\n";
         assert!(igc(bad, "f").is_err(), "one good fix is not a line");
     }
 
@@ -967,7 +1130,13 @@ LXXX ignored\r\n";
         assert!(parse(IGC.as_bytes(), "f").is_ok());
         let bom = format!("\u{feff}{GEOJSON}");
         assert!(parse(bom.as_bytes(), "f").is_ok());
-        for t in [&b""[..], b"hello", b"<html></html>", b"\xff\xfe\x00\x01", b"<"] {
+        for t in [
+            &b""[..],
+            b"hello",
+            b"<html></html>",
+            b"\xff\xfe\x00\x01",
+            b"<",
+        ] {
             assert_eq!(parse(t, "f"), Err(ImportError::Unrecognised), "{t:?}");
         }
     }
@@ -986,9 +1155,17 @@ LXXX ignored\r\n";
 
     #[test]
     fn the_fixtures_in_the_repository_read() {
-        let g = load_file(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/alps_route.gpx"))).unwrap();
+        let g = load_file(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/alps_route.gpx"
+        )))
+        .unwrap();
         assert_eq!(g.items.len(), 7);
-        let k = load_file(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/alps_areas.kml"))).unwrap();
+        let k = load_file(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/alps_areas.kml"
+        )))
+        .unwrap();
         assert!(matches!(k.items[0].shape, Shape::Polygon(ref r) if r.len() == 2));
     }
 
@@ -1002,7 +1179,10 @@ LXXX ignored\r\n";
     fn many_items_are_cut_short_and_reported() {
         let mut t = String::from("<gpx>");
         for i in 0..(MAX_ITEMS + 5) {
-            t.push_str(&format!("<wpt lat=\"1\" lon=\"{}\"/>", (i % 100) as f64 / 10.0));
+            t.push_str(&format!(
+                "<wpt lat=\"1\" lon=\"{}\"/>",
+                (i % 100) as f64 / 10.0
+            ));
         }
         t.push_str("</gpx>");
         let g = gpx(&t, "f").unwrap();
@@ -1013,8 +1193,11 @@ LXXX ignored\r\n";
     fn boxes_and_targets_cross_the_antimeridian_the_short_way() {
         let r = |d: f64| d.to_radians();
         let b = bounding_box([(r(1.0), r(170.0)), (r(2.0), r(-175.0))].into_iter()).unwrap();
-        assert!((b[1].to_degrees() - 170.0).abs() < 1e-9 && (b[3].to_degrees() + 175.0).abs() < 1e-9);
-        let b = bounding_box([(r(1.0), r(10.0)), (r(2.0), r(20.0)), (r(3.0), r(15.0))].into_iter()).unwrap();
+        assert!(
+            (b[1].to_degrees() - 170.0).abs() < 1e-9 && (b[3].to_degrees() + 175.0).abs() < 1e-9
+        );
+        let b = bounding_box([(r(1.0), r(10.0)), (r(2.0), r(20.0)), (r(3.0), r(15.0))].into_iter())
+            .unwrap();
         assert!((b[1].to_degrees() - 10.0).abs() < 1e-9 && (b[3].to_degrees() - 20.0).abs() < 1e-9);
         assert!(bounding_box(std::iter::empty()).is_none());
         let g = gpx(GPX, "f").unwrap();
@@ -1032,6 +1215,9 @@ LXXX ignored\r\n";
         std::fs::write(&path, GPX).unwrap();
         assert_eq!(load_file(&path).unwrap().name, "walk");
         assert!(matches!(load_file(&dir), Err(ImportError::Io(_))));
-        assert!(matches!(load_file(&dir.join("none.gpx")), Err(ImportError::Io(_))));
+        assert!(matches!(
+            load_file(&dir.join("none.gpx")),
+            Err(ImportError::Io(_))
+        ));
     }
 }

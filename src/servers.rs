@@ -1,10 +1,10 @@
 //! Tracks each public server's health, so that one under load is left alone. Time is passed
 //! in, which keeps the rules testable without waiting for fifteen minutes.
 
+use crate::wtime::{Duration, SystemTime, UNIX_EPOCH};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use crate::wtime::{Duration, SystemTime, UNIX_EPOCH};
 
 /// How many server errors within the window take a server out.
 pub const STRIKES: usize = 3;
@@ -66,19 +66,30 @@ impl Servers {
         let now = SystemTime::now();
         if let Some(text) = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
             for line in text.lines() {
-                let Some((host, seconds)) = line.split_once(' ') else { continue };
-                let Ok(seconds) = seconds.parse::<u64>() else { continue };
+                let Some((host, seconds)) = line.split_once(' ') else {
+                    continue;
+                };
+                let Ok(seconds) = seconds.parse::<u64>() else {
+                    continue;
+                };
                 let until = UNIX_EPOCH + Duration::from_secs(seconds);
                 // A wrong or edited file must not block a server for longer than the rules allow.
                 if until > now && until <= now + LONGEST_PAUSE {
                     state.insert(
                         host.to_string(),
-                        Server { paused_until: Some(until), on_trial: true, ..Server::default() },
+                        Server {
+                            paused_until: Some(until),
+                            on_trial: true,
+                            ..Server::default()
+                        },
                     );
                 }
             }
         }
-        Self { state: Mutex::new(state), path }
+        Self {
+            state: Mutex::new(state),
+            path,
+        }
     }
 
     fn save(&self, state: &HashMap<String, Server>) {
@@ -150,7 +161,9 @@ impl Servers {
         server.trial_running = false;
         let pause_for = match failure {
             Failure::Unreachable => {
-                let wait = server.backoff.map_or(FIRST_BACKOFF, |b| (b * 2).min(LONGEST_BACKOFF));
+                let wait = server
+                    .backoff
+                    .map_or(FIRST_BACKOFF, |b| (b * 2).min(LONGEST_BACKOFF));
                 server.backoff = Some(wait);
                 server.backoff_until = Some(now + wait);
                 return server.backoff_until;
@@ -175,7 +188,10 @@ impl Servers {
         server.on_trial = true;
         server.strikes.clear();
         self.save(&state);
-        eprintln!("{host}: leaving this server alone for {} minutes", length.as_secs() / 60);
+        eprintln!(
+            "{host}: leaving this server alone for {} minutes",
+            length.as_secs() / 60
+        );
         Some(until)
     }
 
@@ -227,7 +243,11 @@ mod tests {
         let s = servers();
         let t = start();
         assert!(s.check(HOST, t).is_ok());
-        assert_eq!(s.failed(HOST, ERROR, t), None, "one error can be a single broken tile");
+        assert_eq!(
+            s.failed(HOST, ERROR, t),
+            None,
+            "one error can be a single broken tile"
+        );
         assert!(s.check(HOST, t).is_ok());
         assert_eq!(s.failed(HOST, ERROR, t + secs(1)), None);
         let until = s.failed(HOST, ERROR, t + secs(2)).unwrap();
@@ -251,7 +271,9 @@ mod tests {
     fn being_told_to_slow_down_counts_at_once() {
         let s = servers();
         let t = start();
-        let until = s.failed(HOST, Failure::TooManyRequests { retry_after: None }, t).unwrap();
+        let until = s
+            .failed(HOST, Failure::TooManyRequests { retry_after: None }, t)
+            .unwrap();
         assert_eq!(until, t + PAUSE);
     }
 
@@ -259,7 +281,9 @@ mod tests {
     fn retry_after_can_lengthen_a_timeout_but_not_shorten_it_or_make_it_endless() {
         let t = start();
         let pause_for = |seconds| {
-            let f = Failure::TooManyRequests { retry_after: Some(secs(seconds)) };
+            let f = Failure::TooManyRequests {
+                retry_after: Some(secs(seconds)),
+            };
             servers().failed(HOST, f, t).unwrap()
         };
         assert_eq!(pause_for(3600), t + secs(3600));
@@ -274,9 +298,16 @@ mod tests {
         let f = Failure::TooManyRequests { retry_after: None };
         let until = s.failed(HOST, f, t).unwrap();
         let later = until + secs(1);
-        assert!(s.check(HOST, later).is_ok(), "the first request is the trial");
+        assert!(
+            s.check(HOST, later).is_ok(),
+            "the first request is the trial"
+        );
         let blocked = s.check(HOST, later);
-        assert_eq!(blocked, Err(later + TRIAL_WAIT), "others wait for its result");
+        assert_eq!(
+            blocked,
+            Err(later + TRIAL_WAIT),
+            "others wait for its result"
+        );
         s.succeeded(HOST, 100);
         assert!(s.check(HOST, later).is_ok());
         assert!(s.check(HOST, later).is_ok(), "recovered, so no more limits");
@@ -286,10 +317,16 @@ mod tests {
     fn a_failed_trial_means_another_full_timeout() {
         let s = servers();
         let t = start();
-        let until = s.failed(HOST, Failure::TooManyRequests { retry_after: None }, t).unwrap();
+        let until = s
+            .failed(HOST, Failure::TooManyRequests { retry_after: None }, t)
+            .unwrap();
         let later = until + secs(1);
         assert!(s.check(HOST, later).is_ok());
-        assert_eq!(s.failed(HOST, ERROR, later), Some(later + PAUSE), "a single error is enough");
+        assert_eq!(
+            s.failed(HOST, ERROR, later),
+            Some(later + PAUSE),
+            "a single error is enough"
+        );
     }
 
     #[test]
@@ -305,7 +342,11 @@ mod tests {
         assert_eq!(s.paused_until(HOST, t), None);
         assert!(s.check(HOST, t + secs(61)).is_ok());
         s.succeeded(HOST, 1);
-        assert_eq!(s.failed(HOST, Failure::Unreachable, t), Some(t + secs(2)), "starts over");
+        assert_eq!(
+            s.failed(HOST, Failure::Unreachable, t),
+            Some(t + secs(2)),
+            "starts over"
+        );
     }
 
     #[test]
@@ -324,7 +365,9 @@ mod tests {
         let path = dir.join("servers.txt");
         let now = SystemTime::now();
         let s = Servers::new(Some(path.clone()));
-        let until = s.failed(HOST, Failure::TooManyRequests { retry_after: None }, now).unwrap();
+        let until = s
+            .failed(HOST, Failure::TooManyRequests { retry_after: None }, now)
+            .unwrap();
         drop(s);
         let restarted = Servers::new(Some(path.clone()));
         let found = restarted.paused_until(HOST, now + secs(1)).unwrap();
@@ -340,7 +383,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("servers.txt");
         let far_future = unix(SystemTime::now()) + 10_000_000;
-        std::fs::write(&path, format!("garbage\nhost notanumber\nforever.example {far_future}\n")).unwrap();
+        std::fs::write(
+            &path,
+            format!("garbage\nhost notanumber\nforever.example {far_future}\n"),
+        )
+        .unwrap();
         let s = Servers::new(Some(path));
         assert!(s.check("forever.example", SystemTime::now()).is_ok());
         assert!(s.check("host", SystemTime::now()).is_ok());
@@ -355,6 +402,9 @@ mod tests {
         s.succeeded(HOST, 500);
         s.failed(HOST, ERROR, t);
         let r = &s.report(t)[0];
-        assert_eq!((r.requests, r.bytes, r.errors, r.paused_until), (3, 1500, 1, None));
+        assert_eq!(
+            (r.requests, r.bytes, r.errors, r.paused_until),
+            (3, 1500, 1, None)
+        );
     }
 }

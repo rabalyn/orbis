@@ -7,14 +7,14 @@ use crate::import::Imported;
 use crate::layers::LineKinds;
 use crate::overlay::{self, OVERLAY_SIZE};
 use crate::sources;
-use crate::{blend, service_lib};
 use crate::vector::{self, Label, VectorTile};
+use crate::wtime::{Duration, SystemTime};
+use crate::{blend, service_lib};
 use bytemuck::{Pod, Zeroable};
 use glam::DVec3;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
-use crate::wtime::{Duration, SystemTime};
 
 pub const GRID: usize = 32;
 pub const TERRAIN_MAX_Z: u8 = 14;
@@ -109,7 +109,11 @@ pub struct RoofData {
 }
 
 /// What a failed fetch means for a job: another try now or later.
-fn after_failure(e: FetchError, k: TileKey, retry: fn(TileKey, Option<SystemTime>) -> Outcome) -> Outcome {
+fn after_failure(
+    e: FetchError,
+    k: TileKey,
+    retry: fn(TileKey, Option<SystemTime>) -> Outcome,
+) -> Outcome {
     match e {
         FetchError::Busy(wait) => Outcome::Deferred(wait),
         e => retry(k, asks_to_wait(&e)),
@@ -125,7 +129,9 @@ fn asks_to_wait(error: &FetchError) -> Option<SystemTime> {
 
 /// Whether an image is one flat colour, as services send for places they have no data for.
 pub fn is_blank(rgba: &[u8]) -> bool {
-    let Some(first) = rgba.get(..3) else { return true };
+    let Some(first) = rgba.get(..3) else {
+        return true;
+    };
     let close = |a: u8, b: u8| a.abs_diff(b) <= BLANK_RANGE;
     rgba.chunks_exact(4)
         .all(|p| close(p[0], first[0]) && close(p[1], first[1]) && close(p[2], first[2]))
@@ -133,7 +139,10 @@ pub fn is_blank(rgba: &[u8]) -> bool {
 
 /// Cuts a large image down to the part a tile shows, which keeps graphics memory the same as
 /// with 256-pixel sources. Returns the image with the tile's position in it, as `rect_in` does.
-fn keep_tile_part(img: image::RgbaImage, rect: (f64, f64, f64)) -> (image::RgbaImage, (f64, f64, f64)) {
+fn keep_tile_part(
+    img: image::RgbaImage,
+    rect: (f64, f64, f64),
+) -> (image::RgbaImage, (f64, f64, f64)) {
     let (u, v, size) = rect;
     if img.width() <= 256 || size >= 1.0 {
         return (img, rect);
@@ -188,11 +197,17 @@ impl Dem {
             .pixels()
             .map(|p| p[0] as f32 * 256.0 + p[1] as f32 + p[2] as f32 / 256.0 - 32768.0)
             .collect();
-        Some(Self { size: w as usize, data })
+        Some(Self {
+            size: w as usize,
+            data,
+        })
     }
 
     pub fn flat() -> Self {
-        Self { size: 1, data: vec![0.0] }
+        Self {
+            size: 1,
+            data: vec![0.0],
+        }
     }
 
     /// Bilinear height at a position within the tile, with `u` and `v` in 0..1.
@@ -272,7 +287,9 @@ pub fn build_mesh(
     for j in 0..side {
         for i in 0..side {
             let (s, t) = at(i, j);
-            heights.push(dem.sample(dem_rect.0 + s * dem_rect.2, dem_rect.1 + t * dem_rect.2) * exaggeration);
+            heights.push(
+                dem.sample(dem_rect.0 + s * dem_rect.2, dem_rect.1 + t * dem_rect.2) * exaggeration,
+            );
         }
     }
     // Smooth normals from the surface slope across neighbouring grid points.
@@ -287,18 +304,32 @@ pub fn build_mesh(
             let along_t = p(i, (j + 1).min(GRID)) - p(i, j.saturating_sub(1));
             // t grows southwards, so s x t points down.
             let n = along_t.cross(along_s).normalize_or_zero();
-            if n == DVec3::ZERO { (center + position(0.5, 0.5, 0.0)).normalize() } else { n }
+            if n == DVec3::ZERO {
+                (center + position(0.5, 0.5, 0.0)).normalize()
+            } else {
+                n
+            }
         })
         .collect();
     for j in 0..side {
         for i in 0..side {
             let (s, t) = at(i, j);
-            vertices.push(vertex(s, t, heights[j * side + i] as f64, normals[j * side + i]));
+            vertices.push(vertex(
+                s,
+                t,
+                heights[j * side + i] as f64,
+                normals[j * side + i],
+            ));
         }
     }
     for (i, j) in border() {
         let (s, t) = at(i, j);
-        vertices.push(vertex(s, t, heights[j * side + i] as f64 - skirt, normals[j * side + i]));
+        vertices.push(vertex(
+            s,
+            t,
+            heights[j * side + i] as f64 - skirt,
+            normals[j * side + i],
+        ));
     }
     (center, vertices, heights)
 }
@@ -388,7 +419,10 @@ struct Queue {
 impl Queue {
     /// Takes the most urgent job that has nothing in its way.
     fn next_job(&mut self, fetcher: &Fetcher) -> Option<Job> {
-        let at = self.waiting.iter().rposition(|j| self.blocked.get(j).is_none_or(|w| fetcher.is_clear(w)))?;
+        let at = self
+            .waiting
+            .iter()
+            .rposition(|j| self.blocked.get(j).is_none_or(|w| fetcher.is_clear(w)))?;
         let job = self.waiting.remove(at);
         self.blocked.remove(&job);
         Some(job)
@@ -449,7 +483,9 @@ impl Shared {
             Ok(found) => found,
             Err(e) => return after_failure(e, k, Outcome::BuildingsRetry),
         };
-        let ground = |x: f64, y: f64| dem.sample(rect.0 + x * rect.2, rect.1 + y * rect.2) * self.exaggeration;
+        let ground = |x: f64, y: f64| {
+            dem.sample(rect.0 + x * rect.2, rect.1 + y * rect.2) * self.exaggeration
+        };
         let mesh = buildings::build_mesh(k, &tile.buildings, &ground);
         Outcome::Buildings(k, mesh.map(Box::new))
     }
@@ -466,7 +502,14 @@ impl Shared {
         };
         let walls = buildings::wall_colours(&tile.buildings, &picture);
         let (w, h) = picture.dimensions();
-        Outcome::Roofs(k, z, Some(Box::new(RoofData { mips: build_mips(w, h, picture.into_raw()), walls })))
+        Outcome::Roofs(
+            k,
+            z,
+            Some(Box::new(RoofData {
+                mips: build_mips(w, h, picture.into_raw()),
+                walls,
+            })),
+        )
     }
 
     /// The picture of a tile composed from the best imagery for each of its descendants at zoom `z`,
@@ -476,14 +519,16 @@ impl Shared {
     fn roof_picture(&self, k: TileKey, z: u8) -> Result<Option<image::RgbaImage>, FetchError> {
         let n = 1u32 << (z - k.z);
         let mut picture = image::RgbaImage::new(n * ROOF_CELL, n * ROOF_CELL);
-        let mut decoded: HashMap<(&'static str, TileKey), Option<Arc<image::RgbaImage>>> = HashMap::new();
+        let mut decoded: HashMap<(&'static str, TileKey), Option<Arc<image::RgbaImage>>> =
+            HashMap::new();
         let mut waiting: Option<FetchError> = None;
         let mut any = false;
         for cy in 0..n {
             for cx in 0..n {
                 let cell = TileKey::new(z, (k.x << (z - k.z)) + cx, (k.y << (z - k.z)) + cy);
                 for (source, source_key) in sources::imagery_for(cell) {
-                    if source.blank_means_missing() && self.fetcher.empty_above(source, source_key) {
+                    if source.blank_means_missing() && self.fetcher.empty_above(source, source_key)
+                    {
                         continue;
                     }
                     let img = match decoded.get(&(source.id, source_key)) {
@@ -525,8 +570,18 @@ impl Shared {
                     if source.blank_means_missing() && is_blank(part.as_raw()) {
                         continue;
                     }
-                    let part = image::imageops::resize(&part, ROOF_CELL, ROOF_CELL, image::imageops::FilterType::Triangle);
-                    image::imageops::replace(&mut picture, &part, (cx * ROOF_CELL) as i64, (cy * ROOF_CELL) as i64);
+                    let part = image::imageops::resize(
+                        &part,
+                        ROOF_CELL,
+                        ROOF_CELL,
+                        image::imageops::FilterType::Triangle,
+                    );
+                    image::imageops::replace(
+                        &mut picture,
+                        &part,
+                        (cx * ROOF_CELL) as i64,
+                        (cy * ROOF_CELL) as i64,
+                    );
                     any = true;
                     break;
                 }
@@ -547,7 +602,13 @@ impl Shared {
         let (imports, generation) = self.imports.lock().unwrap().clone();
         let mips = overlay::render(&tile, k, source, &imports, *self.lines.lock().unwrap())
             .map(|rgba| build_mips(OVERLAY_SIZE, OVERLAY_SIZE, rgba));
-        Outcome::Overlay(Box::new(OverlayData { key: k, source, labels: tile.labels.clone(), mips, generation }))
+        Outcome::Overlay(Box::new(OverlayData {
+            key: k,
+            source,
+            labels: tile.labels.clone(),
+            mips,
+            generation,
+        }))
     }
 
     fn terrain(&self, k: TileKey) -> Result<(Arc<Dem>, (f64, f64, f64)), FetchError> {
@@ -614,11 +675,17 @@ impl Shared {
                 }
             };
             let Ok(img) = image::load_from_memory(&bytes) else {
-                eprintln!("{}: tile {}/{}/{} is damaged", source.id, source_key.z, source_key.x, source_key.y);
+                eprintln!(
+                    "{}: tile {}/{}/{} is damaged",
+                    source.id, source_key.z, source_key.x, source_key.y
+                );
                 self.fetcher.discard(source, source_key);
                 if user {
                     // A web page or error text instead of a picture: do not ask again this run.
-                    service_lib::note_problem(source, "sent something that is not a picture, such as an error page".into());
+                    service_lib::note_problem(
+                        source,
+                        "sent something that is not a picture, such as an error page".into(),
+                    );
                     return Outcome::Missing(k);
                 }
                 return Outcome::Retry(k, None);
@@ -641,7 +708,9 @@ impl Shared {
                 continue; // Others may still have this part, so the image stays known.
             }
             let (img, uv_rect) = match holed.take() {
-                Some((top, top_rect)) => (blend::under(&top, top_rect, &img, uv_rect), (0.0, 0.0, 1.0)),
+                Some((top, top_rect)) => {
+                    (blend::under(&top, top_rect, &img, uv_rect), (0.0, 0.0, 1.0))
+                }
                 None => (img, uv_rect),
             };
             if i < last && !crate::body::current().surface_data && blend::has_holes(&img) {
@@ -668,10 +737,11 @@ impl Shared {
         uv_rect: (f64, f64, f64),
         credit: &'static str,
     ) -> Outcome {
-        let (img, uv_rect, credit) = match self.with_service_overlay(k, active, img, uv_rect, credit) {
-            Ok(x) => x,
-            Err(outcome) => return outcome,
-        };
+        let (img, uv_rect, credit) =
+            match self.with_service_overlay(k, active, img, uv_rect, credit) {
+                Ok(x) => x,
+                Err(outcome) => return outcome,
+            };
         let (w, h) = img.dimensions();
         let (center, vertices, heights) = build_mesh(k, dem, dem_rect, uv_rect, self.exaggeration);
         Outcome::Ready(Box::new(TileData {
@@ -700,7 +770,9 @@ impl Shared {
         base_rect: (f64, f64, f64),
         credit: &'static str,
     ) -> Result<Imagery, Outcome> {
-        let Some(over) = active.overlay.filter(|o| k.z >= o.min_z && o.covers(k)) else { return Ok((base, base_rect, credit)) };
+        let Some(over) = active.overlay.filter(|o| k.z >= o.min_z && o.covers(k)) else {
+            return Ok((base, base_rect, credit));
+        };
         let key = over.source_key(k);
         let bytes = match self.fetcher.try_fetch(over, key) {
             Ok(bytes) => bytes,
@@ -716,7 +788,10 @@ impl Shared {
             Ok(p) => p,
             Err(_) => {
                 self.fetcher.discard(over, key);
-                service_lib::note_problem(over, "sent something that is not a picture, such as an error page".into());
+                service_lib::note_problem(
+                    over,
+                    "sent something that is not a picture, such as an error page".into(),
+                );
                 return Ok((base, base_rect, credit));
             }
         };
@@ -731,7 +806,11 @@ impl Shared {
         let credit = if credit.is_empty() {
             over.credit
         } else {
-            service_lib::intern(format!("{credit}{}{}", service_lib::CREDIT_SEP, over.credit))
+            service_lib::intern(format!(
+                "{credit}{}{}",
+                service_lib::CREDIT_SEP,
+                over.credit
+            ))
         };
         Ok((mixed, (0.0, 0.0, 1.0), credit))
     }
@@ -766,11 +845,20 @@ impl Loader {
             dems: Mutex::new(HashMap::new()),
             vectors: Mutex::new(HashMap::new()),
             imports: Mutex::new((Arc::default(), 0)),
-            lines: Mutex::new(LineKinds { streets: true, trails: true, trains: true, boundaries: true }),
+            lines: Mutex::new(LineKinds {
+                streets: true,
+                trails: true,
+                trains: true,
+                boundaries: true,
+            }),
         });
         let (tx, results) = sync_channel(RESULT_QUEUE);
         #[cfg(target_arch = "wasm32")]
-        return Self { shared, results, tx };
+        return Self {
+            shared,
+            results,
+            tx,
+        };
         #[cfg(not(target_arch = "wasm32"))]
         {
             for _ in 0..WORKERS {
@@ -792,7 +880,9 @@ impl Loader {
                 if q.in_flight.len() >= RESULT_QUEUE {
                     return;
                 }
-                let Some(j) = q.next_job(&self.shared.fetcher) else { return };
+                let Some(j) = q.next_job(&self.shared.fetcher) else {
+                    return;
+                };
                 q.in_flight.insert(j);
                 j
             };
@@ -817,7 +907,13 @@ impl Loader {
     /// Replaces the queue, so tiles the view no longer needs are not fetched. Imagery and
     /// terrain come before map data, which can only appear on a tile that is already there,
     /// then buildings, and the aerial pictures of their roofs come last.
-    pub fn set_wanted(&self, tiles: &[TileKey], overlays: &[TileKey], buildings: &[TileKey], roofs: &[(TileKey, u8)]) {
+    pub fn set_wanted(
+        &self,
+        tiles: &[TileKey],
+        overlays: &[TileKey],
+        buildings: &[TileKey],
+        roofs: &[(TileKey, u8)],
+    ) {
         let jobs = roofs
             .iter()
             .rev()
@@ -871,7 +967,9 @@ fn worker(shared: &Shared, tx: &SyncSender<(Job, Outcome)>) {
                 };
             }
         };
-        let Some(done) = run_job(shared, job) else { continue };
+        let Some(done) = run_job(shared, job) else {
+            continue;
+        };
         if tx.send(done).is_err() {
             return;
         }
@@ -905,7 +1003,13 @@ mod tests {
     /// barycentric weights on the three corners, as the GPU interpolates it.
     fn height_on_drawn_triangle(heights: &[f32], u: f64, v: f64) -> f64 {
         let n = GRID as f64;
-        let corner = |idx: u32| ((idx as usize % (GRID + 1)) as f64 / n, (idx as usize / (GRID + 1)) as f64 / n, heights[idx as usize] as f64);
+        let corner = |idx: u32| {
+            (
+                (idx as usize % (GRID + 1)) as f64 / n,
+                (idx as usize / (GRID + 1)) as f64 / n,
+                heights[idx as usize] as f64,
+            )
+        };
         for t in mesh_indices().chunks(3).take(GRID * GRID * 2) {
             let (a, b, c) = (corner(t[0]), corner(t[1]), corner(t[2]));
             let d = (b.1 - c.1) * (a.0 - c.0) + (c.0 - b.0) * (a.1 - c.1);
@@ -921,23 +1025,35 @@ mod tests {
 
     #[test]
     fn mesh_height_follows_the_drawn_triangles_not_the_bilinear_blend() {
-        let heights: Vec<f32> = (0..(GRID + 1) * (GRID + 1)).map(|i| ((i * 7919) % 1000) as f32).collect();
+        let heights: Vec<f32> = (0..(GRID + 1) * (GRID + 1))
+            .map(|i| ((i * 7919) % 1000) as f32)
+            .collect();
         let mut worst_bilinear: f64 = 0.0;
         for a in 0..37 {
             for b in 0..37 {
-                let (u, v) = (a as f64 / 36.0 * 0.999 + 0.0005, b as f64 / 36.0 * 0.999 + 0.0005);
+                let (u, v) = (
+                    a as f64 / 36.0 * 0.999 + 0.0005,
+                    b as f64 / 36.0 * 0.999 + 0.0005,
+                );
                 let want = height_on_drawn_triangle(&heights, u, v);
                 let got = height_on_mesh(&heights, u, v);
-                assert!((got - want).abs() < 1e-6, "at {u},{v}: {got} against {want}");
-                worst_bilinear = worst_bilinear.max((crate::render::bilinear_for_test(&heights, u, v) - want).abs());
+                assert!(
+                    (got - want).abs() < 1e-6,
+                    "at {u},{v}: {got} against {want}"
+                );
+                worst_bilinear = worst_bilinear
+                    .max((crate::render::bilinear_for_test(&heights, u, v) - want).abs());
             }
         }
-        assert!(worst_bilinear > 10.0, "the cases should tell the two apart: {worst_bilinear}");
+        assert!(
+            worst_bilinear > 10.0,
+            "the cases should tell the two apart: {worst_bilinear}"
+        );
     }
     use crate::cache::DiskCache;
     use crate::fetcher::Peers;
-    use glam::Vec3;
     use crate::wtime::Instant;
+    use glam::Vec3;
 
     fn world(center: DVec3, v: &Vertex) -> DVec3 {
         center + Vec3::from_array(v.pos).as_dvec3()
@@ -974,7 +1090,10 @@ mod tests {
 
     #[test]
     fn terrain_raises_the_surface() {
-        let dem = Dem { size: 1, data: vec![1000.0] };
+        let dem = Dem {
+            size: 1,
+            data: vec![1000.0],
+        };
         let full = (0.0, 0.0, 1.0);
         let k = TileKey::new(6, 33, 20);
         let (c0, flat, _) = build_mesh(k, &Dem::flat(), full, full, 1.0);
@@ -990,14 +1109,20 @@ mod tests {
         let (dem, rect) = terrain_source(k);
         assert_eq!(dem, k.ancestor(14));
         assert_eq!(rect.2, 0.25);
-        assert_eq!(terrain_source(TileKey::new(1, 1, 0)).0, TileKey::new(0, 0, 0));
+        assert_eq!(
+            terrain_source(TileKey::new(1, 1, 0)).0,
+            TileKey::new(0, 0, 0)
+        );
     }
 
     #[test]
     fn missing_terrain_comes_from_the_nearest_coarser_tile() {
         // The z15 tile at Everest whose terrain was flat: its z13 source is missing, z12 exists.
         let k = TileKey::containing(27.7733f64.to_radians(), 86.7797f64.to_radians(), 15);
-        let high = Arc::new(Dem { size: 1, data: vec![5300.0] });
+        let high = Arc::new(Dem {
+            size: 1,
+            data: vec![5300.0],
+        });
         let mut asked = Vec::new();
         let (dem, rect) = terrain_from(k, |a| {
             asked.push(a.z);
@@ -1020,8 +1145,17 @@ mod tests {
         .unwrap();
         assert_eq!(asked, 9, "z8 down to z0");
         assert_eq!((dem.sample(0.3, 0.7), rect), (0.0, (0.0, 0.0, 1.0)));
-        let failed = terrain_from(k, |a| if a.z == 7 { Err(FetchError::Transient) } else { Ok(None) });
-        assert!(failed.is_err(), "a failure is retried, not taken for missing terrain");
+        let failed = terrain_from(k, |a| {
+            if a.z == 7 {
+                Err(FetchError::Transient)
+            } else {
+                Ok(None)
+            }
+        });
+        assert!(
+            failed.is_err(),
+            "a failure is retried, not taken for missing terrain"
+        );
     }
 
     /// Marks a terrain tile and all its ancestors as missing, so that its terrain is flat with
@@ -1034,7 +1168,10 @@ mod tests {
 
     #[test]
     fn dem_sampling_interpolates() {
-        let dem = Dem { size: 2, data: vec![0.0, 100.0, 0.0, 100.0] };
+        let dem = Dem {
+            size: 2,
+            data: vec![0.0, 100.0, 0.0, 100.0],
+        };
         assert_eq!(dem.sample(0.5, 0.5), 50.0);
         assert_eq!(dem.sample(0.0, 0.0), 0.0);
         assert_eq!(dem.sample(1.0, 1.0), 100.0);
@@ -1052,7 +1189,9 @@ mod tests {
 
     #[test]
     fn mip_chain_ends_at_one_pixel_and_averages() {
-        let rgba = [0u8, 0, 0, 255, 100, 100, 100, 255, 100, 100, 100, 255, 200, 200, 200, 255];
+        let rgba = [
+            0u8, 0, 0, 255, 100, 100, 100, 255, 100, 100, 100, 255, 200, 200, 200, 255,
+        ];
         let mips = build_mips(2, 2, rgba.to_vec());
         assert_eq!(mips.len(), 2);
         assert_eq!((mips[1].0, mips[1].1), (1, 1));
@@ -1066,10 +1205,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let cache = DiskCache::new(root.clone());
         for k in keys {
-            cache.put(&sources::EOX.cache_name(*k), b"not an image").unwrap();
+            cache
+                .put(&sources::EOX.cache_name(*k), b"not an image")
+                .unwrap();
         }
         let fetcher = Fetcher::new(cache, Peers::default(), true);
-        (Loader::new(Arc::new(fetcher), 1.0, vec!["name".into()]), root)
+        (
+            Loader::new(Arc::new(fetcher), 1.0, vec!["name".into()]),
+            root,
+        )
     }
 
     /// A small JPEG with the given pixels, so that a tile can be decoded for real.
@@ -1091,7 +1235,11 @@ mod tests {
         let cache = crate::fetcher::tests::temp_cache(tag);
         let k = TileKey::containing(47.27f64.to_radians(), 11.4f64.to_radians(), 18);
         no_terrain(&cache, k.ancestor(14));
-        cache.mark_missing(&sources::by_id("versatiles").unwrap().cache_name(k.ancestor(17)));
+        cache.mark_missing(
+            &sources::by_id("versatiles")
+                .unwrap()
+                .cache_name(k.ancestor(17)),
+        );
         (cache, k, k.ancestor(14))
     }
 
@@ -1108,23 +1256,41 @@ mod tests {
                 // The best source has it, with a faint pattern, as one flat colour counts as blank.
                 Some(&c) => {
                     let pattern = tile_bytes(|x, _| [c[0], c[1], c[2] + (x % 2) as u8 * 8]);
-                    cache.put(&candidates[0].0.cache_name(candidates[0].1), &pattern).unwrap();
+                    cache
+                        .put(&candidates[0].0.cache_name(candidates[0].1), &pattern)
+                        .unwrap();
                 }
                 // No source has the last one.
-                None => candidates.iter().for_each(|(s, key)| cache.mark_missing(&s.cache_name(*key))),
+                None => candidates
+                    .iter()
+                    .for_each(|(s, key)| cache.mark_missing(&s.cache_name(*key))),
             }
         }
         let fetcher = Fetcher::new(cache, Peers::default(), true);
         let loader = Loader::new(Arc::new(fetcher), 1.0, vec!["name".into()]);
-        let picture = loader.shared.roof_picture(k, 15).ok().flatten().expect("a picture");
+        let picture = loader
+            .shared
+            .roof_picture(k, 15)
+            .ok()
+            .flatten()
+            .expect("a picture");
         assert_eq!(picture.dimensions(), (2 * ROOF_CELL, 2 * ROOF_CELL));
         for (i, (cx, cy)) in cells.iter().enumerate() {
-            for (dx, dy) in [(2, 2), (ROOF_CELL / 2, ROOF_CELL / 2), (ROOF_CELL - 3, ROOF_CELL - 3)] {
-                let px = picture.get_pixel(cx * ROOF_CELL + dx, cy * ROOF_CELL + dy).0;
+            for (dx, dy) in [
+                (2, 2),
+                (ROOF_CELL / 2, ROOF_CELL / 2),
+                (ROOF_CELL - 3, ROOF_CELL - 3),
+            ] {
+                let px = picture
+                    .get_pixel(cx * ROOF_CELL + dx, cy * ROOF_CELL + dy)
+                    .0;
                 match colours.get(i) {
                     Some(c) => {
                         assert_eq!(px[..2], c[..2], "cell {i} at {dx},{dy}");
-                        assert!((c[2]..=c[2] + 8).contains(&px[2]) && px[3] == 255, "cell {i} at {dx},{dy}");
+                        assert!(
+                            (c[2]..=c[2] + 8).contains(&px[2]) && px[3] == 255,
+                            "cell {i} at {dx},{dy}"
+                        );
                     }
                     None => assert_eq!(px[3], 0, "no imagery stays clear"),
                 }
@@ -1135,20 +1301,40 @@ mod tests {
     #[test]
     fn a_part_of_a_coarser_image_is_enlarged_into_place() {
         // The left half red, the right half blue: a quarter of it is all red or all blue.
-        let img = image::RgbaImage::from_fn(16, 16, |x, _| image::Rgba(if x < 8 { [255, 0, 0, 255] } else { [0, 0, 255, 255] }));
+        let img = image::RgbaImage::from_fn(16, 16, |x, _| {
+            image::Rgba(if x < 8 {
+                [255, 0, 0, 255]
+            } else {
+                [0, 0, 255, 255]
+            })
+        });
         let right = image_part(&img, (0.5, 0.5, 0.5));
         assert_eq!(right.dimensions(), (8, 8));
         assert!(right.pixels().all(|p| p.0 == [0, 0, 255, 255]));
-        assert!(image_part(&img, (0.0, 0.0, 0.5)).pixels().all(|p| p.0 == [255, 0, 0, 255]));
+        assert!(image_part(&img, (0.0, 0.0, 0.5))
+            .pixels()
+            .all(|p| p.0 == [255, 0, 0, 255]));
     }
 
     #[test]
     fn detail_imagery_is_preferred_where_it_exists() {
         let (cache, k, base) = detail_setup("prefer");
         let at = sources::by_id("basemap-at").unwrap();
-        cache.put(&at.cache_name(k), &tile_bytes(|x, y| [x as u8 * 10, y as u8 * 10, 50])).unwrap();
-        cache.put(&sources::EOX.cache_name(base), &tile_bytes(|x, _| [x as u8, 9, 9])).unwrap();
-        let Outcome::Ready(tile) = load_with(&cache, k) else { panic!("no tile") };
+        cache
+            .put(
+                &at.cache_name(k),
+                &tile_bytes(|x, y| [x as u8 * 10, y as u8 * 10, 50]),
+            )
+            .unwrap();
+        cache
+            .put(
+                &sources::EOX.cache_name(base),
+                &tile_bytes(|x, _| [x as u8, 9, 9]),
+            )
+            .unwrap();
+        let Outcome::Ready(tile) = load_with(&cache, k) else {
+            panic!("no tile")
+        };
         assert_eq!(tile.credit, "Grundkarte: basemap.at");
         assert_eq!(tile.vertices[0].uv, [0.0, 0.0], "its own image, used whole");
     }
@@ -1157,9 +1343,18 @@ mod tests {
     fn a_blank_answer_falls_back_to_the_base_and_is_remembered() {
         let (cache, k, base) = detail_setup("blank");
         let at = sources::by_id("basemap-at").unwrap();
-        cache.put(&at.cache_name(k), &tile_bytes(|_, _| [255, 255, 255])).unwrap();
-        cache.put(&sources::EOX.cache_name(base), &tile_bytes(|x, y| [x as u8, y as u8, 9])).unwrap();
-        let Outcome::Ready(tile) = load_with(&cache, k) else { panic!("no tile") };
+        cache
+            .put(&at.cache_name(k), &tile_bytes(|_, _| [255, 255, 255]))
+            .unwrap();
+        cache
+            .put(
+                &sources::EOX.cache_name(base),
+                &tile_bytes(|x, y| [x as u8, y as u8, 9]),
+            )
+            .unwrap();
+        let Outcome::Ready(tile) = load_with(&cache, k) else {
+            panic!("no tile")
+        };
         assert_eq!(tile.credit, "", "the base imagery's credit is always shown");
         // The base is magnified: a part of its image, not all of it.
         let rect = k.rect_in(base);
@@ -1173,10 +1368,22 @@ mod tests {
         let (cache, k, base) = detail_setup("empty-above");
         let at = sources::by_id("basemap-at").unwrap();
         // Were it consulted, this finer image would win.
-        cache.put(&at.cache_name(k), &tile_bytes(|x, y| [x as u8 * 10, y as u8 * 10, 50])).unwrap();
-        cache.put(&sources::EOX.cache_name(base), &tile_bytes(|x, y| [x as u8, y as u8, 9])).unwrap();
+        cache
+            .put(
+                &at.cache_name(k),
+                &tile_bytes(|x, y| [x as u8 * 10, y as u8 * 10, 50]),
+            )
+            .unwrap();
+        cache
+            .put(
+                &sources::EOX.cache_name(base),
+                &tile_bytes(|x, y| [x as u8, y as u8, 9]),
+            )
+            .unwrap();
         cache.mark_missing(&at.cache_name(k.ancestor(15)));
-        let Outcome::Ready(tile) = load_with(&cache, k) else { panic!("no tile") };
+        let Outcome::Ready(tile) = load_with(&cache, k) else {
+            panic!("no tile")
+        };
         assert_eq!(tile.credit, "");
     }
 
@@ -1184,10 +1391,17 @@ mod tests {
     fn only_an_empty_image_of_the_same_area_counts() {
         let (cache, k, _) = detail_setup("empty-elsewhere");
         let at = sources::by_id("basemap-at").unwrap();
-        cache.put(&at.cache_name(k), &tile_bytes(|x, y| [x as u8 * 10, y as u8 * 10, 50])).unwrap();
+        cache
+            .put(
+                &at.cache_name(k),
+                &tile_bytes(|x, y| [x as u8 * 10, y as u8 * 10, 50]),
+            )
+            .unwrap();
         let elsewhere = k.ancestor(15);
         cache.mark_missing(&at.cache_name(TileKey::new(15, elsewhere.x + 1, elsewhere.y)));
-        let Outcome::Ready(tile) = load_with(&cache, k) else { panic!("no tile") };
+        let Outcome::Ready(tile) = load_with(&cache, k) else {
+            panic!("no tile")
+        };
         assert_eq!(tile.credit, at.credit);
     }
 
@@ -1197,11 +1411,17 @@ mod tests {
         let k = TileKey::containing(50.11f64.to_radians(), 8.68f64.to_radians(), 18);
         no_terrain(&cache, k.ancestor(14));
         let vt = sources::by_id("versatiles").unwrap();
-        let img = image::RgbImage::from_fn(512, 512, |x, y| image::Rgb([(x / 2) as u8, (y / 2) as u8, 9]));
+        let img = image::RgbImage::from_fn(512, 512, |x, y| {
+            image::Rgb([(x / 2) as u8, (y / 2) as u8, 9])
+        });
         let mut bytes = std::io::Cursor::new(Vec::new());
         img.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
-        cache.put(&vt.cache_name(k.ancestor(17)), &bytes.into_inner()).unwrap();
-        let Outcome::Ready(tile) = load_with(&cache, k) else { panic!("no tile") };
+        cache
+            .put(&vt.cache_name(k.ancestor(17)), &bytes.into_inner())
+            .unwrap();
+        let Outcome::Ready(tile) = load_with(&cache, k) else {
+            panic!("no tile")
+        };
         assert_eq!(tile.credit, vt.credit);
         assert_eq!((tile.mips[0].0, tile.mips[0].1), (256, 256));
         assert_eq!(tile.vertices[0].uv, [0.0, 0.0], "its own part, used whole");
@@ -1213,7 +1433,12 @@ mod tests {
         let cache = crate::fetcher::tests::temp_cache("ocean");
         let k = TileKey::new(5, 1, 1);
         no_terrain(&cache, k.ancestor(3));
-        cache.put(&sources::EOX.cache_name(k), &tile_bytes(|_, _| [10, 20, 60])).unwrap();
+        cache
+            .put(
+                &sources::EOX.cache_name(k),
+                &tile_bytes(|_, _| [10, 20, 60]),
+            )
+            .unwrap();
         assert!(matches!(load_with(&cache, k), Outcome::Ready(_)));
     }
 
@@ -1274,7 +1499,10 @@ mod tests {
             loader.set_wanted(&[k], &[], &[], &[]);
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(!loader.is_idle(), "an uncollected result still counts as work");
+        assert!(
+            !loader.is_idle(),
+            "an uncollected result still counts as work"
+        );
         loader.set_wanted(&[], &[], &[], &[]);
         std::thread::sleep(Duration::from_millis(20));
         let mut results = 0;
@@ -1298,7 +1526,10 @@ mod tests {
         let started = q.in_flight.len();
         let left = q.waiting.len();
         drop(q);
-        assert!(started <= RESULT_QUEUE + WORKERS, "{started} jobs ran with nothing collected");
+        assert!(
+            started <= RESULT_QUEUE + WORKERS,
+            "{started} jobs ran with nothing collected"
+        );
         assert_eq!(started + left, keys.len());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1317,10 +1548,11 @@ mod tests {
         assert_eq!(v[last_grid].uv, [0.5, 0.5]);
     }
 
-
     #[test]
     fn large_images_are_cut_down_to_the_tiles_part() {
-        let img = image::RgbaImage::from_fn(512, 512, |x, y| image::Rgba([(x / 2) as u8, (y / 2) as u8, 0, 255]));
+        let img = image::RgbaImage::from_fn(512, 512, |x, y| {
+            image::Rgba([(x / 2) as u8, (y / 2) as u8, 0, 255])
+        });
         let parent = TileKey::new(17, 100, 200);
         let (part, rect) = keep_tile_part(img.clone(), TileKey::new(18, 201, 400).rect_in(parent));
         assert_eq!(part.dimensions(), (256, 256));
@@ -1337,11 +1569,21 @@ mod tests {
 
     #[test]
     fn the_most_urgent_job_without_an_obstacle_goes_first() {
-        let f = Fetcher::new(crate::fetcher::tests::temp_cache("next-job"), Peers::default(), true);
+        let f = Fetcher::new(
+            crate::fetcher::tests::temp_cache("next-job"),
+            Peers::default(),
+            true,
+        );
         let gate = f.gate("slow.example", 1);
         let pass = gate.enter();
-        let (low, high) = (Job::Tile(TileKey::new(5, 1, 1)), Job::Tile(TileKey::new(5, 2, 2)));
-        let mut q = Queue { waiting: vec![low, high], ..Queue::default() };
+        let (low, high) = (
+            Job::Tile(TileKey::new(5, 1, 1)),
+            Job::Tile(TileKey::new(5, 2, 2)),
+        );
+        let mut q = Queue {
+            waiting: vec![low, high],
+            ..Queue::default()
+        };
         q.blocked.insert(high, Wait::Server("slow.example".into()));
 
         assert_eq!(q.next_job(&f), Some(low));
@@ -1356,14 +1598,21 @@ mod tests {
         let cache = crate::fetcher::tests::temp_cache("no-holdup");
         let ready = TileKey::new(5, 1, 1);
         no_terrain(&cache, ready.ancestor(3));
-        cache.put(&sources::EOX.cache_name(ready), &tile_bytes(|_, _| [10, 20, 60])).unwrap();
+        cache
+            .put(
+                &sources::EOX.cache_name(ready),
+                &tile_bytes(|_, _| [10, 20, 60]),
+            )
+            .unwrap();
 
         // Online, but no request gets out: terrain is the only thing not known, and its server
         // stays full. More blocked jobs than workers, and all more urgent than the other one.
         let fetcher = Arc::new(Fetcher::new(cache, Peers::default(), false));
         let gate = fetcher.gate(&crate::fetcher::host_of(sources::TERRAIN.url), 1);
         std::mem::forget(gate.enter());
-        let blocked: Vec<TileKey> = (0..(WORKERS as u32 * 2)).map(|i| TileKey::new(5, 16 + i, 16)).collect();
+        let blocked: Vec<TileKey> = (0..(WORKERS as u32 * 2))
+            .map(|i| TileKey::new(5, 16 + i, 16))
+            .collect();
         let mut wanted = vec![ready];
         wanted.extend(&blocked);
         wanted.reverse();
@@ -1376,7 +1625,9 @@ mod tests {
             got = loader.try_result();
             std::thread::sleep(Duration::from_millis(5));
         }
-        let Some(Outcome::Ready(tile)) = got else { panic!("the free job was held up") };
+        let Some(Outcome::Ready(tile)) = got else {
+            panic!("the free job was held up")
+        };
         assert_eq!(tile.key, ready);
         assert!(!loader.is_idle(), "the blocked jobs are still waiting");
         loader.set_wanted(&[], &[], &[], &[]);
@@ -1394,8 +1645,14 @@ mod tests {
         let cache = crate::fetcher::tests::temp_cache(tag);
         let k = TileKey::new(5, 1, 1);
         no_terrain(&cache, k.ancestor(3));
-        cache.put(&sources::EOX.cache_name(k), &png(16, [10, 20, 60, 255])).unwrap();
-        let mut s = crate::services::xyz_service(&format!("https://{name}.example/{{z}}/{{x}}/{{y}}.png"), false).unwrap();
+        cache
+            .put(&sources::EOX.cache_name(k), &png(16, [10, 20, 60, 255]))
+            .unwrap();
+        let mut s = crate::services::xyz_service(
+            &format!("https://{name}.example/{{z}}/{{x}}/{{y}}.png"),
+            false,
+        )
+        .unwrap();
         s.tile_size = 64;
         s.credit = "Credit".into();
         s.name = name.into();
@@ -1407,15 +1664,25 @@ mod tests {
     fn a_chosen_service_replaces_the_imagery_and_is_credited() {
         let (cache, k, s) = service_setup("svc-base", "base-ok");
         let src = service_lib::source_for(&s);
-        cache.put(&src.cache_name(k), &png(64, [200, 0, 0, 255])).unwrap();
+        cache
+            .put(&src.cache_name(k), &png(64, [200, 0, 0, 255]))
+            .unwrap();
         service_lib::select_base(Some(&s));
-        let Outcome::Ready(tile) = load_with(&cache, k) else { panic!("no tile") };
+        let Outcome::Ready(tile) = load_with(&cache, k) else {
+            panic!("no tile")
+        };
         assert_eq!(&tile.mips[0].2[..4], &[200, 0, 0, 255]);
         assert_eq!(tile.credit, "\u{2}Credit");
         assert_eq!(tile.service_generation, service_lib::active().generation);
         service_lib::select_base(None);
-        let Outcome::Ready(tile) = load_with(&cache, k) else { panic!("no tile") };
-        assert_eq!(&tile.mips[0].2[..4], &[10, 20, 60, 255], "the usual imagery is back");
+        let Outcome::Ready(tile) = load_with(&cache, k) else {
+            panic!("no tile")
+        };
+        assert_eq!(
+            &tile.mips[0].2[..4],
+            &[10, 20, 60, 255],
+            "the usual imagery is back"
+        );
         assert_eq!(tile.credit, "");
     }
 
@@ -1424,11 +1691,20 @@ mod tests {
         let (cache, k, s) = service_setup("svc-bad", "bad-answers");
         let src = service_lib::source_for(&s);
         service_lib::select_base(Some(&s));
-        cache.put(&src.cache_name(k), b"<html><body>Error 500</body></html>").unwrap();
+        cache
+            .put(&src.cache_name(k), b"<html><body>Error 500</body></html>")
+            .unwrap();
         assert!(matches!(load_with(&cache, k), Outcome::Missing(_)));
-        assert!(service_lib::problem_text(src).unwrap().contains("not a picture"));
-        assert!(cache.get(&src.cache_name(k)).is_none(), "the bad answer is not kept");
-        cache.put(&src.cache_name(k), &png(32, [1, 2, 3, 255])).unwrap();
+        assert!(service_lib::problem_text(src)
+            .unwrap()
+            .contains("not a picture"));
+        assert!(
+            cache.get(&src.cache_name(k)).is_none(),
+            "the bad answer is not kept"
+        );
+        cache
+            .put(&src.cache_name(k), &png(32, [1, 2, 3, 255]))
+            .unwrap();
         assert!(matches!(load_with(&cache, k), Outcome::Missing(_)));
         assert!(service_lib::problem_text(src).unwrap().contains("32 by 32"));
     }
@@ -1437,12 +1713,20 @@ mod tests {
     fn an_overlay_is_mixed_into_the_tile_with_its_opacity_and_credit() {
         let (cache, k, s) = service_setup("svc-over", "over-ok");
         let src = service_lib::source_for(&s);
-        cache.put(&src.cache_name(k), &png(64, [250, 250, 250, 255])).unwrap();
+        cache
+            .put(&src.cache_name(k), &png(64, [250, 250, 250, 255]))
+            .unwrap();
         service_lib::select_overlay(Some(&s));
         service_lib::set_opacity(0.5);
-        let Outcome::Ready(tile) = load_with(&cache, k) else { panic!("no tile") };
+        let Outcome::Ready(tile) = load_with(&cache, k) else {
+            panic!("no tile")
+        };
         let px = &tile.mips[0].2[..4];
-        assert_eq!(px, &[130, 135, 155, 255], "half way between the base and the overlay");
+        assert_eq!(
+            px,
+            &[130, 135, 155, 255],
+            "half way between the base and the overlay"
+        );
         assert_eq!(tile.credit, "\u{2}Credit");
         service_lib::select_overlay(None);
     }
@@ -1453,7 +1737,9 @@ mod tests {
         let src = service_lib::source_for(&s);
         cache.put(&src.cache_name(k), b"oops").unwrap();
         service_lib::select_overlay(Some(&s));
-        let Outcome::Ready(tile) = load_with(&cache, k) else { panic!("no tile") };
+        let Outcome::Ready(tile) = load_with(&cache, k) else {
+            panic!("no tile")
+        };
         assert_eq!(&tile.mips[0].2[..4], &[10, 20, 60, 255]);
         assert!(service_lib::problem_text(src).is_some());
         service_lib::select_overlay(None);

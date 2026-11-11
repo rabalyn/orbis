@@ -31,7 +31,11 @@ struct Inline<J, R> {
 impl<J: Clone + Send + 'static, R: Send + 'static> Worker<J, R> {
     /// `latest_only` drops jobs that a newer one has replaced before they started. `gap` keeps
     /// jobs that far apart in a browser, where the job's own pauses cannot sleep.
-    pub fn new(latest_only: bool, #[allow(unused)] gap: crate::wtime::Duration, #[allow(unused_mut)] mut run: impl FnMut(J) -> R + Send + 'static) -> Self {
+    pub fn new(
+        latest_only: bool,
+        #[allow(unused)] gap: crate::wtime::Duration,
+        #[allow(unused_mut)] mut run: impl FnMut(J) -> R + Send + 'static,
+    ) -> Self {
         let (reply_tx, replies) = channel();
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -49,11 +53,20 @@ impl<J: Clone + Send + 'static, R: Send + 'static> Worker<J, R> {
                     }
                 }
             });
-            Self { jobs, replies: Mutex::new(replies) }
+            Self {
+                jobs,
+                replies: Mutex::new(replies),
+            }
         }
         #[cfg(target_arch = "wasm32")]
         Self {
-            state: Mutex::new(Inline { queue: Default::default(), run: Box::new(run), latest_only, gap, last_done: None }),
+            state: Mutex::new(Inline {
+                queue: Default::default(),
+                run: Box::new(run),
+                latest_only,
+                gap,
+                last_done: None,
+            }),
             replies: Mutex::new(replies),
             reply_tx,
         }
@@ -82,7 +95,9 @@ impl<J: Clone + Send + 'static, R: Send + 'static> Worker<J, R> {
                 s.queue.pop_front();
             }
         }
-        let Some(job) = s.queue.front().cloned() else { return };
+        let Some(job) = s.queue.front().cloned() else {
+            return;
+        };
         if s.last_done.is_some_and(|t| t.elapsed() < s.gap) {
             return;
         }

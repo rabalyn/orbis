@@ -37,7 +37,12 @@ enum Glyph {
 
 /// The icons, with the compass for a view `heading` (radians clockwise from north) or without it
 /// for `None`. `open` tells which of help, options and time have their window open.
-pub fn show(ctx: &egui::Context, gui: &mut Gui, heading: Option<f64>, open: [bool; 3]) -> Option<Clicked> {
+pub fn show(
+    ctx: &egui::Context,
+    gui: &mut Gui,
+    heading: Option<f64>,
+    open: [bool; 3],
+) -> Option<Clicked> {
     let mut clicked = None;
     let shown = egui::Area::new(egui::Id::unique(ID))
         .anchor(egui::Align2::RIGHT_BOTTOM, Vec2::new(-MARGIN, -MARGIN))
@@ -70,7 +75,11 @@ fn icon(ui: &mut egui::Ui, glyph: Glyph, lit: bool, tip: &str) -> egui::Response
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(ICON), Sense::click());
     let v = ui.visuals();
     let fill = v.window_fill;
-    let stroke = if response.hovered() || lit { Stroke::new(1.5, gui::accent()) } else { v.window_stroke };
+    let stroke = if response.hovered() || lit {
+        Stroke::new(1.5, gui::accent())
+    } else {
+        v.window_stroke
+    };
     let ink = v.text_color();
     let p = ui.painter();
     p.circle(rect.center(), ICON / 2.0, fill, stroke);
@@ -78,17 +87,32 @@ fn icon(ui: &mut egui::Ui, glyph: Glyph, lit: bool, tip: &str) -> egui::Response
     let r = ICON / 2.0;
     match glyph {
         Glyph::Question => {
-            p.text(c, egui::Align2::CENTER_CENTER, "?", egui::FontId::new(18.0, egui::FontFamily::Name(gui::BOLD.into())), ink);
+            p.text(
+                c,
+                egui::Align2::CENTER_CENTER,
+                "?",
+                egui::FontId::new(18.0, egui::FontFamily::Name(gui::BOLD.into())),
+                ink,
+            );
         }
         Glyph::Lines => {
             for dy in [-5.0, 0.0, 5.0] {
-                p.line_segment([Pos2::new(c.x - 7.0, c.y + dy), Pos2::new(c.x + 7.0, c.y + dy)], Stroke::new(1.8, ink));
+                p.line_segment(
+                    [
+                        Pos2::new(c.x - 7.0, c.y + dy),
+                        Pos2::new(c.x + 7.0, c.y + dy),
+                    ],
+                    Stroke::new(1.8, ink),
+                );
             }
         }
         Glyph::Clock => {
             p.circle_stroke(c, r * 0.55, Stroke::new(1.5, ink));
             p.line_segment([c, Pos2::new(c.x, c.y - r * 0.4)], Stroke::new(1.5, ink));
-            p.line_segment([c, Pos2::new(c.x + r * 0.28, c.y + r * 0.12)], Stroke::new(1.5, ink));
+            p.line_segment(
+                [c, Pos2::new(c.x + r * 0.28, c.y + r * 0.12)],
+                Stroke::new(1.5, ink),
+            );
         }
         Glyph::Compass(heading) => {
             // North on the screen, and the needle's side; y grows downwards.
@@ -97,8 +121,16 @@ fn icon(ui: &mut egui::Ui, glyph: Glyph, lit: bool, tip: &str) -> egui::Response
             let side = Vec2::new(co, -s);
             let at = |along: f32, across: f32| c + north * along + side * across;
             let (tip, half) = (r * 0.62, r * 0.2);
-            p.add(egui::Shape::convex_polygon(vec![at(tip, 0.0), at(0.0, half), at(0.0, -half)], NEEDLE_NORTH, Stroke::NONE));
-            p.add(egui::Shape::convex_polygon(vec![at(-tip, 0.0), at(0.0, -half), at(0.0, half)], ink, Stroke::NONE));
+            p.add(egui::Shape::convex_polygon(
+                vec![at(tip, 0.0), at(0.0, half), at(0.0, -half)],
+                NEEDLE_NORTH,
+                Stroke::NONE,
+            ));
+            p.add(egui::Shape::convex_polygon(
+                vec![at(-tip, 0.0), at(0.0, -half), at(0.0, half)],
+                ink,
+                Stroke::NONE,
+            ));
         }
     }
     response.on_hover_text(tip)
