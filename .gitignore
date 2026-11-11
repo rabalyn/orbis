@@ -2,6 +2,7 @@
 *.dmg
 *.png
 /dist
+/config/measurements.json
 
 # Raw source downloads, too large and not ours to redistribute as-is
 data-raw/
