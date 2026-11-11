@@ -12,6 +12,7 @@
 use crate::atlas::Projection;
 use crate::energy::{Detail, Idle, Palette, Style};
 use crate::pacing::FrameLimit;
+use crate::world_energy::MapSignal;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
@@ -67,6 +68,22 @@ impl Setting for Detail {
     }
     fn to_json(&self) -> Value {
         Value::from(self.key())
+    }
+}
+
+impl Setting for MapSignal {
+    fn from_json(v: &Value) -> Option<Self> {
+        match v.as_str()? {
+            "renewable_share" => Some(Self::RenewableShare),
+            "carbon_intensity" => Some(Self::CarbonIntensity),
+            _ => None,
+        }
+    }
+    fn to_json(&self) -> Value {
+        Value::from(match self {
+            Self::RenewableShare => "renewable_share",
+            Self::CarbonIntensity => "carbon_intensity",
+        })
     }
 }
 
@@ -218,6 +235,8 @@ settings! {
     missions: bool = true, "missions";
     /// Bars of renewable generating capacity in Germany, and the areas they stand for.
     energy: bool = true, "energy";
+    /// The indicator used to colour countries on the flat map.
+    energy_map_signal: MapSignal = MapSignal::RenewableShare, "energy_map_signal";
     /// The Electricity window (detail, scale, totals) while the bars are on; its close button turns this off.
     energy_panel: bool = true, "energy_panel";
     /// The bars show the estimated output at the clock's time, from SMARD, as far as there is data.

@@ -576,9 +576,10 @@ day chart and their legend swatches hatched, and on the ground hatched fills and
 - A **click** on a country bar outlines the country in the colour of its main source and opens the box: the month's generation
   against its use, one bar per Ember source, net imports, the renewable share, the carbon intensity and a small line of the
   renewable share over the years, with Ember (or the Energy Institute, for years before Ember's) via Our World in Data credited.
-- On the **flat map**, while the energy layer is on, every country with figures is shaded by its renewable share in the clock's
-  month (the year's where Ember has no month), from brownish red at none through yellow at half to green at all, with a small
-  legend at the bottom right. The bars stay on the globe.
+- On the **flat map**, while the energy layer is on, every country with figures is shaded by either renewable share or carbon
+  intensity, chosen under View options → Electricity. The selected metric uses the clock's month (the year's where Ember has no
+  month); carbon intensity uses a fixed 0–800 gCO₂-eq/kWh scale. This is a static country polygon overlay, rebuilt only when
+  the month or metric changes. The bars stay on the globe.
 
 ### States and provinces of the world
 - At the States level, beside Germany's 16 states (BKG's, as below and unchanged), every other country's states and

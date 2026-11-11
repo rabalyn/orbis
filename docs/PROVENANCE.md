@@ -261,8 +261,15 @@ For the factors to Ember's months the program also reads SMARD's monthly files, 
 `.../{filter}/DE/{filter}_DE_month_{start}.json`, `series` of [milliseconds of the month's start, MWh in the month], same
 terms and credit. A year that ended two months ago is kept for good, a later one for a day.
 
-Energy-Charts (Fraunhofer ISE) offers similar data, but its publishing notes allow its material for personal use only and
-require written approval for distribution, so it is not used.
+Energy-Charts is not used by the program today. Its older site publishing notes restrict reuse of the site's publications,
+but the current API documentation states that API data is CC BY 4.0 and requires attribution to Energy-Charts.info.
+The API also documents public rate limits and asks clients to cache responses and honour HTTP 429 `Retry-After` values.
+Before adding an endpoint, check that endpoint's current API documentation and cache it; do not treat the site's graphic
+and publication terms as the API data license.
+
+Potential additions include cross-border trading and physical flows, day-ahead prices, forecasts, installed capacity,
+and frequency. Germany's public generation overlaps with SMARD and should not be added as a second live feed without a
+specific need.
 
 ### Electricity of the world's countries (`data/owid_energy.bin`, `data/countries.bin`)
 Built offline by `tools/gen_owid.py` (retrieved 2026-11-09) and bundled; the program requests nothing for it. Germany's

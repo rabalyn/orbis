@@ -124,9 +124,8 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, m: &Model) -> Option<Action> {
     action
 }
 
-/// The flat map's legend while the energy layer is on: the shade of the renewable share, at the
-/// bottom left.
-pub fn map_legend(ctx: &egui::Context, gui: &mut Gui, period: &str) {
+/// The flat map's legend while the energy layer is on: renewable share or carbon intensity.
+pub fn map_legend(ctx: &egui::Context, gui: &mut Gui, period: &str, signal: crate::world_energy::MapSignal) {
     let screen = ctx.content_rect();
     // At the bottom right, above the buttons, clear of the credits at the bottom left.
     let shown = egui::Area::new(egui::Id::unique("energy-map-legend"))
@@ -134,23 +133,35 @@ pub fn map_legend(ctx: &egui::Context, gui: &mut Gui, period: &str) {
         .constrain_to(screen)
         .show(ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.label(egui::RichText::new(format!("Renewable share of electricity, {period}")).size(12.5));
+                let title = match signal {
+                    crate::world_energy::MapSignal::RenewableShare => format!("Renewable share of electricity, {period}"),
+                    crate::world_energy::MapSignal::CarbonIntensity => format!("Carbon intensity, {period}"),
+                };
+                ui.label(egui::RichText::new(title).size(12.5));
                 let (rect, _) = ui.allocate_exact_size(Vec2::new(240.0, 26.0), Sense::hover());
                 let bar = Rect::from_min_max(rect.left_top(), Pos2::new(rect.right(), rect.top() + 11.0));
                 let p = ui.painter();
                 let n = 48;
                 let w = bar.width() / n as f32;
                 for k in 0..n {
-                    let [r, g, b] = crate::world_energy::share_colour(100.0 * (k as f32 + 0.5) / n as f32);
+                    let t = (k as f32 + 0.5) / n as f32;
+                    let [r, g, b] = match signal {
+                        crate::world_energy::MapSignal::RenewableShare => crate::world_energy::share_colour(100.0 * t),
+                        crate::world_energy::MapSignal::CarbonIntensity => crate::world_energy::intensity_colour(800.0 * t),
+                    };
                     let x = bar.left() + w * k as f32;
                     p.rect_filled(Rect::from_min_max(Pos2::new(x, bar.top()), Pos2::new(x + w + 0.5, bar.bottom())), 0.0, egui::Color32::from_rgb(r, g, b));
                 }
                 let weak = ui.visuals().weak_text_color();
                 for (t, align) in [(0.0, egui::Align2::LEFT_BOTTOM), (0.5, egui::Align2::CENTER_BOTTOM), (1.0, egui::Align2::RIGHT_BOTTOM)] {
                     let x = bar.left() + bar.width() * t;
-                    p.text(Pos2::new(x, rect.bottom()), align, format!("{:.0}%", t * 100.0), egui::FontId::proportional(11.5), weak);
+                    let label = match signal {
+                        crate::world_energy::MapSignal::RenewableShare => format!("{:.0}%", t * 100.0),
+                        crate::world_energy::MapSignal::CarbonIntensity => format!("{:.0} g/kWh", t * 800.0),
+                    };
+                    p.text(Pos2::new(x, rect.bottom()), align, label, egui::FontId::proportional(11.5), weak);
                 }
-                gui::note(ui, "Where Ember has no months, the year's share.");
+                gui::note(ui, "Where Ember has no months, the year's value.");
                 gui::note(ui, "Ember via Our World in Data. Bars: on the globe.");
             });
         });

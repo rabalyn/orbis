@@ -987,7 +987,7 @@ struct EnergyLayer {
     /// The look the bars and outlines were built with; a change rebuilds them.
     style: Option<energy::Style>,
     /// The month the flat map's shade of countries was made for.
-    map_from: Option<(i32, u32)>,
+    map_from: Option<(i32, u32, world_energy::MapSignal)>,
     /// The scale of the level that follows the bars in view (Countries or Plants), and when it
     /// was last stepped.
     view_scale: Option<(energy::Level, world_energy::Easing, Instant)>,
@@ -1381,6 +1381,7 @@ impl Scene {
             }
             Action::Base(id) => self.services.choose_base(id.as_deref()),
             Action::FrameRate(limit) => self.view.frame_rate = limit,
+            Action::EnergyMapSignal(signal) => self.view.energy_map_signal = signal,
             Action::EnergyStyle => self.toggle_dialog(energy_style::WINDOW),
         }
     }
@@ -2300,7 +2301,8 @@ impl Scene {
     /// Keeps the flat map's shade of countries up to date with the clock's month.
     fn update_energy_map(&mut self, r: &mut Renderer) {
         let month = self.clock_month();
-        if self.energy.map_from == Some(month) {
+        let signal = self.view.energy_map_signal;
+        if self.energy.map_from == Some((month.0, month.1, signal)) {
             return;
         }
         let Some(world) = world_energy::World::bundled() else { return };
@@ -2309,8 +2311,8 @@ impl Scene {
         }
         let (power, chart, view) = (std::mem::take(&mut self.energy.power), self.energy.chart.clone(), self.energy.view);
         self.energy = EnergyLayer { view, missing: self.energy.missing, version: self.energy.version + 1, power, chart, ..Default::default() };
-        self.energy.outlines = Some(Arc::new(world.shading(month)));
-        self.energy.map_from = Some(month);
+        self.energy.outlines = Some(Arc::new(world.shading(month, signal)));
+        self.energy.map_from = Some((month.0, month.1, signal));
         self.imports_changed();
     }
 
@@ -3512,7 +3514,7 @@ impl Scene {
         }
         if self.energy_map_on() && self.energy.map_from.is_some() {
             let (y, m) = self.clock_month();
-            energy_panel::map_legend(ctx, &mut self.gui, &calibration::month_words((y, m)));
+            energy_panel::map_legend(ctx, &mut self.gui, &calibration::month_words((y, m)), self.view.energy_map_signal);
         }
         help::show(ctx, &mut self.gui, self.help_scroll);
         done.options = options::show(ctx, &mut self.gui, &self.options.borrow());

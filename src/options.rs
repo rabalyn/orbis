@@ -7,6 +7,7 @@
 use crate::atlas::Projection;
 use crate::pacing::FrameLimit;
 use crate::settings::{BuildingColour, Settings, ViewKind};
+use crate::world_energy::MapSignal;
 use crate::gui::{self, Gui};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -112,6 +113,7 @@ pub enum Action {
     /// A library service as the base, or the usual imagery.
     Base(Option<String>),
     FrameRate(FrameLimit),
+    EnergyMapSignal(MapSignal),
     /// Open or close the energy display window.
     EnergyStyle,
 }
@@ -148,6 +150,19 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Option<Action>
                             for (label, c) in [("Aerial roofs", BuildingColour::Aerial), ("Zones", BuildingColour::Zones)] {
                                 if ui.radio(st.buildings_colour == c, label).clicked() {
                                     action = Some(Action::BuildingColour(c));
+                                }
+                            }
+                        });
+                    }
+                    if *name == "Electricity" {
+                        gui::note(ui, "Flat map colour");
+                        ui.horizontal(|ui| {
+                            for (label, signal) in [
+                                ("Renewable share", MapSignal::RenewableShare),
+                                ("Carbon intensity", MapSignal::CarbonIntensity),
+                            ] {
+                                if ui.radio(st.energy_map_signal == signal, label).clicked() {
+                                    action = Some(Action::EnergyMapSignal(signal));
                                 }
                             }
                         });
