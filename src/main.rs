@@ -4609,7 +4609,9 @@ impl Scene {
                                 .changed();
                             edited |= ui.checkbox(&mut t.dotted, "Dotted").changed();
                         });
-                        t.colour = [colour.r(), colour.g(), colour.b(), colour.a()];
+                        // Color32 stores RGB premultiplied by alpha. Persist normal sRGBA bytes,
+                        // otherwise reading r/g/b here multiplies alpha again every frame.
+                        t.colour = colour.to_srgba_unmultiplied();
                         self.measure_dirty |= edited;
                         t.totals()
                     };

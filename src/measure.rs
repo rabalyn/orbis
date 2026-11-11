@@ -332,4 +332,24 @@ mod tests {
         assert_eq!(points[0].alt, Some(558.25));
         assert_eq!(points[1].alt, None);
     }
+
+    #[test]
+    fn color_editor_round_trips_do_not_premultiply_alpha_repeatedly() {
+        // Mirrors the editor's per-frame conversion between stored sRGBA and egui Color32.
+        // Color32's r/g/b accessors are premultiplied; using them here made each frame darker.
+        let mut stored = [240, 120, 60, 128];
+        let mut stable = None;
+        for _ in 0..120 {
+            let color = egui::Color32::from_rgba_unmultiplied(
+                stored[0], stored[1], stored[2], stored[3],
+            );
+            stored = color.to_srgba_unmultiplied();
+            if let Some(expected) = stable {
+                assert_eq!(stored, expected, "color drifted between UI frames");
+            } else {
+                stable = Some(stored);
+            }
+        }
+        assert_ne!(stored, [0, 0, 0, 128]);
+    }
 }
