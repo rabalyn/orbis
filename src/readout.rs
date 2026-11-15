@@ -86,6 +86,39 @@ pub fn pieces(line: &str) -> Vec<Piece<'_>> {
     out
 }
 
+/// A [`Piece`] that owns its text, to keep between frames.
+#[derive(Debug, PartialEq)]
+pub enum OwnedPiece {
+    Text(String),
+    Link(String, String),
+}
+
+/// The pieces of every line of `text`.
+fn split_lines(text: &str) -> Vec<Vec<OwnedPiece>> {
+    text.lines()
+        .map(|l| {
+            pieces(l)
+                .into_iter()
+                .map(|p| match p {
+                    Piece::Text(t) => OwnedPiece::Text(t.to_string()),
+                    Piece::Link(t, u) => OwnedPiece::Link(t.to_string(), u.to_string()),
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// The credits' lines in pieces, split again only when the text is not the one split last.
+fn cached_lines<'a>(
+    cache: &'a mut Option<(String, Vec<Vec<OwnedPiece>>)>,
+    text: &str,
+) -> &'a [Vec<OwnedPiece>] {
+    if cache.as_ref().is_none_or(|(t, _)| t != text) {
+        *cache = Some((text.to_string(), split_lines(text)));
+    }
+    &cache.as_ref().expect("just filled").1
+}
+
 /// A rounded, see-through box for text over the imagery.
 fn plate(ui: &egui::Ui) -> Frame {
     let v = ui.visuals();
@@ -106,6 +139,7 @@ pub fn credits(ctx: &egui::Context, gui: &mut Gui, text: &str, right: f32) {
     }
     let screen = ctx.content_rect();
     let width = (screen.width() - right - 20.0).max(160.0);
+    let lines = cached_lines(&mut gui.credit_lines, text);
     let shown = egui::Area::new(egui::Id::unique(CREDITS))
         .anchor(Align2::LEFT_BOTTOM, Vec2::new(8.0, -8.0))
         .order(egui::Order::Background)
@@ -116,15 +150,15 @@ pub fn credits(ctx: &egui::Context, gui: &mut Gui, text: &str, right: f32) {
                 ui.spacing_mut().item_spacing = Vec2::new(0.0, 1.0);
                 // Rows as tall as their text, not as a button.
                 ui.spacing_mut().interact_size.y = 13.0;
-                for line in text.lines() {
+                for line in lines {
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
-                        for piece in pieces(line) {
+                        for piece in line {
                             match piece {
-                                Piece::Text(t) => {
+                                OwnedPiece::Text(t) => {
                                     ui.label(RichText::new(t).size(11.0).weak());
                                 }
-                                Piece::Link(t, url) => {
+                                OwnedPiece::Link(t, url) => {
                                     ui.hyperlink_to(RichText::new(t).size(11.0), url)
                                         .on_hover_text(url);
                                 }
@@ -196,6 +230,20 @@ pub fn text_box(ctx: &egui::Context, gui: &mut Gui, id: &str, text: &str, y: f32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_credit_lines_match_a_fresh_split_and_follow_the_text() {
+        let mut cache = None;
+        let a = "Map data © OpenStreetMap contributors\nSee https://example.org/x.";
+        let b = "Wikipedia, USGS";
+        assert_eq!(cached_lines(&mut cache, a), split_lines(a).as_slice());
+        // The same text again gives the same lines without splitting anew.
+        let first = cache.as_ref().unwrap().1.as_ptr();
+        assert_eq!(cached_lines(&mut cache, a).as_ptr(), first);
+        assert_eq!(cached_lines(&mut cache, b), split_lines(b).as_slice());
+        assert_eq!(cached_lines(&mut cache, b).len(), 1);
+        assert_eq!(cached_lines(&mut cache, "").len(), 0);
+    }
     use crate::nav::Button;
 
     #[test]

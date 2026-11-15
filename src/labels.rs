@@ -2,12 +2,13 @@
 //! and choosing each frame which labels fit on screen.
 
 use crate::camera::{Basis, FOV_Y};
-use crate::geo::{ecef_to_geodetic, enu, geodetic_to_ecef, ray_ellipsoid};
+use crate::geo::{ecef_to_geodetic, geodetic_to_ecef, ray_ellipsoid};
 use crate::vector::{Label, LabelStyle, NATIONAL_CAPITAL_MARK, STATE_CAPITAL_MARK};
 use cosmic_text::{
     Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, SwashCache, Weight,
 };
 use glam::{DVec2, DVec3};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
 
@@ -468,8 +469,14 @@ pub fn max_distance(label: &Label) -> f64 {
 
 /// Whether a label could appear at all in this view, before its text has been rasterised.
 pub fn may_show(screen: &Screen, label: &Label) -> bool {
-    let p = geodetic_to_ecef(label.lat, label.lon, 0.0);
-    let (_, _, up) = enu(label.lat, label.lon);
+    // The same numbers as `geodetic_to_ecef(.., 0.0)` and the up vector of `enu`, with the
+    // sines and cosines worked out once.
+    let (a, e2) = (crate::body::current().a, crate::body::current().e2);
+    let (sl, cl) = label.lat.sin_cos();
+    let (so, co) = label.lon.sin_cos();
+    let n = a / (1.0 - e2 * sl * sl).sqrt();
+    let p = DVec3::new(n * cl * co, n * cl * so, n * (1.0 - e2) * sl);
+    let up = DVec3::new(cl * co, cl * so, sl);
     let to_camera = screen.basis.pos - p;
     if to_camera.length() > crate::body::scaled(max_distance(label)) {
         return false;
@@ -497,6 +504,24 @@ pub trait View {
 pub struct GlobeView<'a> {
     pub screen: &'a Screen,
     pub ground: &'a dyn Fn(f64, f64) -> Option<f64>,
+    /// The anchor last worked out, with the label it belongs to: `place` asks for a label's
+    /// centre and then, in `fits`, for the same anchor again.
+    pub anchor: Cell<Option<([u64; 2], DVec3)>>,
+}
+
+impl GlobeView<'_> {
+    fn anchor_of(&self, label: &Label) -> DVec3 {
+        // The anchor follows from the position alone, so that is what it is kept under.
+        let at = [label.lat.to_bits(), label.lon.to_bits()];
+        if let Some((kept, a)) = self.anchor.get() {
+            if kept == at {
+                return a;
+            }
+        }
+        let a = anchor(label, self.ground);
+        self.anchor.set(Some((at, a)));
+        a
+    }
 }
 
 impl View for GlobeView<'_> {
@@ -510,7 +535,7 @@ impl View for GlobeView<'_> {
         may_show(self.screen, label)
     }
     fn center(&self, label: &Label) -> Option<DVec2> {
-        self.screen.project(anchor(label, self.ground))
+        self.screen.project(self.anchor_of(label))
     }
     fn point(&self, lat: f64, lon: f64) -> Option<DVec2> {
         self.screen.project(geodetic_to_ecef(lat, lon, 0.0))
@@ -518,11 +543,7 @@ impl View for GlobeView<'_> {
     fn fits(&self, label: &Label, corners: &[DVec2; 4]) -> bool {
         // Text must not hang over the edge of the globe or stick out into the sky.
         corners.iter().all(|c| self.screen.over_ground(*c))
-            && !hidden_by_terrain(
-                self.screen.basis.pos,
-                anchor(label, self.ground),
-                self.ground,
-            )
+            && !hidden_by_terrain(self.screen.basis.pos, self.anchor_of(label), self.ground)
     }
 }
 
@@ -718,6 +739,70 @@ mod tests {
     }
 
     #[test]
+    fn may_show_agrees_with_the_plain_formulation() {
+        // `may_show` as it was written with `geodetic_to_ecef` and `enu`.
+        fn reference(screen: &Screen, label: &Label) -> bool {
+            let p = geodetic_to_ecef(label.lat, label.lon, 0.0);
+            let (_, _, up) = crate::geo::enu(label.lat, label.lon);
+            let to_camera = screen.basis.pos - p;
+            if to_camera.length() > crate::body::scaled(max_distance(label)) {
+                return false;
+            }
+            let facing = to_camera.normalize().dot(up);
+            facing > min_facing(label.style)
+                && screen.project(p).is_some_and(|s| screen.on_screen(s))
+        }
+        let mut shown = 0;
+        for (distance, tilt) in [(1.0e4, 0.0), (1.0e5, 0.6), (3.0e6, 0.0), (2.0e7, 0.0)] {
+            let s = screen(distance, tilt);
+            for i in 0..300 {
+                // From metres to a few hundred kilometres around the view point.
+                let spread = [0.0005, 0.005, 0.05][i % 3];
+                let lat = LAT + (i as f64 * 0.7).sin() * spread;
+                let lon = LON + (i as f64 * 1.3).cos() * spread;
+                let l = label("X", lat.clamp(-1.5, 1.5), lon);
+                assert_eq!(may_show(&s, &l), reference(&s, &l), "{lat} {lon}");
+                shown += may_show(&s, &l) as usize;
+            }
+        }
+        assert!(shown > 5 && shown < 1200, "{shown}");
+    }
+
+    #[test]
+    fn the_anchor_is_worked_out_once_per_label() {
+        use std::cell::RefCell;
+        let s = screen(2.0e4, 0.5);
+        let labels: Vec<Label> = (0..3)
+            .map(|i| label(&format!("L{i}"), LAT + i as f64 * 0.0004, LON))
+            .collect();
+        let hill = |lat: f64, lon: f64| Some(300.0 * ((lat * 4000.0).sin() + (lon * 5000.0).cos()));
+        let calls = RefCell::new(0usize);
+        let counting = |lat: f64, lon: f64| {
+            *calls.borrow_mut() += 1;
+            hill(lat, lon)
+        };
+        let view = GlobeView {
+            screen: &s,
+            ground: &counting,
+            anchor: Default::default(),
+        };
+        let bits = |c: Option<DVec2>| c.map(|c| (c.x.to_bits(), c.y.to_bits()));
+        for l in &labels {
+            *calls.borrow_mut() = 0;
+            let centre = view.center(l);
+            assert_eq!(bits(centre), bits(s.project(anchor(l, &hill))));
+            let fits = view.fits(l, &[DVec2::new(600.0, 400.0); 4]);
+            let hidden = hidden_by_terrain(s.basis.pos, anchor(l, &hill), &hill);
+            assert_eq!(fits, s.over_ground(DVec2::new(600.0, 400.0)) && !hidden);
+            // One lookup for the anchor and nine along the line of sight to it, not ten and one.
+            assert!(*calls.borrow() <= 10, "{}", calls.borrow());
+        }
+        // Going back to an earlier label does not return the anchor of the one in between.
+        let again = view.center(&labels[0]);
+        assert_eq!(bits(again), bits(s.project(anchor(&labels[0], &hill))));
+    }
+
+    #[test]
     fn the_flat_map_names_places_where_they_are_drawn() {
         let map = flat_map(3.0e5);
         let view = FlatView {
@@ -798,6 +883,7 @@ mod tests {
             &GlobeView {
                 screen: &s,
                 ground: NO_GROUND,
+                anchor: Default::default(),
             },
             &[(&a, size), (&b, size), (&far, size)],
         );
@@ -814,7 +900,8 @@ mod tests {
             place(
                 &GlobeView {
                     screen: &s,
-                    ground: NO_GROUND
+                    ground: NO_GROUND,
+                    anchor: Default::default(),
                 },
                 &[(&a, size)]
             )
@@ -825,7 +912,8 @@ mod tests {
         assert!(place(
             &GlobeView {
                 screen: &s,
-                ground: NO_GROUND
+                ground: NO_GROUND,
+                anchor: Default::default(),
             },
             &[(&a, size)]
         )
@@ -834,7 +922,8 @@ mod tests {
         assert!(place(
             &GlobeView {
                 screen: &s,
-                ground: NO_GROUND
+                ground: NO_GROUND,
+                anchor: Default::default(),
             },
             &[(&a, DVec2::new(1300.0, 20.0))]
         )
@@ -890,7 +979,8 @@ mod tests {
         assert!(place(
             &GlobeView {
                 screen: &s,
-                ground: NO_GROUND
+                ground: NO_GROUND,
+                anchor: Default::default(),
             },
             &[(&near_edge, size)]
         )
@@ -900,7 +990,8 @@ mod tests {
             place(
                 &GlobeView {
                     screen: &s,
-                    ground: NO_GROUND
+                    ground: NO_GROUND,
+                    anchor: Default::default(),
                 },
                 &[(&middle, size)]
             )
@@ -918,7 +1009,8 @@ mod tests {
             place(
                 &GlobeView {
                     screen: &s,
-                    ground: NO_GROUND
+                    ground: NO_GROUND,
+                    anchor: Default::default(),
                 },
                 &[(&a, size), (&b, size)]
             )
@@ -936,7 +1028,8 @@ mod tests {
             place(
                 &GlobeView {
                     screen: &s,
-                    ground: NO_GROUND
+                    ground: NO_GROUND,
+                    anchor: Default::default(),
                 },
                 &[(&a, size)]
             )
@@ -954,7 +1047,8 @@ mod tests {
         assert!(place(
             &GlobeView {
                 screen: &s,
-                ground: wall
+                ground: wall,
+                anchor: Default::default(),
             },
             &[(&a, size)]
         )
@@ -981,6 +1075,7 @@ mod tests {
             &GlobeView {
                 screen: &s,
                 ground: NO_GROUND,
+                anchor: Default::default(),
             },
             &[(&l, DVec2::new(30.0, 12.0))],
         );
@@ -996,6 +1091,7 @@ mod tests {
             &GlobeView {
                 screen: &s,
                 ground: NO_GROUND,
+                anchor: Default::default(),
             },
             &[(&r, DVec2::new(30.0, 12.0))],
         );
@@ -1009,7 +1105,8 @@ mod tests {
         assert!(place(
             &GlobeView {
                 screen: &s,
-                ground: NO_GROUND
+                ground: NO_GROUND,
+                anchor: Default::default(),
             },
             &[(&l, DVec2::new(100.0, 12.0))]
         )
@@ -1025,6 +1122,7 @@ mod tests {
             &GlobeView {
                 screen: &s,
                 ground: NO_GROUND,
+                anchor: Default::default(),
             },
             &[(&a, size)],
         )[0];

@@ -48,6 +48,15 @@ pub struct Gui {
     /// A press began over the interface, so the release belongs to it too.
     held: bool,
     paint: Option<Paint>,
+    /// The shapes and scale `paint`'s primitives were tessellated from, so that a frame that
+    /// builds the very same interface can keep them instead of tessellating again.
+    tessellated: Option<(Vec<egui::epaint::ClippedShape>, f32)>,
+    /// The primitives were not changed since the last upload, so the buffers still hold them.
+    uploaded: bool,
+    /// The screen the buffers were last filled for.
+    uploaded_screen: Option<([u32; 2], f32)>,
+    /// The credits' lines split into text and links, for the text they were split from.
+    pub(crate) credit_lines: Option<(String, Vec<Vec<crate::readout::OwnedPiece>>)>,
     /// Textures freed by the last frame, freed after it was drawn.
     free: Vec<egui::TextureId>,
     started: Instant,
@@ -91,6 +100,10 @@ impl Gui {
             open: HashSet::new(),
             held: false,
             paint: None,
+            tessellated: None,
+            credit_lines: None,
+            uploaded: false,
+            uploaded_screen: None,
             free: Vec::new(),
             started: Instant::now(),
             dark: true,
@@ -305,14 +318,34 @@ impl Gui {
             .viewport_output
             .get(&egui::ViewportId::ROOT)
             .is_some_and(|v| v.repaint_delay.is_zero());
-        let primitives = self.ctx.tessellate(out.shapes, out.pixels_per_point);
         let screen = egui_wgpu::ScreenDescriptor {
             size_in_pixels: self.size,
             pixels_per_point: out.pixels_per_point,
         };
         // Textures from an earlier frame that was never drawn are kept, with this frame's changes after them.
-        let mut textures = self.paint.take().map(|p| p.textures).unwrap_or_default();
+        let mut textures = self
+            .paint
+            .as_mut()
+            .map(|p| std::mem::take(&mut p.textures))
+            .unwrap_or_default();
         textures.append(out.textures_delta);
+        // The same shapes at the same scale tessellate to the same primitives, as long as no
+        // texture changed in between (a new glyph would resize the atlas the tessellator reads).
+        let same = textures.set.is_empty()
+            && self.paint.is_some()
+            && self
+                .tessellated
+                .as_ref()
+                .is_some_and(|(shapes, ppp)| *ppp == out.pixels_per_point && *shapes == out.shapes);
+        let primitives = if same {
+            self.paint.take().map(|p| p.primitives).unwrap_or_default()
+        } else {
+            self.uploaded = false;
+            let kept = out.shapes.clone();
+            let primitives = self.ctx.tessellate(out.shapes, out.pixels_per_point);
+            self.tessellated = Some((kept, out.pixels_per_point));
+            primitives
+        };
         self.paint = Some(Paint {
             primitives,
             textures,
@@ -340,6 +373,7 @@ impl Gui {
                 predictable_texture_filtering: false,
             };
             self.renderer = Some((egui_wgpu::Renderer::new(device, format, options), format));
+            self.uploaded = false;
         }
         let (Some((renderer, _)), Some(paint)) = (&mut self.renderer, &mut self.paint) else {
             return;
@@ -354,6 +388,11 @@ impl Gui {
         }
         self.free.extend(paint.textures.free.drain());
         paint.textures.set.clear();
+        // The buffers still hold the very same primitives when nothing was tessellated anew.
+        let now = (paint.screen.size_in_pixels, paint.screen.pixels_per_point);
+        if self.uploaded && self.uploaded_screen == Some(now) {
+            return;
+        }
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("interface upload"),
         });
@@ -365,6 +404,8 @@ impl Gui {
             &paint.screen,
         );
         queue.submit(std::iter::once(encoder.finish()).chain(extra));
+        self.uploaded = true;
+        self.uploaded_screen = Some(now);
     }
 
     /// Draws the interface over what `target` holds.
@@ -744,5 +785,81 @@ fn paint_swatch(ui: &egui::Ui, r: egui::Rect, colour: [u8; 4], hatched: bool) {
     );
     if hatched {
         hatch(&p, r, [colour[0], colour[1], colour[2]]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(gui: &mut Gui, text: &str, ppp: f32) {
+        let mut raw = gui.begin((400, 300), ppp);
+        // A clock of the test's own, ten seconds a frame: by the real one, frames that follow
+        // closely catch a new area still fading in, and their shapes differ.
+        thread_local!(static CLOCK: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) });
+        raw.time = Some(CLOCK.with(|c| c.replace(c.get() + 10.0)));
+        let ctx = gui.ctx.clone();
+        let out = ctx.run_pass(raw, |ctx| {
+            egui::Area::new(egui::Id::unique("t")).show(ctx, |ui| {
+                ui.label(text);
+            });
+        });
+        gui.finish(out);
+        // Nothing uploads textures here, as without a GPU.
+        gui.paint.as_mut().unwrap().textures.set.clear();
+    }
+
+    fn vertices(gui: &Gui) -> Vec<[f32; 2]> {
+        gui.paint
+            .as_ref()
+            .unwrap()
+            .primitives
+            .iter()
+            .filter_map(|p| match &p.primitive {
+                egui::epaint::Primitive::Mesh(m) => Some(m),
+                _ => None,
+            })
+            .flat_map(|m| m.vertices.iter().map(|v| [v.pos.x, v.pos.y]))
+            .collect()
+    }
+
+    #[test]
+    fn identical_frames_keep_their_primitives_and_changes_retessellate() {
+        let mut gui = Gui::new();
+        for _ in 0..3 {
+            frame(&mut gui, "hello", 1.0);
+        }
+        let kept = gui.paint.as_ref().unwrap().primitives.as_ptr();
+        let before = vertices(&gui);
+        gui.uploaded = true;
+        frame(&mut gui, "hello", 1.0);
+        assert_eq!(gui.paint.as_ref().unwrap().primitives.as_ptr(), kept);
+        assert!(gui.uploaded, "unchanged primitives stay uploaded");
+        assert_eq!(vertices(&gui), before);
+        // Other text, or another scale, is tessellated anew and uploaded again.
+        frame(&mut gui, "hello world", 1.0);
+        assert!(!gui.uploaded);
+        assert_ne!(vertices(&gui), before);
+        let text = vertices(&gui);
+        frame(&mut gui, "hello world", 1.0);
+        gui.uploaded = true;
+        frame(&mut gui, "hello world", 2.0);
+        assert!(!gui.uploaded);
+        assert_ne!(vertices(&gui), text);
+    }
+
+    #[test]
+    fn reused_primitives_equal_a_fresh_tessellation() {
+        let mut reused = Gui::new();
+        for _ in 0..4 {
+            frame(&mut reused, "same", 1.0);
+        }
+        let mut fresh = Gui::new();
+        frame(&mut fresh, "same", 1.0);
+        for _ in 0..3 {
+            frame(&mut fresh, "same", 1.0);
+            fresh.tessellated = None;
+        }
+        assert_eq!(vertices(&reused), vertices(&fresh));
     }
 }

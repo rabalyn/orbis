@@ -5,6 +5,7 @@ use crate::geo::TileKey;
 use crate::import::Imported;
 use crate::import_draw;
 use crate::layers::LineKinds;
+use crate::overlay_gpu::{self, LineMesh, Parts};
 use crate::vector::{Line, RoadClass, VectorTile};
 use std::sync::Arc;
 use tiny_skia::{
@@ -137,20 +138,21 @@ fn stroke(
     pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
 }
 
-/// Draws the lines for `tile`, whose data comes from the `source` vector tile. Returns
-/// premultiplied RGBA, or `None` when nothing was drawn.
-pub fn render(
-    data: &VectorTile,
+/// A group of lines stroked as one: where to place it, its style and its lines.
+type Group<'a> = (i32, LineStyle, Vec<&'a Line>);
+
+/// The lines to draw on `tile` in drawing order, with the transform to overlay texels.
+fn groups<'a>(
+    data: &'a VectorTile,
     tile: TileKey,
     source: TileKey,
-    imports: &[Arc<Imported>],
     kinds: LineKinds,
-) -> Option<Vec<u8>> {
+) -> ((f32, f32, f32), Vec<Group<'a>>) {
     let place = placement(tile, source);
     let margin = 32.0;
     let z = tile.z;
 
-    let mut groups: Vec<(i32, LineStyle, Vec<&Line>)> = Vec::new();
+    let mut groups: Vec<Group> = Vec::new();
     for road in data.roads.iter().filter(|r| kinds.road(r.class)) {
         let Some(style) = road_style(road.class, z, road.tunnel) else {
             continue;
@@ -175,35 +177,96 @@ pub fn render(
             &boundary.line,
         );
     }
+    groups.sort_by_key(|g| g.0);
+    (place, groups)
+}
+
+/// The strokes that draw `groups`, in order: lines, width in texels, colour and dash.
+/// Casings come first, so that where roads join their fills connect.
+fn strokes<'a, 'b>(
+    groups: &'b [Group<'a>],
+) -> impl Iterator<Item = (&'b [&'a Line], f32, [u8; 4], Option<[f32; 2]>)> {
+    let casings = groups
+        .iter()
+        .filter(|g| g.1.casing)
+        .map(|(_, style, lines)| {
+            let width = (style.width + 0.8) * TEXELS_PER_PIXEL;
+            (lines.as_slice(), width, [20, 20, 30, 170], None)
+        });
+    let fills = groups.iter().map(|(_, style, lines)| {
+        (
+            lines.as_slice(),
+            style.width * TEXELS_PER_PIXEL,
+            style.color,
+            style.dash,
+        )
+    });
+    casings.chain(fills)
+}
+
+/// Draws the lines for `tile`, whose data comes from the `source` vector tile. Returns
+/// premultiplied RGBA, or `None` when nothing was drawn.
+pub fn render(
+    data: &VectorTile,
+    tile: TileKey,
+    source: TileKey,
+    imports: &[Arc<Imported>],
+    kinds: LineKinds,
+) -> Option<Vec<u8>> {
+    let (place, groups) = groups(data, tile, source, kinds);
     let imported = import_draw::touches(imports, tile);
     if groups.is_empty() && !imported {
         return None;
     }
-    groups.sort_by_key(|g| g.0);
-
     let mut pixmap = Pixmap::new(OVERLAY_SIZE, OVERLAY_SIZE)?;
-    // Casings first, so that where roads join their fills connect.
-    for (_, style, lines) in &groups {
-        if style.casing {
-            let width = (style.width + 0.8) * TEXELS_PER_PIXEL;
-            stroke(&mut pixmap, lines, place, width, [20, 20, 30, 170], None);
-        }
-    }
-    for (_, style, lines) in &groups {
-        stroke(
-            &mut pixmap,
-            lines,
-            place,
-            style.width * TEXELS_PER_PIXEL,
-            style.color,
-            style.dash,
-        );
+    for (lines, width, color, dash) in strokes(&groups) {
+        stroke(&mut pixmap, lines, place, width, color, dash);
     }
     // What was imported lies over the roads.
     if imported {
         import_draw::draw(&mut pixmap, imports, tile);
     }
     Some(pixmap.take())
+}
+
+/// A tile's overlay as the loader hands it on.
+pub enum Picture {
+    /// Drawn here, by the processor: premultiplied RGBA.
+    Drawn(Vec<u8>),
+    /// To be painted by the graphics card.
+    Parts(Parts),
+}
+
+/// As `render`, but with `gpu` the lines are only cut into triangles for the graphics card to
+/// paint; what was imported is still drawn here and laid over them there. A tile without
+/// lines gains nothing from that and is drawn here.
+pub fn render_for(
+    data: &VectorTile,
+    tile: TileKey,
+    source: TileKey,
+    imports: &[Arc<Imported>],
+    kinds: LineKinds,
+    gpu: bool,
+) -> Option<Picture> {
+    if !gpu {
+        return render(data, tile, source, imports, kinds).map(Picture::Drawn);
+    }
+    let (place, groups) = groups(data, tile, source, kinds);
+    if groups.is_empty() {
+        return render(data, tile, source, imports, kinds).map(Picture::Drawn);
+    }
+    let mut lines = LineMesh::default();
+    for (group, width, color, dash) in strokes(&groups) {
+        overlay_gpu::stroke(&mut lines, group, place, width, color, dash);
+    }
+    let top = if import_draw::touches(imports, tile) {
+        let mut pixmap = Pixmap::new(OVERLAY_SIZE, OVERLAY_SIZE)?;
+        import_draw::draw(&mut pixmap, imports, tile);
+        Some(pixmap.take())
+    } else {
+        None
+    };
+    Some(Picture::Parts(Parts { lines, top }))
 }
 
 fn push<'a>(
@@ -389,5 +452,207 @@ mod tests {
         assert!(image
             .chunks(4)
             .all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]));
+    }
+
+    fn tile(roads: Vec<Road>) -> VectorTile {
+        VectorTile {
+            roads,
+            ..Default::default()
+        }
+    }
+
+    /// A road with sharp and gentle bends, in tile coordinates.
+    fn winding() -> Line {
+        vec![
+            [0.1, 0.1],
+            [0.5, 0.15],
+            [0.55, 0.6],
+            [0.2, 0.3],
+            [0.25, 0.8],
+            [0.9, 0.85],
+            [0.92, 0.4],
+        ]
+    }
+
+    #[test]
+    fn without_the_graphics_card_the_picture_is_the_processors() {
+        let key = TileKey::new(10, 5, 5);
+        let data = tile(vec![road(RoadClass::Motorway, winding())]);
+        let Some(Picture::Drawn(rgba)) = render_for(&data, key, key, &[], ALL, false) else {
+            panic!("a drawn picture");
+        };
+        assert_eq!(Some(rgba), render(&data, key, key, &[], ALL));
+        assert!(render_for(&tile(Vec::new()), key, key, &[], ALL, false).is_none());
+        assert!(render_for(&tile(Vec::new()), key, key, &[], ALL, true).is_none());
+    }
+
+    #[test]
+    fn for_the_graphics_card_lines_become_groups_in_drawing_order() {
+        let key = TileKey::new(10, 5, 5);
+        let data = tile(vec![
+            road(RoadClass::Motorway, winding()),
+            road(RoadClass::Minor, vec![[0.0, 0.5], [1.0, 0.5]]),
+        ]);
+        let Some(Picture::Parts(parts)) = render_for(&data, key, key, &[], ALL, true) else {
+            panic!("parts for the graphics card");
+        };
+        assert!(parts.top.is_none());
+        // z10 hides minor roads: the motorway's casing, then its fill.
+        assert_eq!(parts.lines.groups.len(), 2);
+        let colour = |g: usize| parts.lines.vertices[parts.lines.groups[g].start as usize].color;
+        assert_eq!(colour(0)[3], 170);
+        assert_eq!(colour(1)[3], 235);
+    }
+
+    #[test]
+    fn imports_are_drawn_by_the_processor_and_laid_over_the_lines() {
+        use crate::import::{Item, Pos, Shape};
+        let key = TileKey::new(0, 0, 0);
+        let pos = |lat: f64, lon: f64| Pos {
+            lat: lat.to_radians(),
+            lon: lon.to_radians(),
+            alt: None,
+        };
+        let docs = vec![Arc::new(Imported {
+            name: "t".into(),
+            items: vec![Item::new("p", Shape::Point(pos(0.0, 0.0)))],
+            truncated: false,
+        })];
+        let data = VectorTile {
+            boundaries: vec![Boundary {
+                admin_level: 2,
+                disputed: false,
+                line: vec![[0.0, 0.25], [1.0, 0.25]],
+            }],
+            ..Default::default()
+        };
+        let Some(Picture::Parts(parts)) = render_for(&data, key, key, &docs, ALL, true) else {
+            panic!("parts for the graphics card");
+        };
+        let top = parts.top.expect("the imported point");
+        assert!(alpha_at(&top, 256, 256) > 200, "the point is in the middle");
+        assert_eq!(alpha_at(&top, 256, 128), 0, "the boundary is not in it");
+        // With nothing but imports there is nothing for the card to do.
+        let only = render_for(&tile(Vec::new()), key, key, &docs, ALL, true);
+        assert!(matches!(only, Some(Picture::Drawn(_))));
+    }
+
+    /// The triangles made for the graphics card cover the texels the processor paints: checked
+    /// without a card, by testing texel centres against the triangles.
+    #[test]
+    fn the_triangles_cover_what_the_processor_strokes() {
+        let place = (OVERLAY_SIZE as f32, 0.0, 0.0);
+        let (line, straight) = (winding(), vec![[0.05, 0.95], [0.95, 0.9]]);
+        let lines = [&line, &straight];
+        for (width, dash) in [(6.0, None), (2.4, None), (3.0, Some([3.0, 2.0]))] {
+            let mut pixmap = Pixmap::new(OVERLAY_SIZE, OVERLAY_SIZE).unwrap();
+            stroke(&mut pixmap, &lines, place, width, [255; 4], dash);
+            let image = pixmap.take();
+            let mut mesh = LineMesh::default();
+            overlay_gpu::stroke(&mut mesh, &lines, place, width, [255; 4], dash);
+            let (mut painted, mut differ) = (0, 0);
+            for y in 0..OVERLAY_SIZE {
+                for x in 0..OVERLAY_SIZE {
+                    let alpha = alpha_at(&image, x, y);
+                    let inside = overlay_gpu::tests::covered(
+                        &mesh,
+                        &mesh.groups[0],
+                        x as f32 + 0.5,
+                        y as f32 + 0.5,
+                    );
+                    painted += usize::from(alpha >= 128);
+                    // Texels the edge runs through may fall either way.
+                    differ += usize::from((alpha > 230 && !inside) || (alpha < 25 && inside));
+                }
+            }
+            assert!(painted > 2000, "{width} {dash:?}: {painted}");
+            assert!(
+                differ * 200 < painted,
+                "{width} {dash:?}: {differ} of {painted}"
+            );
+        }
+    }
+
+    /// The same comparison on a real graphics card, where the machine has one: the painted
+    /// image against the processor's, texel by texel.
+    #[test]
+    fn the_graphics_card_paints_what_the_processor_draws() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            eprintln!("no graphics adapter here: the painted overlay was not compared");
+            return;
+        };
+        let Ok((device, queue)) = pollster::block_on(adapter.request_device(&Default::default()))
+        else {
+            eprintln!("no graphics device here: the painted overlay was not compared");
+            return;
+        };
+        let key = TileKey::new(10, 5, 5);
+        let data = VectorTile {
+            roads: vec![
+                road(RoadClass::Motorway, winding()),
+                road(RoadClass::Primary, vec![[0.0, 0.5], [1.0, 0.45]]),
+                road(RoadClass::Rail, vec![[0.3, 0.0], [0.35, 1.0]]),
+            ],
+            boundaries: vec![Boundary {
+                admin_level: 2,
+                disputed: true,
+                line: vec![[0.0, 0.7], [1.0, 0.72]],
+            }],
+            ..Default::default()
+        };
+        let drawn = render(&data, key, key, &[], ALL).unwrap();
+        let Some(Picture::Parts(parts)) = render_for(&data, key, key, &[], ALL, true) else {
+            panic!("parts for the graphics card");
+        };
+        let painter = overlay_gpu::Painter::new(&device);
+        let (texture, commands) = painter.paint(&device, &queue, &parts);
+        let row = OVERLAY_SIZE * 4;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (row * OVERLAY_SIZE) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(OVERLAY_SIZE),
+                },
+            },
+            wgpu::Extent3d {
+                width: OVERLAY_SIZE,
+                height: OVERLAY_SIZE,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit([commands, encoder.finish()]);
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let painted = buffer.slice(..).get_mapped_range().unwrap().to_vec();
+
+        let (mut far, mut sum, mut inked) = (0usize, 0u64, 0usize);
+        for (a, b) in drawn.chunks_exact(4).zip(painted.chunks_exact(4)) {
+            let worst = (0..4).map(|i| a[i].abs_diff(b[i])).max().unwrap();
+            far += usize::from(worst > 96);
+            sum += worst as u64;
+            inked += usize::from(a[3] > 0);
+        }
+        assert!(inked > 5000, "{inked}");
+        // Edges are smoothed differently, so texels on them differ a little; none of the
+        // picture is missing or misplaced.
+        assert!(far * 100 < inked, "{far} of {inked} texels are far off");
+        assert!(
+            sum / (inked as u64) < 12,
+            "mean difference {}",
+            sum / inked as u64
+        );
     }
 }

@@ -1,7 +1,7 @@
 //! GPU drawing with wgpu. Everything is positioned relative to the camera, so 32-bit
 //! floats stay precise at any distance from the Earth's centre.
 
-use crate::atlas::{self, AtlasVertex, AtlasView, Mesh};
+use crate::atlas::{self, AtlasVertex, AtlasView};
 use crate::buildings::{BuildingMesh, BuildingVertex, WALL_COLUMNS};
 use crate::camera::{Camera, FOV_Y};
 use crate::geo::{geodetic_to_ecef, radius, TileKey};
@@ -14,6 +14,7 @@ use glam::{DMat3, DVec3};
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 use std::ops::Range;
+use std::sync::Arc;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -98,7 +99,8 @@ struct GpuTile {
     /// Where the tile's imagery lies in its texture: (u0, v0, size).
     uv_rect: (f64, f64, f64),
     credit: &'static str,
-    heights: Vec<f32>,
+    /// Shared, so that a copy of the ground can be handed to another thread (see `GroundCopy`).
+    heights: Arc<[f32]>,
     center: DVec3,
     /// How far the mesh reaches from `center`.
     radius: f64,
@@ -113,6 +115,8 @@ struct AtlasDraw {
     index_capacity: u64,
     underlay: Range<u32>,
     tiles: Vec<(TileKey, Range<u32>)>,
+    /// What the meshes were made from; they are reused while it stays the same.
+    key: atlas::MeshKey,
 }
 
 struct GpuBuildings {
@@ -178,6 +182,10 @@ pub struct Renderer {
     label_capacity: usize,
     label_count: u32,
     no_overlay: wgpu::BindGroup,
+    /// Made when the first overlay is painted by the graphics card.
+    overlay_painter: Option<crate::overlay_gpu::Painter>,
+    /// The painting of overlays not yet sent to the graphics card.
+    overlay_commands: Vec<wgpu::CommandBuffer>,
     pub roads_visible: bool,
     /// Direction to the Sun in the Earth-fixed frame, and whether it lights the scene.
     pub sun: DVec3,
@@ -1009,6 +1017,8 @@ impl Renderer {
             label_capacity,
             label_count: 0,
             no_overlay,
+            overlay_painter: None,
+            overlay_commands: Vec::new(),
             roads_visible: true,
             sun: DVec3::X,
             sun_on: true,
@@ -1058,16 +1068,16 @@ impl Renderer {
             self.atlas = None;
             return;
         };
-        let mut mesh = Mesh::default();
-        atlas::add_underlay(view, IMAGERY_LIMIT_DEG.to_radians(), &mut mesh);
-        let underlay = 0..mesh.indices.len() as u32;
-        let mut tiles = Vec::with_capacity(draw.len());
-        for k in draw {
-            let Some(t) = self.tiles.get(k) else { continue };
-            let from = mesh.indices.len() as u32;
-            atlas::add_tile(view, *k, t.uv_rect, &mut mesh);
-            tiles.push((*k, from..mesh.indices.len() as u32));
+        let key = atlas::MeshKey::new(
+            view,
+            draw.iter()
+                .filter_map(|k| self.tiles.get(k).map(|t| (*k, t.uv_rect)))
+                .collect(),
+        );
+        if self.atlas.as_ref().is_some_and(|a| a.key == key) {
+            return;
         }
+        let (mesh, underlay, tiles) = atlas::build(&key, IMAGERY_LIMIT_DEG.to_radians());
         let (vbytes, ibytes) = (
             bytemuck::cast_slice::<_, u8>(&mesh.vertices),
             bytemuck::cast_slice::<_, u8>(&mesh.indices),
@@ -1118,6 +1128,7 @@ impl Renderer {
             index_capacity,
             underlay,
             tiles,
+            key,
         });
     }
 
@@ -1168,7 +1179,7 @@ impl Renderer {
                 overlay: None,
                 uv_rect,
                 credit: data.credit,
-                heights: data.heights.clone(),
+                heights: data.heights.as_slice().into(),
                 center: data.center,
                 radius: tile_radius,
                 last_used: self.frame_no,
@@ -1176,9 +1187,19 @@ impl Renderer {
         );
     }
 
+    /// The ground as it is loaded now, to ask on another thread.
+    pub fn ground_copy(&self) -> GroundCopy {
+        GroundCopy(
+            self.tiles
+                .iter()
+                .map(|(k, t)| (*k, t.heights.clone()))
+                .collect(),
+        )
+    }
+
     /// The mesh heights of a loaded tile, row by row on the (GRID + 1) squared grid.
     pub fn tile_heights(&self, k: TileKey) -> Option<&[f32]> {
-        self.tiles.get(&k).map(|t| t.heights.as_slice())
+        self.tiles.get(&k).map(|t| &t.heights[..])
     }
 
     /// Paints the base sphere under the tiles magenta, so that holes in the tiles show up
@@ -1362,30 +1383,19 @@ impl Renderer {
 
     /// Sets the energy bars to draw, or none: a mesh whose indices from `solid` on are see-through.
     pub fn set_energy(&mut self, mesh: Option<(&BuildingMesh, u32)>) {
-        self.energy = mesh
-            .filter(|m| !m.0.indices.is_empty())
-            .map(|(mesh, solid)| {
-                (
-                    GpuBuildings {
-                        vertices: self.device.create_buffer_init(&BufferInitDescriptor {
-                            label: Some("energy vertices"),
-                            contents: bytemuck::cast_slice(&mesh.vertices),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        }),
-                        indices: self.device.create_buffer_init(&BufferInitDescriptor {
-                            label: Some("energy indices"),
-                            contents: bytemuck::cast_slice(&mesh.indices),
-                            usage: wgpu::BufferUsages::INDEX,
-                        }),
-                        index_count: mesh.indices.len() as u32,
-                        center: mesh.center,
-                        radius: 0.0,
-                        last_used: 0,
-                        roof: None,
-                    },
-                    solid,
-                )
-            });
+        let bars = mesh.and_then(|(mesh, solid)| EnergyBars::new(&self.device, mesh, solid));
+        self.set_energy_bars(bars);
+    }
+
+    /// As `set_energy`, with the mesh already on the graphics card.
+    pub fn set_energy_bars(&mut self, bars: Option<EnergyBars>) {
+        self.energy = bars.map(|b| (b.gpu, b.solid));
+    }
+
+    /// The device, for making buffers on another thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn device(&self) -> wgpu::Device {
+        self.device.clone()
     }
 
     /// Chooses the building tiles to draw. Ones not loaded yet are simply left out.
@@ -1467,6 +1477,24 @@ impl Renderer {
             wgpu::TextureFormat::Rgba8Unorm,
             mips,
         );
+        let bind = self.sampled_bind(&view);
+        if let Some(tile) = self.tiles.get_mut(&k) {
+            tile.overlay = Some(bind);
+        }
+    }
+
+    /// As `insert_overlay`, for an overlay whose lines the graphics card paints.
+    pub fn paint_overlay(&mut self, k: TileKey, parts: &crate::overlay_gpu::Parts) {
+        if !self.tiles.contains_key(&k) {
+            return;
+        }
+        let painter = self
+            .overlay_painter
+            .get_or_insert_with(|| crate::overlay_gpu::Painter::new(&self.device));
+        let (texture, commands) = painter.paint(&self.device, &self.queue, parts);
+        // Sent with the next frame, so that a frame's overlays cost one submission.
+        self.overlay_commands.push(commands);
+        let view = texture.create_view(&Default::default());
         let bind = self.sampled_bind(&view);
         if let Some(tile) = self.tiles.get_mut(&k) {
             tile.overlay = Some(bind);
@@ -1558,15 +1586,10 @@ impl Renderer {
 
     /// The terrain height from the finest loaded tile covering a position.
     pub fn ground(&self, lat: f64, lon: f64) -> Option<f64> {
-        (0..=TILE_MAX_Z).rev().find_map(|z| {
-            let k = TileKey::containing(lat, lon, z);
-            let tile = self.tiles.get(&k)?;
-            let (u, v) = (
-                crate::geo::lon_to_merc_u(lon) * (1u64 << z) as f64 - k.x as f64,
-                crate::geo::lat_to_merc_v(lat) * (1u64 << z) as f64 - k.y as f64,
-            );
-            Some(height_on_grid(&tile.heights, u, v))
-        })
+        if self.tiles.is_empty() {
+            return None;
+        }
+        ground_in(lat, lon, |k| self.tiles.get(&k).map(|t| &t.heights[..]))
     }
 
     /// The height of the surface as drawn at a position: the mesh of the tile in `draw` that
@@ -2012,12 +2035,18 @@ impl Renderer {
                 pass.draw_indexed(0..self.underlay_count, 0, 0..1);
 
                 pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                // Most tiles have no overlay: bind the same group again only when it changes.
+                let mut bound_overlay = &self.no_overlay;
                 for (i, k) in draw.iter().enumerate() {
                     let t = &self.tiles[k];
                     let instance = i as u32 + 1;
                     let overlay = t.overlay.as_ref().filter(|_| self.roads_visible);
                     pass.set_bind_group(1, &t.bind_group, &[]);
-                    pass.set_bind_group(2, overlay.unwrap_or(&self.no_overlay), &[]);
+                    let overlay = overlay.unwrap_or(&self.no_overlay);
+                    if !std::ptr::eq(overlay, bound_overlay) {
+                        pass.set_bind_group(2, overlay, &[]);
+                        bound_overlay = overlay;
+                    }
                     pass.set_vertex_buffer(0, t.vertices.slice(..));
                     pass.draw_indexed(0..self.index_count, 0, instance..instance + 1);
                 }
@@ -2026,6 +2055,7 @@ impl Renderer {
             if !shown.is_empty() {
                 pass.set_pipeline(&self.building_pipeline);
                 pass.set_vertex_buffer(1, self.instances.slice(..));
+                let mut bound_roof: Option<&wgpu::BindGroup> = None;
                 for (i, k) in shown.iter().enumerate() {
                     let b = &self.buildings[k];
                     let instance = first_building + i as u32;
@@ -2034,7 +2064,10 @@ impl Renderer {
                         .as_ref()
                         .filter(|_| self.aerial_roofs)
                         .map_or(&self.no_roof, |r| &r.bind);
-                    pass.set_bind_group(1, roof, &[]);
+                    if !bound_roof.is_some_and(|r| std::ptr::eq(r, roof)) {
+                        pass.set_bind_group(1, roof, &[]);
+                        bound_roof = Some(roof);
+                    }
                     pass.set_vertex_buffer(0, b.vertices.slice(..));
                     pass.set_index_buffer(b.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..b.index_count, 0, instance..instance + 1);
@@ -2069,7 +2102,9 @@ impl Renderer {
             }
         }
         before_submit(&mut encoder);
-        self.queue.submit([encoder.finish()]);
+        // Overlays painted since the last frame come first: this frame samples them.
+        self.queue
+            .submit(self.overlay_commands.drain(..).chain([encoder.finish()]));
         self.cast = cast;
         self.evict(&in_use);
     }
@@ -2134,6 +2169,81 @@ fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffe
     })
 }
 
+/// The mesh of the energy bars on the graphics card. Filling its buffers copies the whole
+/// mesh, which for many thousands of bars takes longer than a frame, so it can be made on
+/// another thread and handed to [`Renderer::set_energy_bars`].
+pub struct EnergyBars {
+    gpu: GpuBuildings,
+    solid: u32,
+}
+
+impl EnergyBars {
+    /// `None` for a mesh with nothing in it.
+    pub fn new(device: &wgpu::Device, mesh: &BuildingMesh, solid: u32) -> Option<Self> {
+        if mesh.indices.is_empty() {
+            return None;
+        }
+        Some(Self {
+            gpu: GpuBuildings {
+                vertices: device.create_buffer_init(&BufferInitDescriptor {
+                    label: Some("energy vertices"),
+                    contents: bytemuck::cast_slice(&mesh.vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                }),
+                indices: device.create_buffer_init(&BufferInitDescriptor {
+                    label: Some("energy indices"),
+                    contents: bytemuck::cast_slice(&mesh.indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                }),
+                index_count: mesh.indices.len() as u32,
+                center: mesh.center,
+                radius: 0.0,
+                last_used: 0,
+                roof: None,
+            },
+            solid,
+        })
+    }
+}
+
+/// The terrain heights of the tiles loaded at one moment, for asking the ground's height away
+/// from the renderer, on another thread. It answers as [`Renderer::ground`] did then.
+#[derive(Clone, Default)]
+pub struct GroundCopy(HashMap<TileKey, Arc<[f32]>>);
+
+impl GroundCopy {
+    pub fn ground(&self, lat: f64, lon: f64) -> Option<f64> {
+        if self.0.is_empty() {
+            return None;
+        }
+        ground_in(lat, lon, |k| self.0.get(&k).map(|h| &h[..]))
+    }
+}
+
+/// The terrain height from the finest tile that `heights_of` has, at a position. The position
+/// in tile coordinates is the same at every zoom, so it is converted once.
+fn ground_in<'a>(
+    lat: f64,
+    lon: f64,
+    heights_of: impl Fn(TileKey) -> Option<&'a [f32]>,
+) -> Option<f64> {
+    let grid = crate::body::current().grid;
+    let (mu, mv) = (
+        crate::geo::lon_to_merc_u(lon),
+        crate::geo::lat_to_merc_v(lat),
+    );
+    let gv = crate::geo::grid_v(grid, lat);
+    (0..=TILE_MAX_Z).rev().find_map(|z| {
+        let k = TileKey::containing_at(grid, mu, gv, z);
+        let heights = heights_of(k)?;
+        let (u, v) = (
+            mu * (1u64 << z) as f64 - k.x as f64,
+            mv * (1u64 << z) as f64 - k.y as f64,
+        );
+        Some(height_on_grid(heights, u, v))
+    })
+}
+
 /// Bilinear lookup on a tile's mesh heights, with `u` and `v` in 0..1.
 fn height_on_grid(heights: &[f32], u: f64, v: f64) -> f64 {
     let n = GRID as f64;
@@ -2173,6 +2283,80 @@ mod tests {
         assert_eq!(height_on_grid(&heights, 0.0, 0.5), 0.0);
         assert_eq!(height_on_grid(&heights, 1.0, 0.5), GRID as f64);
         assert!((height_on_grid(&heights, 0.5, 0.5) - GRID as f64 / 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_copy_of_the_ground_answers_as_the_tiles_it_was_made_from() {
+        let side = GRID + 1;
+        let (lat0, lon0) = (0.81f64, 0.2f64);
+        let mut tiles: HashMap<TileKey, Arc<[f32]>> = HashMap::new();
+        for z in [2u8, 6, 9] {
+            let heights: Vec<f32> = (0..side * side)
+                .map(|i| ((i * 5 + z as usize * 11) % 97) as f32 * 4.0)
+                .collect();
+            tiles.insert(TileKey::containing(lat0, lon0, z), heights.into());
+        }
+        let copy = GroundCopy(tiles.clone());
+        for i in 0..200 {
+            let lat = lat0 + (i as f64 * 0.37).sin() * 0.003;
+            let lon = lon0 + (i as f64 * 0.91).cos() * 0.004;
+            let direct = ground_in(lat, lon, |k| tiles.get(&k).map(|h| &h[..]));
+            assert_eq!(
+                copy.ground(lat, lon).map(f64::to_bits),
+                direct.map(f64::to_bits)
+            );
+        }
+        assert!(copy.ground(lat0, lon0).is_some());
+        assert_eq!(GroundCopy::default().ground(lat0, lon0), None);
+    }
+
+    #[test]
+    fn ground_lookup_matches_the_per_zoom_conversion() {
+        // The lookup as it was written before the conversion was hoisted out of the loop.
+        fn reference<'a>(
+            lat: f64,
+            lon: f64,
+            heights_of: impl Fn(TileKey) -> Option<&'a [f32]>,
+        ) -> Option<f64> {
+            (0..=TILE_MAX_Z).rev().find_map(|z| {
+                let k = TileKey::containing(lat, lon, z);
+                let heights = heights_of(k)?;
+                let (u, v) = (
+                    crate::geo::lon_to_merc_u(lon) * (1u64 << z) as f64 - k.x as f64,
+                    crate::geo::lat_to_merc_v(lat) * (1u64 << z) as f64 - k.y as f64,
+                );
+                Some(height_on_grid(heights, u, v))
+            })
+        }
+        let side = GRID + 1;
+        let tile = |seed: usize| -> Vec<f32> {
+            (0..side * side)
+                .map(|i| ((i * 7 + seed * 13) % 101) as f32 * 3.5)
+                .collect()
+        };
+        // Tiles at a few zooms around one place; elsewhere nothing is loaded.
+        let (lat0, lon0) = (0.81f64, 0.2f64);
+        let mut tiles: HashMap<TileKey, Vec<f32>> = HashMap::new();
+        for z in [0u8, 3, 7, 10] {
+            let k = TileKey::containing(lat0, lon0, z);
+            tiles.insert(k, tile(z as usize));
+        }
+        let get = |k: TileKey| tiles.get(&k).map(|t| &t[..]);
+        let mut found = 0;
+        for i in 0..400 {
+            let lat = lat0 + (i as f64 * 0.37).sin() * 0.002 * (i % 7) as f64;
+            let lon = lon0 + (i as f64 * 0.91).cos() * 0.003 * (i % 5) as f64;
+            let (a, b) = (ground_in(lat, lon, get), reference(lat, lon, get));
+            assert_eq!(a.map(f64::to_bits), b.map(f64::to_bits), "{lat} {lon}");
+            found += a.is_some() as usize;
+        }
+        assert!(found > 100);
+        // Far from every tile only the zoom 0 tile answers, and no tile at all gives nothing.
+        assert_eq!(
+            ground_in(-1.2, -2.5, get).map(f64::to_bits),
+            reference(-1.2, -2.5, get).map(f64::to_bits)
+        );
+        assert_eq!(ground_in(lat0, lon0, |_| None), None);
     }
 
     #[test]
