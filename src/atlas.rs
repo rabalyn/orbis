@@ -9,6 +9,7 @@
 //! The others are the standard formulas of Snyder, "Map Projections: A Working Manual" (1987):
 //! Mollweide (pp. 249-252), Hammer (pp. 130-133), Mercator and the equirectangular projection.
 
+use crate::body;
 use crate::geo::TileKey;
 use crate::select::{Selection, TILE_TEXELS};
 use bytemuck::{Pod, Zeroable};
@@ -446,8 +447,12 @@ pub struct Piece {
 
 impl Piece {
     fn rel_lon(&self, k: TileKey, s: f64, cm: f64) -> f64 {
-        let n = crate::body::current().grid.columns(k.z) as f64;
-        TAU * (k.x as f64 + s) / n - PI - cm - self.shift
+        self.rel_lon_in(crate::body::current().grid.columns(k.z) as f64, k, s, cm)
+    }
+
+    /// `rel_lon` for a caller that already knows the number of tile columns.
+    fn rel_lon_in(&self, columns: f64, k: TileKey, s: f64, cm: f64) -> f64 {
+        TAU * (k.x as f64 + s) / columns - PI - cm - self.shift
     }
 }
 
@@ -642,12 +647,22 @@ pub fn add_tile(v: &AtlasView, k: TileKey, uv_rect: (f64, f64, f64), mesh: &mut 
     for piece in pieces(k, v.central_meridian) {
         let cols = (((piece.s.1 - piece.s.0) * n as f64).ceil() as usize).max(1);
         let first = mesh.vertices.len() as u32;
+        // What depends on the column alone is worked out once, not for every row.
+        let columns = body::current().grid.columns(k.z) as f64;
+        let across: Vec<(f64, f64, f64, f64)> = (0..=cols)
+            .map(|i| {
+                let s = piece.s.0 + (piece.s.1 - piece.s.0) * i as f64 / cols as f64;
+                let rel_lon = piece.rel_lon_in(columns, k, s, v.central_meridian);
+                let lon = rel_lon + v.central_meridian;
+                (s, rel_lon, lon.cos(), lon.sin())
+            })
+            .collect();
         for j in 0..=n {
             let t = j as f64 / n as f64;
-            for i in 0..=cols {
-                let s = piece.s.0 + (piece.s.1 - piece.s.0) * i as f64 / cols as f64;
-                let (lat, _) = k.lat_lon(s, t);
-                let rel_lon = piece.rel_lon(k, s, v.central_meridian);
+            // The latitude depends on the row alone.
+            let (lat, _) = k.lat_lon(piece.s.0, t);
+            let (cos_lat, sin_lat) = (lat.cos(), lat.sin());
+            for &(s, rel_lon, cos_lon, sin_lon) in &across {
                 let xy = v.projection.forward(lat, rel_lon);
                 let (nx, ny) = v.ndc_of(xy);
                 mesh.vertices.push(AtlasVertex {
@@ -657,7 +672,11 @@ pub fn add_tile(v: &AtlasView, k: TileKey, uv_rect: (f64, f64, f64), mesh: &mut 
                         (uv_rect.1 + t * uv_rect.2) as f32,
                     ],
                     st: [s as f32, t as f32],
-                    normal: surface_normal(lat, rel_lon + v.central_meridian),
+                    normal: [
+                        (cos_lat * cos_lon) as f32,
+                        (cos_lat * sin_lon) as f32,
+                        sin_lat as f32,
+                    ],
                 });
             }
         }
@@ -669,6 +688,49 @@ pub fn add_tile(v: &AtlasView, k: TileKey, uv_rect: (f64, f64, f64), mesh: &mut 
             }
         }
     }
+}
+
+/// Everything the flat map's mesh is made from. While this stays equal, so does the mesh: the
+/// vertices hold clip-space positions of the view, imagery coordinates and Earth-fixed
+/// normals, and nothing that changes with the clock, the sun or the settings.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeshKey {
+    pub view: AtlasView,
+    /// The body whose grid and ellipsoid the tiles are placed on.
+    pub body: &'static str,
+    /// The tiles to draw, in order, with where their imagery lies in the texture.
+    pub tiles: Vec<(TileKey, (f64, f64, f64))>,
+}
+
+impl MeshKey {
+    pub fn new(view: &AtlasView, tiles: Vec<(TileKey, (f64, f64, f64))>) -> Self {
+        Self {
+            view: *view,
+            body: body::current().id,
+            tiles,
+        }
+    }
+}
+
+/// The underlay and the tiles of a key as one mesh, with the index ranges of each.
+pub fn build(
+    key: &MeshKey,
+    imagery_limit: f64,
+) -> (
+    Mesh,
+    std::ops::Range<u32>,
+    Vec<(TileKey, std::ops::Range<u32>)>,
+) {
+    let mut mesh = Mesh::default();
+    add_underlay(&key.view, imagery_limit, &mut mesh);
+    let underlay = 0..mesh.indices.len() as u32;
+    let mut tiles = Vec::with_capacity(key.tiles.len());
+    for (k, uv_rect) in &key.tiles {
+        let from = mesh.indices.len() as u32;
+        add_tile(&key.view, *k, *uv_rect, &mut mesh);
+        tiles.push((*k, from..mesh.indices.len() as u32));
+    }
+    (mesh, underlay, tiles)
 }
 
 /// Where the underlay's plain colours sit in the renderer's two-colour texture.
@@ -1191,6 +1253,131 @@ mod tests {
             let mut w = v;
             w.scale = w.scale_for_distance(d);
             assert!(near(w.distance_for_scale() / d, 1.0, 1e-12));
+        }
+    }
+
+    const UV: (f64, f64, f64) = (0.0, 0.0, 1.0);
+
+    fn key_of(v: &AtlasView) -> MeshKey {
+        let tiles = [
+            TileKey::new(0, 0, 0),
+            TileKey::new(2, 1, 1),
+            TileKey::new(3, 7, 2),
+        ];
+        MeshKey::new(v, tiles.iter().map(|k| (*k, UV)).collect())
+    }
+
+    /// The mesh as it was built before the per-row and per-column values were hoisted:
+    /// every vertex worked out on its own.
+    fn naive_tile(v: &AtlasView, k: TileKey, uv_rect: (f64, f64, f64), mesh: &mut Mesh) {
+        let n = if k.z < 3 { 32 } else { 16 };
+        for piece in pieces(k, v.central_meridian) {
+            let cols = (((piece.s.1 - piece.s.0) * n as f64).ceil() as usize).max(1);
+            let first = mesh.vertices.len() as u32;
+            for j in 0..=n {
+                let t = j as f64 / n as f64;
+                for i in 0..=cols {
+                    let s = piece.s.0 + (piece.s.1 - piece.s.0) * i as f64 / cols as f64;
+                    let (lat, _) = k.lat_lon(s, t);
+                    let rel_lon = piece.rel_lon(k, s, v.central_meridian);
+                    let (nx, ny) = v.ndc_of(v.projection.forward(lat, rel_lon));
+                    mesh.vertices.push(AtlasVertex {
+                        pos: [nx as f32, ny as f32],
+                        uv: [
+                            (uv_rect.0 + s * uv_rect.2) as f32,
+                            (uv_rect.1 + t * uv_rect.2) as f32,
+                        ],
+                        st: [s as f32, t as f32],
+                        normal: surface_normal(lat, rel_lon + v.central_meridian),
+                    });
+                }
+            }
+            let row = cols as u32 + 1;
+            for j in 0..n as u32 {
+                for i in 0..cols as u32 {
+                    let a = first + j * row + i;
+                    mesh.quad([a, a + 1, a + row, a + row + 1]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hoisted_tile_mesh_equals_the_vertex_by_vertex_one() {
+        for p in Projection::ALL {
+            for cm in [0.0, 1.0, -2.5] {
+                let v = AtlasView::whole(p, cm, (1280.0, 800.0));
+                for k in key_of(&v).tiles.iter().map(|t| t.0) {
+                    let (mut a, mut b) = (Mesh::default(), Mesh::default());
+                    add_tile(&v, k, UV, &mut a);
+                    naive_tile(&v, k, UV, &mut b);
+                    assert_eq!(a.indices, b.indices, "{p:?} {cm} {k:?}");
+                    assert_eq!(
+                        bytemuck::cast_slice::<_, u8>(&a.vertices),
+                        bytemuck::cast_slice::<_, u8>(&b.vertices),
+                        "{p:?} {cm} {k:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_unchanged_key_gives_an_identical_mesh() {
+        let v = view(Projection::EqualEarth);
+        let (key, again) = (key_of(&v), key_of(&v));
+        assert_eq!(key, again);
+        let (a, ua, ta) = build(&key, 1.4);
+        let (b, ub, tb) = build(&again, 1.4);
+        assert_eq!((ua, ta), (ub, tb));
+        assert_eq!(a.indices, b.indices);
+        assert_eq!(
+            bytemuck::cast_slice::<_, u8>(&a.vertices),
+            bytemuck::cast_slice::<_, u8>(&b.vertices)
+        );
+    }
+
+    #[test]
+    fn every_input_of_the_mesh_changes_the_key() {
+        let v = view(Projection::EqualEarth);
+        let base = key_of(&v);
+        let mut changed = Vec::new();
+        let mut w = v;
+        w.centre.0 += 0.01;
+        changed.push(key_of(&w));
+        let mut w = v;
+        w.centre.1 += 0.01;
+        changed.push(key_of(&w));
+        let mut w = v;
+        w.scale *= 1.01;
+        changed.push(key_of(&w));
+        let mut w = v;
+        w.size.0 += 1.0;
+        changed.push(key_of(&w));
+        let mut w = v;
+        w.size.1 += 1.0;
+        changed.push(key_of(&w));
+        let mut w = v;
+        w.central_meridian += 0.1;
+        changed.push(key_of(&w));
+        changed.push(key_of(&view(Projection::Mollweide)));
+        let mut k = base.clone();
+        k.tiles.pop();
+        changed.push(k);
+        let mut k = base.clone();
+        k.tiles.push((TileKey::new(1, 0, 0), UV));
+        changed.push(k);
+        let mut k = base.clone();
+        k.tiles[0].1 = (0.25, 0.25, 0.5);
+        changed.push(k);
+        let mut k = base.clone();
+        k.tiles.swap(0, 1);
+        changed.push(k);
+        let mut k = base.clone();
+        k.body = "other";
+        changed.push(k);
+        for (i, k) in changed.iter().enumerate() {
+            assert_ne!(*k, base, "input {i} did not change the key");
         }
     }
 }
