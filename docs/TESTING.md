@@ -14,6 +14,12 @@ These requirements apply to every code and behavior change in Orbis.
 - `cargo check --target wasm32-unknown-unknown` checks the browser build when that target is installed.
 - The `--screenshot` and `--record` modes are available for repeatable rendered-output inspection. Prefer a regression assertion over a screenshot-only/manual check when the behavior can be expressed in code.
 
+## Measuring performance
+
+- `--benchmark SECONDS` turns the view in the window and prints the time between frames, which the frame limit sets, and the work time per frame with its parts (update, panels, labels, drawing), which is the figure to compare. Use `--offline` so that no server is loaded.
+- `cargo build --profile profiling --features profile` builds an optimised program with symbols and a sampling profiler. With `ORBIS_FLAMEGRAPH=FILE.svg` set, a run writes a flamegraph of all threads and the folded stacks beside it (`FILE.folded`).
+- A change made for speed must leave pictures as they were: compare `--screenshot` images taken with a fixed `--time` before and after.
+
 ## Measurement trails coverage
 
 The measurement module tests altitude-aware leg distances, uphill/downhill totals, flat legs, antimeridian distance, track style propagation, visibility filtering, clone/delete behavior, JSON persistence, and GPX export/import round trips. The overlay raster test checks custom color and dotted line rendering. The application sends the same imported overlay documents to globe and atlas rendering; both view paths consume the tile overlay, independent of atlas projection.

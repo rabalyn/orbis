@@ -2,7 +2,7 @@
 //! and choosing each frame which labels fit on screen.
 
 use crate::camera::{Basis, FOV_Y};
-use crate::geo::{ecef_to_geodetic, enu, geodetic_to_ecef, ray_ellipsoid};
+use crate::geo::{ecef_to_geodetic, geodetic_to_ecef, ray_ellipsoid};
 use crate::vector::{Label, LabelStyle, NATIONAL_CAPITAL_MARK, STATE_CAPITAL_MARK};
 use cosmic_text::{
     Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, SwashCache, Weight,
@@ -506,18 +506,20 @@ pub struct GlobeView<'a> {
     pub ground: &'a dyn Fn(f64, f64) -> Option<f64>,
     /// The anchor last worked out, with the label it belongs to: `place` asks for a label's
     /// centre and then, in `fits`, for the same anchor again.
-    pub anchor: Cell<Option<(*const Label, DVec3)>>,
+    pub anchor: Cell<Option<([u64; 2], DVec3)>>,
 }
 
 impl GlobeView<'_> {
     fn anchor_of(&self, label: &Label) -> DVec3 {
-        if let Some((l, a)) = self.anchor.get() {
-            if std::ptr::eq(l, label) {
+        // The anchor follows from the position alone, so that is what it is kept under.
+        let at = [label.lat.to_bits(), label.lon.to_bits()];
+        if let Some((kept, a)) = self.anchor.get() {
+            if kept == at {
                 return a;
             }
         }
         let a = anchor(label, self.ground);
-        self.anchor.set(Some((label, a)));
+        self.anchor.set(Some((at, a)));
         a
     }
 }
@@ -741,7 +743,7 @@ mod tests {
         // `may_show` as it was written with `geodetic_to_ecef` and `enu`.
         fn reference(screen: &Screen, label: &Label) -> bool {
             let p = geodetic_to_ecef(label.lat, label.lon, 0.0);
-            let (_, _, up) = enu(label.lat, label.lon);
+            let (_, _, up) = crate::geo::enu(label.lat, label.lon);
             let to_camera = screen.basis.pos - p;
             if to_camera.length() > crate::body::scaled(max_distance(label)) {
                 return false;

@@ -45,20 +45,21 @@ impl<J: Clone + Send + 'static, R: Send + 'static> Worker<J, R> {
             let name = name.split('<').next().unwrap_or(name);
             let name = name.rsplit("::").next().unwrap_or(name);
             let spawn = std::thread::Builder::new().name(format!("job-{name}"));
-            let _thread = spawn.spawn(move || {
-                // The thread ends when the worker is dropped and the channel closes.
-                while let Ok(mut job) = job_rx.recv() {
-                    if latest_only {
-                        while let Ok(newer) = job_rx.try_recv() {
-                            job = newer;
+            let _thread = spawn
+                .spawn(move || {
+                    // The thread ends when the worker is dropped and the channel closes.
+                    while let Ok(mut job) = job_rx.recv() {
+                        if latest_only {
+                            while let Ok(newer) = job_rx.try_recv() {
+                                job = newer;
+                            }
+                        }
+                        if reply_tx.send(run(job)).is_err() {
+                            break;
                         }
                     }
-                    if reply_tx.send(run(job)).is_err() {
-                        break;
-                    }
-                }
-            })
-            .expect("start a work thread");
+                })
+                .expect("start a work thread");
             Self {
                 jobs,
                 replies: Mutex::new(replies),

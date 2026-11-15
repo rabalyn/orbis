@@ -179,7 +179,7 @@ Usage: orbis [options]
   --no-spacemouse         do not look for a SpaceMouse (spacenavd or USB)
   --spacemouse-sensitivity N  scale SpaceMouse speed (default 1)
   --fps 120|90            frame rate limit (default 120, key F switches)
-  --benchmark SECONDS     turn the view in the window, print frame timings and exit
+  --benchmark SECONDS     turn the view in the window, print frame timings and the work time per frame, and exit
   --record DIR            keep every drawn frame of the window as an image in the new folder DIR, with a log
                           of the view, the time and the input in DIR/frames.jsonl
   --record-limit GIB      keep only the newest images up to this size (default 4)
