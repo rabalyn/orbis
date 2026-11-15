@@ -793,7 +793,11 @@ mod tests {
     use super::*;
 
     fn frame(gui: &mut Gui, text: &str, ppp: f32) {
-        let raw = gui.begin((400, 300), ppp);
+        let mut raw = gui.begin((400, 300), ppp);
+        // A clock of the test's own, ten seconds a frame: by the real one, frames that follow
+        // closely catch a new area still fading in, and their shapes differ.
+        thread_local!(static CLOCK: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) });
+        raw.time = Some(CLOCK.with(|c| c.replace(c.get() + 10.0)));
         let ctx = gui.ctx.clone();
         let out = ctx.run_pass(raw, |ctx| {
             egui::Area::new(egui::Id::unique("t")).show(ctx, |ui| {

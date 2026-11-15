@@ -1118,6 +1118,87 @@ struct MeshDone {
     drawn: usize,
 }
 
+/// The bars of the Plants level with what is kept beside them (see `EnergyLayer`).
+struct PlantBars {
+    bars: Arc<Vec<energy::Bar>>,
+    points: Arc<Vec<DVec3>>,
+    heights: Arc<Vec<(u32, f32)>>,
+    all: Option<f64>,
+    site_bars: usize,
+    world_plants: bool,
+}
+
+/// Germany's sites and the world's plants within `near` (a place and a reach, radians) as
+/// bars. With hundreds of thousands of them this takes many frames' time, so it is done on a
+/// thread of its own.
+fn plant_bars(month: u16, shown: [bool; energy::SOURCES], near: (f64, f64, f64)) -> PlantBars {
+    let mut bars = energy::Energy::bundled().map_or_else(Vec::new, |data| {
+        data.bars(energy::Level::Plants, month, shown, Some(near))
+    });
+    if let Some(p) = world_plants::Plants::bundled() {
+        bars.extend(p.bars(month, shown, Some(near)));
+    }
+    let heights = energy::plant_heights(&bars);
+    PlantBars {
+        points: Arc::new(
+            bars.iter()
+                .map(|b| geo::geodetic_to_ecef(b.lat, b.lon, 0.0))
+                .collect(),
+        ),
+        all: energy::plants_needed_of(heights.iter().map(|(_, h)| *h).collect()),
+        site_bars: bars
+            .iter()
+            .filter(|b| {
+                matches!(
+                    b.subject,
+                    energy::Subject::Site(_) | energy::Subject::Plant(_)
+                )
+            })
+            .count(),
+        world_plants: bars
+            .iter()
+            .any(|b| matches!(b.subject, energy::Subject::Plant(_))),
+        heights: Arc::new(heights),
+        bars: Arc::new(bars),
+    }
+}
+
+/// What the plant bars are made from, with the view their scale is first fitted to.
+#[derive(Clone)]
+struct BarsJob {
+    key: BarsKey,
+    month: u16,
+    shown: [bool; energy::SOURCES],
+    near: (f64, f64, f64),
+    basis: camera::Basis,
+    size: DVec2,
+}
+
+struct BarsDone {
+    key: BarsKey,
+    made: PlantBars,
+    /// The scale the bars need in the view the job was given, and that view.
+    needed: Option<f64>,
+    view: (camera::Basis, DVec2),
+}
+
+fn make_plant_bars(job: BarsJob) -> BarsDone {
+    let made = plant_bars(job.month, job.shown, job.near);
+    let needed = fit_plants(&FitJob {
+        number: 0,
+        points: made.points.clone(),
+        heights: made.heights.clone(),
+        basis: job.basis,
+        size: job.size,
+    });
+    BarsDone {
+        key: job.key,
+        made,
+        needed,
+        view: (job.basis, job.size),
+    }
+}
+
 /// What the scale of the plant bars in view is found from.
 #[derive(Clone)]
 struct FitJob {
@@ -1280,6 +1361,11 @@ struct EnergyLayer {
     /// How many of `bars` are sites or plants, and whether any is one of the world's plants.
     site_bars: usize,
     world_plants: bool,
+    /// Makes the plant bars away from the frame; what was last asked of it, and whether the
+    /// answer is still out.
+    bar_maker: Option<worker::Worker<BarsJob, BarsDone>>,
+    bars_asked: Option<BarsKey>,
+    bars_pending: bool,
     /// Builds the bars' mesh away from the frame; started with the first mesh.
     mesher: Option<worker::Worker<MeshJob, MeshDone>>,
     /// The number of the mesh last asked for, and whether it is still being built.
@@ -1293,7 +1379,7 @@ impl EnergyLayer {
     /// Whether something of the bars is still being worked out, on another thread or in a
     /// coming frame, so that frames must go on (and a picture must wait).
     fn waits(&self) -> bool {
-        self.mesh_pending || self.fit_pending || self.fit_owed
+        self.bars_pending || self.mesh_pending || self.fit_pending || self.fit_owed
     }
 }
 
@@ -3207,8 +3293,21 @@ impl Scene {
         // What arrives from the power feed or a new look asks for a fresh build; plant bars hold
         // nothing of either, so only their mesh is made again.
         let asked_anew = self.energy.built_from.is_none() && !plants;
-        let new_bars = asked_anew || self.energy.bars_from != Some(bars_key);
-        if new_bars {
+        let mut new_bars = asked_anew || self.energy.bars_from != Some(bars_key);
+        if new_bars && plants {
+            // Made on another thread; until they are there, what was drawn stays.
+            let view = (
+                cam.basis(),
+                DVec2::new(aspect_height.0 * aspect_height.1, aspect_height.1),
+            );
+            if !self.take_plant_bars(bars_key, (month, shown), (cam.lat, cam.lon, reach), view) {
+                self.take_bar_mesh(r);
+                return true;
+            }
+            // Their scale came fitted with them; only the mesh is still to make.
+            new_bars = false;
+            self.energy.built_from = None;
+        } else if new_bars {
             self.build_bars(
                 data,
                 world.filter(|_| countries),
@@ -3220,7 +3319,9 @@ impl Scene {
             self.energy.bars_from = Some(bars_key);
         }
         if !plants {
-            // An answer still out for the plants' scale is no longer waited for.
+            // Answers still out for the plants' bars and scale are no longer waited for.
+            self.energy.bars_pending = false;
+            self.energy.bars_asked = None;
             self.energy.fit_pending = false;
             self.energy.fit_owed = false;
         }
@@ -3327,7 +3428,59 @@ impl Scene {
         }
     }
 
-    /// Makes the bars of `level` anew, with what is kept beside them: see [`BarsKey`] for what
+    /// Asks for the plant bars of `key` if that has not been done, and takes them in if they
+    /// have come. Returns whether the bars are now those of `key`.
+    fn take_plant_bars(
+        &mut self,
+        key: BarsKey,
+        (month, shown): (u16, [bool; energy::SOURCES]),
+        near: (f64, f64, f64),
+        (basis, size): (camera::Basis, DVec2),
+    ) -> bool {
+        let e = &mut self.energy;
+        if e.bars_asked != Some(key) {
+            e.bars_asked = Some(key);
+            e.bars_pending = true;
+            e.bar_maker
+                .get_or_insert_with(|| worker::Worker::new(true, Duration::ZERO, make_plant_bars))
+                .submit(BarsJob {
+                    key,
+                    month,
+                    shown,
+                    near,
+                    basis,
+                    size,
+                });
+        }
+        let mut latest = None;
+        if let Some(maker) = &e.bar_maker {
+            while let Some(done) = maker.poll() {
+                // Bars that the view has moved on from are left out; those asked for follow.
+                latest = Some(done).filter(|d| d.key == key);
+            }
+        }
+        let Some(done) = latest else {
+            return false;
+        };
+        e.bars = done.made.bars;
+        e.bar_points = done.made.points;
+        e.plant_heights = done.made.heights;
+        e.plants_all = done.made.all;
+        e.site_bars = done.made.site_bars;
+        e.world_plants = done.made.world_plants;
+        e.bars_from = Some(key);
+        e.bars_pending = false;
+        // The scale as the job fitted it, for the view it was given: a view that has moved
+        // since is fitted again in its turn.
+        e.plant_scale_fit = Some((month, shown, done.needed, e.plants_all, Instant::now()));
+        let (basis, size) = done.view;
+        e.fit_view = Some(([basis.pos, basis.right, basis.up, basis.look], size));
+        e.fit_pending = false;
+        e.fit_owed = false;
+        true
+    }
+
+    /// Makes the bars of a level other than Plants anew, with what is kept beside them: see [`BarsKey`] for what
     /// they follow from. `world` is given at the Countries level, where its bars are shown.
     fn build_bars(
         &mut self,
@@ -3368,12 +3521,6 @@ impl Scene {
                 {
                     bars.extend(s.bars(self.clock_month(), shown, self.view.energy_demand));
                 }
-                // Beyond Germany, the world's plants.
-                if let Some(p) =
-                    world_plants::Plants::bundled().filter(|_| level == energy::Level::Plants)
-                {
-                    bars.extend(p.bars(month, shown, near));
-                }
                 bars
             }
         };
@@ -3400,21 +3547,10 @@ impl Scene {
             .bars
             .iter()
             .any(|b| matches!(b.subject, energy::Subject::Plant(_)));
-        if level == energy::Level::Plants {
-            e.bar_points = Arc::new(
-                e.bars
-                    .iter()
-                    .map(|b| geo::geodetic_to_ecef(b.lat, b.lon, 0.0))
-                    .collect(),
-            );
-            e.plant_heights = Arc::new(energy::plant_heights(&e.bars));
-            let all = e.plant_heights.iter().map(|(_, h)| *h).collect();
-            e.plants_all = energy::plants_needed_of(all);
-        } else {
-            e.bar_points = Arc::default();
-            e.plant_heights = Arc::default();
-            e.plants_all = None;
-        }
+        // What is kept beside plant bars; those are made by `plant_bars`, on another thread.
+        e.bar_points = Arc::default();
+        e.plant_heights = Arc::default();
+        e.plants_all = None;
     }
 
     /// Steps the countries' scale towards what the countries in view need: those whose bar
@@ -6928,9 +7064,76 @@ mod tests {
     }
 
     #[test]
+    fn plant_bars_come_with_what_is_kept_beside_them_and_a_fitted_scale() {
+        let data = energy::Energy::bundled().unwrap();
+        // 1 November 2026, noon.
+        let month = energy::month_of(1_793_534_400.0);
+        let shown = [true; energy::SOURCES];
+        let (lat, lon) = (51f64.to_radians(), 10f64.to_radians());
+        let near = (lat, lon, 0.03);
+        let made = plant_bars(month, shown, near);
+        // Germany's sites first, then the world's plants, as the bars were made before.
+        let mut plain = data.bars(energy::Level::Plants, month, shown, Some(near));
+        if let Some(p) = world_plants::Plants::bundled() {
+            plain.extend(p.bars(month, shown, Some(near)));
+        }
+        assert!(made.bars.len() > 100);
+        assert_eq!(made.bars.len(), plain.len());
+        for (a, b) in made.bars.iter().zip(&plain) {
+            assert_eq!(
+                (a.lat, a.lon, a.kw, a.subject),
+                (b.lat, b.lon, b.kw, b.subject)
+            );
+        }
+        assert_eq!(made.points.len(), made.bars.len());
+        assert_eq!(
+            made.points[7],
+            geo::geodetic_to_ecef(made.bars[7].lat, made.bars[7].lon, 0.0)
+        );
+        assert_eq!(*made.heights, energy::plant_heights(&plain));
+        assert_eq!(made.all, energy::plants_needed(&plain, &|_, _| true));
+        assert!(made.site_bars > 0 && made.site_bars <= made.bars.len());
+
+        let key = (
+            energy::Level::Plants,
+            month,
+            shown,
+            (3, 4),
+            None,
+            (2026, 11),
+            false,
+        );
+        let basis = looking_down(lat, lon, 30_000.0);
+        let size = DVec2::new(1200.0, 800.0);
+        let done = make_plant_bars(BarsJob {
+            key,
+            month,
+            shown,
+            near,
+            basis,
+            size,
+        });
+        assert_eq!(done.key, key);
+        assert_eq!(done.made.bars.len(), made.bars.len());
+        assert_eq!(done.view.1, size);
+        let fitted = fit_plants(&FitJob {
+            number: 0,
+            points: made.points.clone(),
+            heights: made.heights.clone(),
+            basis,
+            size,
+        });
+        assert!(fitted.is_some());
+        assert_eq!(done.needed, fitted);
+    }
+
+    #[test]
     fn frames_go_on_while_the_bars_are_being_worked_out() {
         let mut e = EnergyLayer::default();
         assert!(!e.waits());
+        e.bars_pending = true;
+        assert!(e.waits());
+        e.bars_pending = false;
         e.mesh_pending = true;
         assert!(e.waits());
         e.mesh_pending = false;
