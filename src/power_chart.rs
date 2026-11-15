@@ -344,7 +344,7 @@ pub fn show(ctx: &egui::Context, gui: &mut Gui, model: &Model) -> Option<Event> 
             if let Some(c) = &model.chart {
                 let height = (screen.height() * 0.25).clamp(110.0, 170.0);
                 plot(ui, c, Vec2::new(width, height));
-                legend(ui, c);
+                legend(ui, c, width);
             }
             if !model.note.is_empty() {
                 gui::note(ui, &model.note);
@@ -526,9 +526,29 @@ fn plot(ui: &mut egui::Ui, c: &Chart, size: Vec2) {
     }
 }
 
-/// The legend: the line first, then the areas from the top of the stack down.
-fn legend(ui: &mut egui::Ui, c: &Chart) {
-    ui.horizontal_wrapped(|ui| {
+/// The legend: the line first, then the areas from the top of the stack down, in rows no wider
+/// than `width`. It takes that much room and no more: left to itself a row may run a little
+/// over in the frame it is first laid out, and whether that widened the window for good
+/// depended on which frame the day's figures arrived in.
+fn legend(ui: &mut egui::Ui, c: &Chart, width: f32) {
+    // One row high to begin with, as a wrapped row is; further rows add to it.
+    let row = ui.spacing().interact_size.y;
+    let room = egui::Rect::from_min_size(ui.cursor().min, Vec2::new(width, row));
+    let layout = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true);
+    let mut rows = ui.new_child(egui::UiBuilder::new().max_rect(room).layout(layout));
+    legend_entries(&mut rows, c);
+    let height = rows.min_rect().height();
+    // Never more than a screenful, whatever the layout made of it.
+    let height = if height.is_finite() {
+        height.clamp(row, 600.0)
+    } else {
+        row
+    };
+    ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
+}
+
+fn legend_entries(ui: &mut egui::Ui, c: &Chart) {
+    {
         ui.spacing_mut().item_spacing = Vec2::new(4.0, 2.0);
         let (r, _) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), egui::Sense::hover());
         ui.painter().line_segment(
@@ -550,7 +570,7 @@ fn legend(ui: &mut egui::Ui, c: &Chart) {
             gui::legend_entry(ui, [colour[0], colour[1], colour[2], 255], *hatched, name);
             ui.add_space(6.0);
         }
-    });
+    }
 }
 
 #[cfg(test)]
@@ -563,6 +583,38 @@ mod tests {
         mw[5] = 5000.0;
         mw[FILTERS.len() - 1] = load;
         Moment { time: 0.0, mw }
+    }
+
+    /// The legend once widened its window, or not, by the frame it first appeared in; and a
+    /// first try at stopping that let its height grow without end.
+    #[test]
+    fn the_legend_keeps_to_the_width_it_is_given() {
+        let day: Vec<Option<Moment>> = (0..96)
+            .map(|i| Some(moment(i as f32 * 100.0, 40_000.0)))
+            .collect();
+        let intensity = Some(vec![Some(400.0); 96]);
+        let c = chart(&day, intensity, Some(0.5), Palette::Standard);
+        let ctx = egui::Context::default();
+        for width in [120.0f32, 294.0, 500.0] {
+            let mut took = egui::Vec2::ZERO;
+            // Several frames: the first lays text out without knowing its size.
+            for _ in 0..4 {
+                let mut out = ctx.run_pass(egui::RawInput::default(), |ctx| {
+                    egui::Area::new(egui::Id::unique(("legend", width as u32))).show(ctx, |ui| {
+                        let before = ui.min_rect();
+                        legend(ui, &c, width);
+                        took = ui.min_rect().size() - before.size();
+                        assert!(ui.min_rect().width() <= width + 0.01, "{width}");
+                    });
+                });
+                // No graphics card takes the font textures here.
+                out.textures_delta.clear();
+            }
+            assert!(
+                took.y.is_finite() && took.y >= 14.0 && took.y <= 600.0,
+                "{took:?}"
+            );
+        }
     }
 
     #[test]

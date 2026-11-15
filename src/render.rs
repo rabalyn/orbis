@@ -14,6 +14,7 @@ use glam::{DMat3, DVec3};
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 use std::ops::Range;
+use std::sync::Arc;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -98,7 +99,8 @@ struct GpuTile {
     /// Where the tile's imagery lies in its texture: (u0, v0, size).
     uv_rect: (f64, f64, f64),
     credit: &'static str,
-    heights: Vec<f32>,
+    /// Shared, so that a copy of the ground can be handed to another thread (see `GroundCopy`).
+    heights: Arc<[f32]>,
     center: DVec3,
     /// How far the mesh reaches from `center`.
     radius: f64,
@@ -1177,7 +1179,7 @@ impl Renderer {
                 overlay: None,
                 uv_rect,
                 credit: data.credit,
-                heights: data.heights.clone(),
+                heights: data.heights.as_slice().into(),
                 center: data.center,
                 radius: tile_radius,
                 last_used: self.frame_no,
@@ -1185,9 +1187,19 @@ impl Renderer {
         );
     }
 
+    /// The ground as it is loaded now, to ask on another thread.
+    pub fn ground_copy(&self) -> GroundCopy {
+        GroundCopy(
+            self.tiles
+                .iter()
+                .map(|(k, t)| (*k, t.heights.clone()))
+                .collect(),
+        )
+    }
+
     /// The mesh heights of a loaded tile, row by row on the (GRID + 1) squared grid.
     pub fn tile_heights(&self, k: TileKey) -> Option<&[f32]> {
-        self.tiles.get(&k).map(|t| t.heights.as_slice())
+        self.tiles.get(&k).map(|t| &t.heights[..])
     }
 
     /// Paints the base sphere under the tiles magenta, so that holes in the tiles show up
@@ -1371,30 +1383,19 @@ impl Renderer {
 
     /// Sets the energy bars to draw, or none: a mesh whose indices from `solid` on are see-through.
     pub fn set_energy(&mut self, mesh: Option<(&BuildingMesh, u32)>) {
-        self.energy = mesh
-            .filter(|m| !m.0.indices.is_empty())
-            .map(|(mesh, solid)| {
-                (
-                    GpuBuildings {
-                        vertices: self.device.create_buffer_init(&BufferInitDescriptor {
-                            label: Some("energy vertices"),
-                            contents: bytemuck::cast_slice(&mesh.vertices),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        }),
-                        indices: self.device.create_buffer_init(&BufferInitDescriptor {
-                            label: Some("energy indices"),
-                            contents: bytemuck::cast_slice(&mesh.indices),
-                            usage: wgpu::BufferUsages::INDEX,
-                        }),
-                        index_count: mesh.indices.len() as u32,
-                        center: mesh.center,
-                        radius: 0.0,
-                        last_used: 0,
-                        roof: None,
-                    },
-                    solid,
-                )
-            });
+        let bars = mesh.and_then(|(mesh, solid)| EnergyBars::new(&self.device, mesh, solid));
+        self.set_energy_bars(bars);
+    }
+
+    /// As `set_energy`, with the mesh already on the graphics card.
+    pub fn set_energy_bars(&mut self, bars: Option<EnergyBars>) {
+        self.energy = bars.map(|b| (b.gpu, b.solid));
+    }
+
+    /// The device, for making buffers on another thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn device(&self) -> wgpu::Device {
+        self.device.clone()
     }
 
     /// Chooses the building tiles to draw. Ones not loaded yet are simply left out.
@@ -2168,6 +2169,57 @@ fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffe
     })
 }
 
+/// The mesh of the energy bars on the graphics card. Filling its buffers copies the whole
+/// mesh, which for many thousands of bars takes longer than a frame, so it can be made on
+/// another thread and handed to [`Renderer::set_energy_bars`].
+pub struct EnergyBars {
+    gpu: GpuBuildings,
+    solid: u32,
+}
+
+impl EnergyBars {
+    /// `None` for a mesh with nothing in it.
+    pub fn new(device: &wgpu::Device, mesh: &BuildingMesh, solid: u32) -> Option<Self> {
+        if mesh.indices.is_empty() {
+            return None;
+        }
+        Some(Self {
+            gpu: GpuBuildings {
+                vertices: device.create_buffer_init(&BufferInitDescriptor {
+                    label: Some("energy vertices"),
+                    contents: bytemuck::cast_slice(&mesh.vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                }),
+                indices: device.create_buffer_init(&BufferInitDescriptor {
+                    label: Some("energy indices"),
+                    contents: bytemuck::cast_slice(&mesh.indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                }),
+                index_count: mesh.indices.len() as u32,
+                center: mesh.center,
+                radius: 0.0,
+                last_used: 0,
+                roof: None,
+            },
+            solid,
+        })
+    }
+}
+
+/// The terrain heights of the tiles loaded at one moment, for asking the ground's height away
+/// from the renderer, on another thread. It answers as [`Renderer::ground`] did then.
+#[derive(Clone, Default)]
+pub struct GroundCopy(HashMap<TileKey, Arc<[f32]>>);
+
+impl GroundCopy {
+    pub fn ground(&self, lat: f64, lon: f64) -> Option<f64> {
+        if self.0.is_empty() {
+            return None;
+        }
+        ground_in(lat, lon, |k| self.0.get(&k).map(|h| &h[..]))
+    }
+}
+
 /// The terrain height from the finest tile that `heights_of` has, at a position. The position
 /// in tile coordinates is the same at every zoom, so it is converted once.
 fn ground_in<'a>(
@@ -2231,6 +2283,31 @@ mod tests {
         assert_eq!(height_on_grid(&heights, 0.0, 0.5), 0.0);
         assert_eq!(height_on_grid(&heights, 1.0, 0.5), GRID as f64);
         assert!((height_on_grid(&heights, 0.5, 0.5) - GRID as f64 / 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_copy_of_the_ground_answers_as_the_tiles_it_was_made_from() {
+        let side = GRID + 1;
+        let (lat0, lon0) = (0.81f64, 0.2f64);
+        let mut tiles: HashMap<TileKey, Arc<[f32]>> = HashMap::new();
+        for z in [2u8, 6, 9] {
+            let heights: Vec<f32> = (0..side * side)
+                .map(|i| ((i * 5 + z as usize * 11) % 97) as f32 * 4.0)
+                .collect();
+            tiles.insert(TileKey::containing(lat0, lon0, z), heights.into());
+        }
+        let copy = GroundCopy(tiles.clone());
+        for i in 0..200 {
+            let lat = lat0 + (i as f64 * 0.37).sin() * 0.003;
+            let lon = lon0 + (i as f64 * 0.91).cos() * 0.004;
+            let direct = ground_in(lat, lon, |k| tiles.get(&k).map(|h| &h[..]));
+            assert_eq!(
+                copy.ground(lat, lon).map(f64::to_bits),
+                direct.map(f64::to_bits)
+            );
+        }
+        assert!(copy.ground(lat0, lon0).is_some());
+        assert_eq!(GroundCopy::default().ground(lat0, lon0), None);
     }
 
     #[test]

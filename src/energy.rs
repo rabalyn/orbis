@@ -1556,19 +1556,34 @@ pub const PLANT_PERCENTILE: f64 = 0.98;
 /// does not blow them up.
 pub const PLANT_FLOOR_KW: f32 = 1000.0;
 
+#[cfg(test)]
 /// The height of a kW the plant bars in view need: the [`PLANT_PERCENTILE`] of the heights of
 /// the plant bars (Germany's sites and the world's alike) for which `visible` holds, at least
 /// [`PLANT_FLOOR_KW`], stands [`HEIGHT_SHARE`] of [`PLANT_WIDTH`] tall, as [`Energy::largest`] does
 /// for all of Germany's. `None` with no plant bar in view.
 pub fn plants_needed(bars: &[Bar], visible: &dyn Fn(f64, f64) -> bool) -> Option<f64> {
-    let mut heights: Vec<f32> = bars
-        .iter()
-        .filter(|b| {
-            matches!(b.subject, Subject::Site(_) | Subject::Plant(_)) && visible(b.lat, b.lon)
-        })
-        .map(Bar::height)
-        .filter(|h| *h > 0.0)
+    let heights = plant_heights(bars)
+        .into_iter()
+        .filter(|(i, _)| visible(bars[*i as usize].lat, bars[*i as usize].lon))
+        .map(|(_, h)| h)
         .collect();
+    plants_needed_of(heights)
+}
+
+/// The plant bars that count for [`plants_needed`], by their place in `bars`, with their
+/// heights. Kept with the bars, so that fitting the scale to another view need not make the
+/// bars again.
+pub fn plant_heights(bars: &[Bar]) -> Vec<(u32, f32)> {
+    bars.iter()
+        .enumerate()
+        .filter(|(_, b)| matches!(b.subject, Subject::Site(_) | Subject::Plant(_)))
+        .map(|(i, b)| (i as u32, b.height()))
+        .filter(|(_, h)| *h > 0.0)
+        .collect()
+}
+
+/// [`plants_needed`] for the heights of the plant bars in view.
+pub fn plants_needed_of(mut heights: Vec<f32>) -> Option<f64> {
     if heights.is_empty() {
         return None;
     }
@@ -1577,6 +1592,7 @@ pub fn plants_needed(bars: &[Bar], visible: &dyn Fn(f64, f64) -> bool) -> Option
     Some(HEIGHT_SHARE * PLANT_WIDTH / percentile.max(PLANT_FLOOR_KW) as f64)
 }
 
+#[cfg(test)]
 /// Screen-space grouping for the drawing pass. Site bars remain individual in `bars` for
 /// picking and counts; only this temporary mesh input is grouped when many sites overlap.
 pub fn visual_bars(
@@ -1585,8 +1601,32 @@ pub fn visual_bars(
     shares: Option<&[f32; SOURCES]>,
     project: &dyn Fn(f64, f64) -> Option<glam::DVec2>,
 ) -> Vec<Bar> {
+    visual_bars_at(bars, size, shares, &|_, bar| {
+        project(bar.lat, bar.lon).map(|p| (p, geodetic_to_ecef(bar.lat, bar.lon, 0.0).normalize()))
+    })
+}
+
+/// [`visual_bars`] for a caller that knows where each bar stands: `at` gives a bar's place on
+/// screen, if it is on the near side, and the direction of its place from the body's centre.
+pub fn visual_bars_at(
+    bars: &[Bar],
+    size: (f64, f64),
+    shares: Option<&[f32; SOURCES]>,
+    at: &dyn Fn(usize, &Bar) -> Option<(glam::DVec2, glam::DVec3)>,
+) -> Vec<Bar> {
     const MAX_INDIVIDUAL: usize = 12_000;
     const TARGET_CELLS: f64 = 500.0;
+    /// The sites of one cell of the screen, added up as they come.
+    struct Group {
+        members: u32,
+        first: u32,
+        faint: bool,
+        kw: [f32; SOURCES],
+        output: [f32; SOURCES],
+        direction: glam::DVec3,
+        largest: f32,
+        subject: Subject,
+    }
     let site_count = bars
         .iter()
         .filter(|b| matches!(b.subject, Subject::Site(_) | Subject::Plant(_)))
@@ -1594,64 +1634,70 @@ pub fn visual_bars(
     let grouping = site_count > MAX_INDIVIDUAL;
     let cell = ((size.0.max(1.0) * size.1.max(1.0) / TARGET_CELLS).sqrt()).max(8.0);
     let mut out = Vec::with_capacity(if grouping { MAX_INDIVIDUAL } else { bars.len() });
-    let mut groups: HashMap<(i32, i32, bool), Vec<(Bar, glam::DVec2)>> = HashMap::new();
-    for bar in bars {
+    // The cells of the screen, each with the group of its plain and of its faint bars.
+    let columns = (size.0.max(0.0) / cell).floor() as usize + 1;
+    let rows = (size.1.max(0.0) / cell).floor() as usize + 1;
+    let mut cells = vec![u32::MAX; if grouping { columns * rows * 2 } else { 0 }];
+    let mut groups: Vec<Group> = Vec::new();
+    for (i, bar) in bars.iter().enumerate() {
         if !matches!(bar.subject, Subject::Site(_) | Subject::Plant(_)) {
             out.push(bar.clone());
             continue;
         }
-        let Some(p) = project(bar.lat, bar.lon)
-            .filter(|p| p.x >= 0.0 && p.y >= 0.0 && p.x <= size.0 && p.y <= size.1)
+        let Some((p, direction)) =
+            at(i, bar).filter(|(p, _)| p.x >= 0.0 && p.y >= 0.0 && p.x <= size.0 && p.y <= size.1)
         else {
             continue;
         };
-        if grouping {
-            groups
-                .entry((
-                    (p.x / cell).floor() as i32,
-                    (p.y / cell).floor() as i32,
-                    bar.faint,
-                ))
-                .or_default()
-                .push((bar.clone(), p));
-        } else {
+        if !grouping {
             out.push(bar.clone());
-        }
-    }
-    for ((_, _, faint), members) in groups {
-        if members.len() == 1 {
-            out.push(members.into_iter().next().unwrap().0);
             continue;
         }
-        let mut kw = [0.0; SOURCES];
-        let mut output = [0.0; SOURCES];
-        let mut direction = glam::DVec3::ZERO;
-        let mut largest = 0.0f32;
-        let mut subject = Subject::Plant(0);
-        for (bar, _) in &members {
-            direction += geodetic_to_ecef(bar.lat, bar.lon, 0.0).normalize();
-            if bar.total() > largest {
-                largest = bar.total();
-                subject = bar.subject;
-            }
-            for s in 0..SOURCES {
-                let capacity = bar.kw[s].max(0.0);
-                kw[s] += capacity;
-                let factor = bar
-                    .running_by_source
-                    .map(|r| r[s])
-                    .or(bar.running)
-                    .unwrap_or_else(|| shares.map_or(1.0, |r| r[s]))
-                    .clamp(0.0, 1.0);
-                output[s] += capacity * factor;
-            }
+        let (x, y) = ((p.x / cell).floor() as usize, (p.y / cell).floor() as usize);
+        let slot = &mut cells[(y * columns + x) * 2 + usize::from(bar.faint)];
+        if *slot == u32::MAX {
+            *slot = groups.len() as u32;
+            groups.push(Group {
+                members: 0,
+                first: i as u32,
+                faint: bar.faint,
+                kw: [0.0; SOURCES],
+                output: [0.0; SOURCES],
+                direction: glam::DVec3::ZERO,
+                largest: 0.0,
+                subject: Subject::Plant(0),
+            });
         }
-        let direction = direction.normalize_or_zero();
+        let g = &mut groups[*slot as usize];
+        g.members += 1;
+        g.direction += direction;
+        if bar.total() > g.largest {
+            g.largest = bar.total();
+            g.subject = bar.subject;
+        }
+        for s in 0..SOURCES {
+            let capacity = bar.kw[s].max(0.0);
+            g.kw[s] += capacity;
+            let factor = bar
+                .running_by_source
+                .map(|r| r[s])
+                .or(bar.running)
+                .unwrap_or_else(|| shares.map_or(1.0, |r| r[s]))
+                .clamp(0.0, 1.0);
+            g.output[s] += capacity * factor;
+        }
+    }
+    for g in groups {
+        if g.members == 1 {
+            out.push(bars[g.first as usize].clone());
+            continue;
+        }
+        let direction = g.direction.normalize_or_zero();
         let lat = direction.z.atan2(direction.x.hypot(direction.y));
         let lon = direction.y.atan2(direction.x);
         let running_by_source = Some(std::array::from_fn(|s| {
-            if kw[s] > 0.0 {
-                output[s] / kw[s]
+            if g.kw[s] > 0.0 {
+                g.output[s] / g.kw[s]
             } else {
                 0.0
             }
@@ -1659,10 +1705,10 @@ pub fn visual_bars(
         out.push(Bar {
             lat,
             lon,
-            kw,
-            subject,
+            kw: g.kw,
+            subject: g.subject,
             demand: 0.0,
-            faint,
+            faint: g.faint,
             running: None,
             running_by_source,
         });
@@ -2769,6 +2815,65 @@ pub(crate) mod tests {
             })
             .sum();
         assert!((output - 13_000.0 * 10.0 * 0.4).abs() < 1.0);
+    }
+
+    #[test]
+    fn grouped_bars_come_in_the_same_order_every_time_and_keep_their_sites() {
+        let mut kw = [0.0; SOURCES];
+        kw[Source::Solar as usize] = 5.0;
+        let bars: Vec<_> = (0..13_000u32)
+            .map(|i| Bar {
+                lat: 0.8,
+                lon: i as f64 * 1e-6,
+                kw,
+                subject: Subject::Plant(i),
+                demand: 0.0,
+                faint: i % 7 == 0,
+                running: None,
+                running_by_source: None,
+            })
+            .collect();
+        // A hundred columns of sites across the screen; every tenth site is off it.
+        let at = |i: usize, b: &Bar| {
+            (i % 10 != 9).then(|| {
+                (
+                    glam::DVec2::new((i % 100) as f64 * 10.0, 300.0),
+                    geodetic_to_ecef(b.lat, b.lon, 0.0).normalize(),
+                )
+            })
+        };
+        let once = visual_bars_at(&bars, (1000.0, 800.0), None, &at);
+        let again = visual_bars_at(&bars, (1000.0, 800.0), None, &at);
+        assert_eq!(once.len(), again.len());
+        for (a, b) in once.iter().zip(&again) {
+            assert_eq!((a.lat, a.lon, a.kw, a.faint), (b.lat, b.lon, b.kw, b.faint));
+        }
+        assert!(once.len() < 200, "{}", once.len());
+        let shown: f32 = once.iter().map(Bar::total).sum();
+        assert!((shown - 13_000.0 * 0.9 * 5.0).abs() < 1.0, "{shown}");
+        // Plain and faint bars are never added into one column.
+        assert!(once.iter().any(|b| b.faint) && once.iter().any(|b| !b.faint));
+    }
+
+    #[test]
+    fn the_scale_from_kept_heights_is_that_from_the_bars() {
+        let e = Energy::bundled().unwrap();
+        let last = ((e.exported.0 - 1900) * 12 + e.exported.1 - 1) as u16;
+        let near = Some((51f64.to_radians(), 10f64.to_radians(), 0.02));
+        let bars = e.bars(Level::Plants, last, [true; SOURCES], near);
+        let heights = plant_heights(&bars);
+        assert!(heights.len() > 10);
+        assert!(heights
+            .iter()
+            .all(|(i, h)| *h > 0.0 && (*i as usize) < bars.len()));
+        let north = |lat: f64, _: f64| lat > 51f64.to_radians();
+        let kept = heights
+            .iter()
+            .filter(|(i, _)| north(bars[*i as usize].lat, 0.0))
+            .map(|(_, h)| *h)
+            .collect();
+        assert_eq!(plants_needed_of(kept), plants_needed(&bars, &north));
+        assert_eq!(plants_needed_of(Vec::new()), None);
     }
 
     #[test]

@@ -1077,6 +1077,122 @@ type EnergyBuild = (
     (u32, u32),
 );
 
+/// What the bars are made from: the level, month, sources, centre, the quarter hour shown,
+/// the clock's month and whether demand stands beside them.
+type BarsKey = (
+    energy::Level,
+    u16,
+    [bool; energy::SOURCES],
+    (i64, i64),
+    Option<i64>,
+    (i32, u32),
+    bool,
+);
+
+/// What the mesh of the energy bars is built from, on a thread of its own: with thousands of
+/// bars it takes several frames' time.
+#[derive(Clone)]
+struct MeshJob {
+    number: u64,
+    bars: Arc<Vec<energy::Bar>>,
+    /// At the Plants level, where each bar stands and the view they are grouped for.
+    plants: Option<(Arc<Vec<DVec3>>, camera::Basis, DVec2)>,
+    scale: energy::Scale,
+    centre: DVec3,
+    ground: render::GroundCopy,
+    shares: Option<[f32; energy::SOURCES]>,
+    style: energy::Style,
+    /// The mesh is put on the graphics card there too: copying it takes as long as making it.
+    /// Not in a browser, whose graphics device stays with the page's one thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    device: wgpu::Device,
+}
+
+struct MeshDone {
+    number: u64,
+    #[cfg(not(target_arch = "wasm32"))]
+    bars: Option<render::EnergyBars>,
+    #[cfg(target_arch = "wasm32")]
+    mesh: energy::BarMesh,
+    /// How many bars it shows, after grouping.
+    drawn: usize,
+}
+
+/// What the scale of the plant bars in view is found from.
+#[derive(Clone)]
+struct FitJob {
+    number: u64,
+    points: Arc<Vec<DVec3>>,
+    heights: Arc<Vec<(u32, f32)>>,
+    basis: camera::Basis,
+    size: DVec2,
+}
+
+/// The scale the plant bars need that stand on screen, on the near side of the globe.
+fn fit_plants(job: &FitJob) -> Option<f64> {
+    let screen = Screen {
+        basis: job.basis,
+        size: job.size,
+        reserved: Vec::new(),
+    };
+    let eye = job.basis.pos;
+    let in_view = |i: u32| {
+        let p = job.points[i as usize];
+        (eye - p).dot(p) > 0.0
+            && screen.project(p).is_some_and(|q| {
+                q.x >= 0.0 && q.y >= 0.0 && q.x <= screen.size.x && q.y <= screen.size.y
+            })
+    };
+    let heights = job
+        .heights
+        .iter()
+        .filter(|(i, _)| in_view(*i))
+        .map(|(_, h)| *h)
+        .collect();
+    energy::plants_needed_of(heights)
+}
+
+fn build_bar_mesh(job: MeshJob) -> MeshDone {
+    let ground = |lat: f64, lon: f64| job.ground.ground(lat, lon).unwrap_or(0.0);
+    let grouped;
+    let bars: &[energy::Bar] = match &job.plants {
+        Some((points, basis, size)) => {
+            let screen = Screen {
+                basis: *basis,
+                size: *size,
+                reserved: Vec::new(),
+            };
+            let eye = basis.pos;
+            let at = |i: usize, _: &energy::Bar| {
+                let p = points[i];
+                ((eye - p).dot(p) > 0.0)
+                    .then(|| screen.project(p))
+                    .flatten()
+                    .map(|on_screen| (on_screen, p.normalize()))
+            };
+            grouped = energy::visual_bars_at(&job.bars, (size.x, size.y), job.shares.as_ref(), &at);
+            &grouped
+        }
+        None => &job.bars,
+    };
+    let mesh = energy::mesh(
+        bars,
+        job.scale,
+        job.centre,
+        &ground,
+        job.shares.as_ref(),
+        &job.style,
+    );
+    MeshDone {
+        number: job.number,
+        drawn: bars.len(),
+        #[cfg(not(target_arch = "wasm32"))]
+        bars: render::EnergyBars::new(&job.device, &mesh.mesh, mesh.solid),
+        #[cfg(target_arch = "wasm32")]
+        mesh,
+    }
+}
+
 /// Generation and consumption from SMARD: what has arrived and what was asked.
 #[derive(Default)]
 struct PowerState {
@@ -1119,7 +1235,8 @@ struct EnergyLayer {
     /// Level, sources, choice, and the month where the ground's shade follows it (close up).
     outlines_from: Option<OutlineKey>,
     version: u64,
-    bars: Vec<energy::Bar>,
+    /// Shared with the thread that builds their mesh.
+    bars: Arc<Vec<energy::Bar>>,
     scale: Option<energy::Scale>,
     /// The level, month, sources, centre and tile count the mesh was built for, and when.
     built_from: Option<EnergyBuild>,
@@ -1140,8 +1257,44 @@ struct EnergyLayer {
     view_scale: Option<(energy::Level, world_energy::Easing, Instant)>,
     /// Cached plant scale inputs, refreshed when the month, sources or view changes.
     plant_scale_fit: Option<PlantScaleFit>,
+    /// What `bars` were made from; they are made again only when this changes.
+    bars_from: Option<BarsKey>,
+    /// The bars in which the start view's area was last looked for, and not found.
+    start_sought: Option<BarsKey>,
+    /// At the Plants level, where each of `bars` stands (at the ellipsoid, from the body's
+    /// centre), the plant bars' heights by their place in `bars`, and the scale all of them
+    /// together would need: kept with the bars, as fitting the scale and grouping the bars on
+    /// screen ask for them again and again.
+    bar_points: Arc<Vec<DVec3>>,
+    plant_heights: Arc<Vec<(u32, f32)>>,
+    plants_all: Option<f64>,
+    /// Finds the scale the plant bars in view need away from the frame, as there may be
+    /// hundreds of thousands of them; the number of the last asking, and whether it is out.
+    fitter: Option<worker::Worker<FitJob, (u64, Option<f64>)>>,
+    fit_asked: u64,
+    fit_pending: bool,
+    /// The view has moved since it was last fitted, and the next fit is not yet due.
+    fit_owed: bool,
+    /// The view the scale was last fitted to: a view at rest is not fitted again.
+    fit_view: Option<([DVec3; 4], DVec2)>,
+    /// How many of `bars` are sites or plants, and whether any is one of the world's plants.
+    site_bars: usize,
+    world_plants: bool,
+    /// Builds the bars' mesh away from the frame; started with the first mesh.
+    mesher: Option<worker::Worker<MeshJob, MeshDone>>,
+    /// The number of the mesh last asked for, and whether it is still being built.
+    mesh_asked: u64,
+    mesh_pending: bool,
     /// Number of bars sent to the renderer after screen-space grouping.
     drawn_bars: usize,
+}
+
+impl EnergyLayer {
+    /// Whether something of the bars is still being worked out, on another thread or in a
+    /// coming frame, so that frames must go on (and a picture must wait).
+    fn waits(&self) -> bool {
+        self.mesh_pending || self.fit_pending || self.fit_owed
+    }
 }
 
 /// Sets up tile fetching, including sharing on the LAN if asked for.
@@ -3025,27 +3178,7 @@ impl Scene {
         self.sync_power_chart();
         self.open_start_area(data);
         let plants = level == energy::Level::Plants;
-        let easing = match world.filter(|_| countries) {
-            Some(w) => self.ease_country_scale(w, shown, aspect_height),
-            None if plants => self.ease_plant_scale(data, month, shown, aspect_height),
-            None => {
-                self.energy.view_scale = None;
-                false
-            }
-        };
-        let cam = &self.nav.cam;
-        let scale = style.apply(
-            match (world.filter(|_| countries), self.energy.view_scale) {
-                (Some(w), Some((energy::Level::Countries, e, _))) => {
-                    w.scale(e.per_kw, cam.distance, aspect_height.1)
-                }
-                (_, Some((energy::Level::Plants, e, _))) if plants => energy::Scale {
-                    per_kw: e.per_kw,
-                    ..energy::Scale::for_view(data, level, cam.distance, aspect_height.1)
-                },
-                _ => energy::Scale::for_view(data, level, cam.distance, aspect_height.1),
-            },
-        );
+        let cam = self.nav.cam;
         // The centre in steps of a tenth of the bars' reach, so that panning rebuilds only now and then.
         let reach = (self.nav.altitude * 6.0 / geo::radius()).clamp(0.02, std::f64::consts::PI);
         let step = reach / 10.0;
@@ -3059,6 +3192,58 @@ impl Scene {
                 + self.energy.power.own_use as i64 * 2
                 + self.view.energy_demand as i64
         });
+        // The bars come first: the scale of the Plants level is fitted to them. They follow from
+        // this key alone, so a new scale or new terrain under them builds only the mesh again.
+        // Plant bars carry neither demand nor output: those are in the mesh alone.
+        let bars_key = (
+            level,
+            month,
+            shown,
+            centre,
+            quarter.filter(|_| !plants),
+            self.clock_month(),
+            self.view.energy_demand && !plants,
+        );
+        // What arrives from the power feed or a new look asks for a fresh build; plant bars hold
+        // nothing of either, so only their mesh is made again.
+        let asked_anew = self.energy.built_from.is_none() && !plants;
+        let new_bars = asked_anew || self.energy.bars_from != Some(bars_key);
+        if new_bars {
+            self.build_bars(
+                data,
+                world.filter(|_| countries),
+                level,
+                month,
+                shown,
+                reach,
+            );
+            self.energy.bars_from = Some(bars_key);
+        }
+        if !plants {
+            // An answer still out for the plants' scale is no longer waited for.
+            self.energy.fit_pending = false;
+            self.energy.fit_owed = false;
+        }
+        let easing = match world.filter(|_| countries) {
+            Some(w) => self.ease_country_scale(w, shown, aspect_height),
+            None if plants => self.ease_plant_scale(month, shown, aspect_height, new_bars),
+            None => {
+                self.energy.view_scale = None;
+                false
+            }
+        };
+        let scale = style.apply(
+            match (world.filter(|_| countries), self.energy.view_scale) {
+                (Some(w), Some((energy::Level::Countries, e, _))) => {
+                    w.scale(e.per_kw, cam.distance, aspect_height.1)
+                }
+                (_, Some((energy::Level::Plants, e, _))) if plants => energy::Scale {
+                    per_kw: e.per_kw,
+                    ..energy::Scale::for_view(data, level, cam.distance, aspect_height.1)
+                },
+                _ => energy::Scale::for_view(data, level, cam.distance, aspect_height.1),
+            },
+        );
         let view_size = (
             (aspect_height.0 * aspect_height.1).round().max(1.0) as u32,
             aspect_height.1.round().max(1.0) as u32,
@@ -3085,15 +3270,80 @@ impl Scene {
             .energy
             .built_at
             .is_none_or(|t| t.elapsed() > Duration::from_millis(500));
-        if !rescaled && (self.energy.built_from == Some(key) || (same_but_terrain && !terrain_due))
+        if !new_bars
+            && !rescaled
+            && (self.energy.built_from == Some(key) || (same_but_terrain && !terrain_due))
         {
-            return easing;
+            self.take_bar_mesh(r);
+            return easing || self.energy.waits();
         }
+        // Country bars show generation, without a column of unused capacity.
+        let shares = self
+            .energy
+            .power
+            .shown
+            .as_ref()
+            .map(|m| m.1)
+            .filter(|_| !countries);
+        let size = DVec2::new(aspect_height.0 * aspect_height.1, aspect_height.1);
+        let e = &mut self.energy;
+        e.mesh_asked += 1;
+        e.mesh_pending = true;
+        e.mesher
+            .get_or_insert_with(|| worker::Worker::new(true, Duration::ZERO, build_bar_mesh))
+            .submit(MeshJob {
+                number: e.mesh_asked,
+                bars: e.bars.clone(),
+                plants: plants.then(|| (e.bar_points.clone(), cam.basis(), size)),
+                scale,
+                centre: geo::geodetic_to_ecef(cam.lat, cam.lon, 0.0),
+                ground: r.ground_copy(),
+                shares,
+                style,
+                #[cfg(not(target_arch = "wasm32"))]
+                device: r.device(),
+            });
+        e.scale = Some(scale);
+        e.built_from = Some(key);
+        e.built_at = Some(Instant::now());
+        self.take_bar_mesh(r);
+        easing || self.energy.waits()
+    }
+
+    /// Hands a finished mesh of the bars to the renderer. One that a later request has
+    /// overtaken is left out; the later one follows.
+    fn take_bar_mesh(&mut self, r: &mut Renderer) {
+        let e = &mut self.energy;
+        let Some(mesher) = &e.mesher else { return };
+        while let Some(done) = mesher.poll() {
+            if done.number == e.mesh_asked {
+                #[cfg(not(target_arch = "wasm32"))]
+                r.set_energy_bars(done.bars);
+                #[cfg(target_arch = "wasm32")]
+                r.set_energy(Some((&done.mesh.mesh, done.mesh.solid)));
+                e.drawn_bars = done.drawn;
+                e.mesh_pending = false;
+            }
+        }
+    }
+
+    /// Makes the bars of `level` anew, with what is kept beside them: see [`BarsKey`] for what
+    /// they follow from. `world` is given at the Countries level, where its bars are shown.
+    fn build_bars(
+        &mut self,
+        data: &energy::Energy,
+        world: Option<&world_energy::World>,
+        level: energy::Level,
+        month: u16,
+        shown: [bool; energy::SOURCES],
+        reach: f64,
+    ) {
+        let cam = self.nav.cam;
         let near = match level {
             energy::Level::Countries | energy::Level::States | energy::Level::Districts => None,
             _ => Some((cam.lat, cam.lon, reach)),
         };
-        self.energy.bars = match world.filter(|_| countries) {
+        let mut bars = match world {
             Some(w) => {
                 // Germany's bar is its states' estimated output summed, where SMARD's is known.
                 let germany =
@@ -3130,63 +3380,41 @@ impl Scene {
         // Beside the bars of states, districts and municipalities, their estimated demand.
         if let (Some((m, _)), true) = (&self.energy.power.shown, self.view.energy_demand) {
             let consumption = m.consumption();
-            for b in self
-                .energy
-                .bars
+            for b in bars
                 .iter_mut()
                 .filter(|b| matches!(b.subject, energy::Subject::Area(_)))
             {
                 b.demand = data.demand_kw(b.subject, consumption).unwrap_or(0.0);
             }
         }
-        let ground = |lat: f64, lon: f64| r.ground(lat, lon).unwrap_or(0.0);
-        // Country bars show generation, without a column of unused capacity.
-        let shares = self
-            .energy
-            .power
-            .shown
-            .as_ref()
-            .map(|m| m.1)
-            .filter(|_| !countries);
-        let draw_bars;
-        let mesh_input = if plants {
-            let basis = cam.basis();
-            let screen = Screen {
-                basis,
-                size: DVec2::new(aspect_height.0 * aspect_height.1, aspect_height.1),
-                reserved: Vec::new(),
-            };
-            let eye = basis.pos;
-            let project = |lat: f64, lon: f64| {
-                let p = geo::geodetic_to_ecef(lat, lon, 0.0);
-                ((eye - p).dot(p) > 0.0)
-                    .then(|| screen.project(p))
-                    .flatten()
-            };
-            draw_bars = energy::visual_bars(
-                &self.energy.bars,
-                (screen.size.x, screen.size.y),
-                shares.as_ref(),
-                &project,
-            );
-            &draw_bars
-        } else {
-            &self.energy.bars
+        let e = &mut self.energy;
+        e.bars = Arc::new(bars);
+        let is_site = |b: &energy::Bar| {
+            matches!(
+                b.subject,
+                energy::Subject::Site(_) | energy::Subject::Plant(_)
+            )
         };
-        self.energy.drawn_bars = mesh_input.len();
-        let bars = energy::mesh(
-            mesh_input,
-            scale,
-            geo::geodetic_to_ecef(cam.lat, cam.lon, 0.0),
-            &ground,
-            shares.as_ref(),
-            &style,
-        );
-        r.set_energy(Some((&bars.mesh, bars.solid)));
-        self.energy.scale = Some(scale);
-        self.energy.built_from = Some(key);
-        self.energy.built_at = Some(Instant::now());
-        easing
+        e.site_bars = e.bars.iter().filter(|b| is_site(b)).count();
+        e.world_plants = e
+            .bars
+            .iter()
+            .any(|b| matches!(b.subject, energy::Subject::Plant(_)));
+        if level == energy::Level::Plants {
+            e.bar_points = Arc::new(
+                e.bars
+                    .iter()
+                    .map(|b| geo::geodetic_to_ecef(b.lat, b.lon, 0.0))
+                    .collect(),
+            );
+            e.plant_heights = Arc::new(energy::plant_heights(&e.bars));
+            let all = e.plant_heights.iter().map(|(_, h)| *h).collect();
+            e.plants_all = energy::plants_needed_of(all);
+        } else {
+            e.bar_points = Arc::default();
+            e.plant_heights = Arc::default();
+            e.plants_all = None;
+        }
     }
 
     /// Steps the countries' scale towards what the countries in view need: those whose bar
@@ -3220,27 +3448,72 @@ impl Scene {
     /// moving.
     fn ease_plant_scale(
         &mut self,
-        data: &energy::Energy,
         month: u16,
         shown: [bool; energy::SOURCES],
         aspect_height: (f64, f64),
+        new_bars: bool,
     ) -> bool {
         let now = Instant::now();
-        let dirty = self.energy.plant_scale_fit.is_none_or(|(m, s, _, _, at)| {
-            m != month || s != shown || now.duration_since(at) >= Duration::from_millis(200)
-        });
-        if dirty {
-            let cam = &self.nav.cam;
-            let reach = (self.nav.altitude * 6.0 / geo::radius()).clamp(0.02, std::f64::consts::PI);
-            let near = Some((cam.lat, cam.lon, reach));
-            let mut b = data.bars(energy::Level::Plants, month, shown, near);
-            if let Some(p) = world_plants::Plants::bundled() {
-                b.extend(p.bars(month, shown, near));
+        let e = &mut self.energy;
+        // An answer from the other thread, unless the bars have changed since it was asked.
+        if let Some(fitter) = &e.fitter {
+            while let Some((number, needed)) = fitter.poll() {
+                if number == e.fit_asked && e.fit_pending {
+                    e.fit_pending = false;
+                    if let Some(fit) = &mut e.plant_scale_fit {
+                        fit.2 = needed;
+                    }
+                }
             }
-            let visible = self.on_screen(aspect_height);
-            let needed = energy::plants_needed(&b, &visible);
-            let all = energy::plants_needed(&b, &|_, _| true);
-            self.energy.plant_scale_fit = Some((month, shown, needed, all, now));
+        }
+        // The bars are those drawn, made when the view last moved a step (see `BarsKey`); only
+        // which of them are in view is found afresh.
+        let job = FitJob {
+            number: e.fit_asked + 1,
+            points: e.bar_points.clone(),
+            heights: e.plant_heights.clone(),
+            basis: self.nav.cam.basis(),
+            size: DVec2::new(aspect_height.0 * aspect_height.1, aspect_height.1),
+        };
+        let view = Some((
+            [job.basis.pos, job.basis.right, job.basis.up, job.basis.look],
+            job.size,
+        ));
+        let first = new_bars
+            || e.plant_scale_fit
+                .is_none_or(|(m, s, _, _, _)| m != month || s != shown);
+        let moved = e.fit_view != view;
+        if first {
+            // New bars are fitted at once, so that they do not first stand at another scale.
+            e.fit_view = view;
+            e.fit_asked = job.number;
+            e.fit_pending = false;
+            e.fit_owed = false;
+            e.plant_scale_fit = Some((month, shown, fit_plants(&job), e.plants_all, now));
+        } else if !moved {
+            // At rest the last answer stands.
+            e.fit_owed = false;
+        } else if !e.fit_pending {
+            // Five times a second while the view moves, and once more when it has come to rest.
+            let due = e
+                .plant_scale_fit
+                .is_some_and(|fit| now.duration_since(fit.4) >= Duration::from_millis(200));
+            e.fit_owed = !due;
+            if due {
+                e.fit_view = view;
+                e.fit_asked = job.number;
+                e.fit_pending = true;
+                if let Some(fit) = &mut e.plant_scale_fit {
+                    fit.4 = now;
+                }
+                e.fitter
+                    .get_or_insert_with(|| {
+                        worker::Worker::new(true, Duration::ZERO, |job: FitJob| {
+                            (job.number, fit_plants(&job))
+                        })
+                    })
+                    .submit(job);
+            }
         }
         let (_, _, needed, all, _) = self.energy.plant_scale_fit.unwrap();
         self.step_view_scale(energy::Level::Plants, needed, all)
@@ -3559,6 +3832,12 @@ impl Scene {
         if self.view.energy_output && p.shown.is_none() && p.problem.is_none() {
             return;
         }
+        // Bars that did not hold the area are not gone through again: at the Plants level there
+        // are hundreds of thousands of them, and none is an area.
+        if self.energy.start_sought.is_some() && self.energy.start_sought == self.energy.bars_from {
+            return;
+        }
+        self.energy.start_sought = self.energy.bars_from;
         let subject = self
             .energy
             .bars
@@ -3707,17 +3986,7 @@ impl Scene {
             ));
             notes.push("Height follows the plants in view: the 98th percentile of their capacity stands 2 km tall, changing at 1.5 times".to_string());
             notes.push("Beyond Germany: Global Energy Monitor's plants, solid up to their estimated output (capacity times the country's capacity factor from Ember)".to_string());
-            let site_bars = self
-                .energy
-                .bars
-                .iter()
-                .filter(|b| {
-                    matches!(
-                        b.subject,
-                        energy::Subject::Site(_) | energy::Subject::Plant(_)
-                    )
-                })
-                .count();
+            let site_bars = self.energy.site_bars;
             if site_bars > 12_000 && self.energy.drawn_bars < self.energy.bars.len() {
                 notes.push(format!("At this zoom, overlapping sites are grouped into {} draw columns. Click a column for a site; zoom in to separate them.", self.energy.drawn_bars));
             }
@@ -4487,13 +4756,7 @@ impl Scene {
                 credits.push_str(world_states::CREDIT);
             }
             // GEM's plants: standing as bars, or summed in the world's states' boxes.
-            if self.energy.level == Some(energy::Level::States)
-                || self
-                    .energy
-                    .bars
-                    .iter()
-                    .any(|b| matches!(b.subject, energy::Subject::Plant(_)))
-            {
+            if self.energy.level == Some(energy::Level::States) || self.energy.world_plants {
                 credits.push('\n');
                 credits.push_str(world_plants::CREDIT);
             }
@@ -5276,7 +5539,8 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
             scene.loader.is_idle(),
             scene.waiting,
             scene.text.is_idle(),
-            scene.feeds_pending,
+            // The bars' mesh is built on another thread: the picture waits for it as for a feed.
+            scene.feeds_pending + usize::from(scene.energy.waits()),
             scene.nav.is_animating() || scene.map.is_animating(),
             click_pending,
         ) {
@@ -5483,6 +5747,8 @@ struct Benchmark {
     work: Vec<f64>,
     /// The parts of that time, summed over all frames: update, panels, labels, drawing.
     phases: [f64; 4],
+    /// The same parts of the frames that took longest, slowest first, with the frame's number.
+    slowest: Vec<(f64, usize, [f64; 4])>,
 }
 
 /// Events sent to the window from other threads.
@@ -5633,6 +5899,7 @@ impl App {
             intervals: Vec::new(),
             work: Vec::new(),
             phases: [0.0; 4],
+            slowest: Vec::new(),
         });
         Ok(Gfx {
             draw_format,
@@ -5755,8 +6022,19 @@ impl App {
             let done = Instant::now();
             b.work.push((done - now).as_secs_f64());
             let marks = [now, updated, panelled, labelled, done];
-            for (sum, pair) in b.phases.iter_mut().zip(marks.windows(2)) {
-                *sum += (pair[1] - pair[0]).as_secs_f64();
+            let mut parts = [0.0; 4];
+            for (part, pair) in parts.iter_mut().zip(marks.windows(2)) {
+                *part = (pair[1] - pair[0]).as_secs_f64();
+            }
+            for (sum, part) in b.phases.iter_mut().zip(parts) {
+                *sum += part;
+            }
+            // The first frames open the window and load the view; they are not what is asked.
+            if b.work.len() > 10 {
+                b.slowest
+                    .push(((done - now).as_secs_f64(), b.work.len(), parts));
+                b.slowest.sort_by(|a, b| b.0.total_cmp(&a.0));
+                b.slowest.truncate(5);
             }
         }
         if let Some(rec) = &mut gfx.recorder {
@@ -5861,6 +6139,16 @@ impl App {
                 per_frame(b.phases[2]),
                 per_frame(b.phases[3]),
             );
+            for (work, frame, parts) in &b.slowest {
+                println!(
+                    "slow frame {frame}: {:.1} ms (update {:.1}, panels {:.1}, labels {:.1}, drawing {:.1})",
+                    work * 1000.0,
+                    parts[0] * 1000.0,
+                    parts[1] * 1000.0,
+                    parts[2] * 1000.0,
+                    parts[3] * 1000.0,
+                );
+            }
         }
     }
 }
@@ -6589,6 +6877,142 @@ mod tests {
         let flag = |f| parse(&[f]).unwrap().unwrap().gpu_overlays;
         assert_eq!(flag("--gpu-overlays"), Some(true));
         assert_eq!(flag("--cpu-overlays"), Some(false));
+    }
+
+    fn looking_down(lat: f64, lon: f64, distance: f64) -> camera::Basis {
+        Camera {
+            lat,
+            lon,
+            target_h: 0.0,
+            distance,
+            heading: 0.0,
+            tilt: 0.0,
+            sky: 0.0,
+        }
+        .basis()
+    }
+
+    #[test]
+    fn the_plants_scale_counts_only_the_bars_in_view() {
+        let (lat, lon) = (0.9f64, 0.2f64);
+        // Low bars under the camera, a tall one on the far side of the globe, and a tall one
+        // on the near side but far off the screen.
+        let mut places = vec![(lat + 3.0, lon + 3.0, 5.0e6f32), (lat + 0.3, lon, 7.0e6)];
+        places.extend((0..50).map(|i| (lat + i as f64 * 1e-5, lon, 1000.0 + i as f32)));
+        let points: Vec<DVec3> = places
+            .iter()
+            .map(|p| geo::geodetic_to_ecef(p.0, p.1, 0.0))
+            .collect();
+        let heights: Vec<(u32, f32)> = places
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (i as u32, p.2))
+            .collect();
+        let job = FitJob {
+            number: 1,
+            points: Arc::new(points),
+            heights: Arc::new(heights.clone()),
+            basis: looking_down(lat, lon, 20_000.0),
+            size: DVec2::new(1200.0, 800.0),
+        };
+        let in_view = heights[2..].iter().map(|h| h.1).collect();
+        assert_eq!(fit_plants(&job), energy::plants_needed_of(in_view));
+        let all = heights.iter().map(|h| h.1).collect();
+        assert_ne!(fit_plants(&job), energy::plants_needed_of(all));
+        // Looking elsewhere, none of them is in view.
+        let away = FitJob {
+            basis: looking_down(-lat, lon + 2.0, 20_000.0),
+            ..job.clone()
+        };
+        assert_eq!(fit_plants(&away), None);
+    }
+
+    #[test]
+    fn frames_go_on_while_the_bars_are_being_worked_out() {
+        let mut e = EnergyLayer::default();
+        assert!(!e.waits());
+        e.mesh_pending = true;
+        assert!(e.waits());
+        e.mesh_pending = false;
+        e.fit_pending = true;
+        assert!(e.waits());
+        e.fit_pending = false;
+        e.fit_owed = true;
+        assert!(e.waits());
+    }
+
+    /// The bars' mesh is built and put on the graphics card away from the frame; here on the
+    /// machine's adapter, where it has one.
+    #[test]
+    fn the_bars_mesh_is_built_with_its_buffers_for_plain_and_grouped_bars() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            eprintln!("no graphics adapter here: the bars' mesh was not built");
+            return;
+        };
+        let Ok((device, _queue)) = pollster::block_on(adapter.request_device(&Default::default()))
+        else {
+            eprintln!("no graphics device here: the bars' mesh was not built");
+            return;
+        };
+        let (lat, lon) = (0.9f64, 0.2f64);
+        let mut kw = [0.0; energy::SOURCES];
+        kw[0] = 2000.0;
+        let bars: Vec<energy::Bar> = (0..13_000u32)
+            .map(|i| energy::Bar {
+                lat: lat + (i % 100) as f64 * 1e-5,
+                lon: lon + (i / 100) as f64 * 1e-5,
+                kw,
+                subject: energy::Subject::Plant(i),
+                demand: 0.0,
+                faint: false,
+                running: Some(0.5),
+                running_by_source: None,
+            })
+            .collect();
+        let points: Vec<DVec3> = bars
+            .iter()
+            .map(|b| geo::geodetic_to_ecef(b.lat, b.lon, 0.0))
+            .collect();
+        let style = Settings::default().energy_style();
+        let job = MeshJob {
+            number: 7,
+            bars: Arc::new(bars),
+            plants: None,
+            scale: energy::Scale {
+                width: 50.0,
+                per_kw: 0.05,
+            },
+            centre: geo::geodetic_to_ecef(lat, lon, 0.0),
+            ground: render::GroundCopy::default(),
+            shares: None,
+            style,
+            device,
+        };
+        let plain = build_bar_mesh(job.clone());
+        assert_eq!((plain.number, plain.drawn), (7, 13_000));
+        assert!(plain.bars.is_some());
+        // Grouped for a view from far above, the many sites become a few columns.
+        let grouped = build_bar_mesh(MeshJob {
+            plants: Some((
+                Arc::new(points),
+                looking_down(lat, lon, 2.0e6),
+                DVec2::new(1200.0, 800.0),
+            )),
+            ..job.clone()
+        });
+        assert!(grouped.bars.is_some());
+        assert!(
+            grouped.drawn > 0 && grouped.drawn < 100,
+            "{}",
+            grouped.drawn
+        );
+        // With nothing to draw there is no mesh.
+        let none = build_bar_mesh(MeshJob {
+            bars: Arc::default(),
+            ..job
+        });
+        assert!(none.bars.is_none() && none.drawn == 0);
     }
 
     #[test]

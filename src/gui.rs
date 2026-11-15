@@ -796,7 +796,7 @@ mod tests {
         let raw = gui.begin((400, 300), ppp);
         let ctx = gui.ctx.clone();
         let out = ctx.run_pass(raw, |ctx| {
-            egui::Area::new(egui::Id::new("t")).show(ctx, |ui| {
+            egui::Area::new(egui::Id::unique("t")).show(ctx, |ui| {
                 ui.label(text);
             });
         });
