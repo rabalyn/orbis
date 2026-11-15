@@ -46,6 +46,7 @@ mod nav;
 mod navtrace;
 mod options;
 mod overlay;
+mod overlay_gpu;
 mod owid;
 mod pacing;
 mod paths;
@@ -130,6 +131,8 @@ const CACHE_LIMIT_GIB: u64 = 10;
 /// A long-running program checks its cache's size this often.
 const TRIM_EVERY: Duration = Duration::from_secs(3600);
 const UPLOADS_PER_FRAME: usize = 12;
+/// How many of a frame's uploads the painting of one overlay by the graphics card stands for.
+const PAINT_COST: usize = 3;
 /// Label sets for this many vector tiles stay in memory.
 /// Room around a label's text when deciding what a click hits, in pixels at scale 1.
 const LABEL_PAD: f64 = 4.0;
@@ -174,6 +177,10 @@ Usage: orbis [options]
   --time ISO8601          set the clock, such as 2026-06-21T12:00:00Z (default now, UTC)
   --time-speed N          clock seconds per real second (default 1)
   --no-shadows            start without shadows cast by terrain and buildings (view options, V)
+  --gpu-overlays          have the graphics card paint roads and boundaries onto the tiles; the window
+                          does so by itself unless the graphics are worked out by the processor
+  --cpu-overlays          draw roads and boundaries with the processor, as --screenshot does unless
+                          --gpu-overlays is given, so that pictures are the same on every machine
   --no-sun                start with flat, always-lit imagery (key S)
   --no-stars              start with stars, planets and the Moon hidden (key O)
   --no-spacemouse         do not look for a SpaceMouse (spacenavd or USB)
@@ -288,6 +295,8 @@ struct Args {
     /// The energy area whose box opens once its bar and figures are there.
     start_area: Option<&'static str>,
     spacemouse: bool,
+    /// `--gpu-overlays` or `--cpu-overlays`, where one was given.
+    gpu_overlays: Option<bool>,
     spacemouse_sensitivity: f64,
     benchmark: Option<f64>,
     /// `--record`: the folder for this run's frames.
@@ -403,6 +412,7 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
         time_chosen: false,
         start_area: None,
         spacemouse: true,
+        gpu_overlays: None,
         spacemouse_sensitivity: 1.0,
         benchmark: None,
         record: None,
@@ -527,6 +537,14 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
             }
             "--no-spacemouse" => {
                 a.spacemouse = false;
+                continue;
+            }
+            "--gpu-overlays" => {
+                a.gpu_overlays = Some(true);
+                continue;
+            }
+            "--cpu-overlays" => {
+                a.gpu_overlays = Some(false);
                 continue;
             }
             "--no-shadows" => {
@@ -2752,7 +2770,11 @@ impl Scene {
             r.clear_overlays();
             changed = true;
         }
-        for _ in 0..self.uploads_per_frame {
+        // A frame takes in so many results. An overlay the graphics card paints costs it several
+        // passes, so it counts for more than one that only needs uploading.
+        let mut budget = self.uploads_per_frame;
+        while budget > 0 {
+            budget -= 1;
             match self.loader.try_result() {
                 Some(Outcome::Ready(data)) if data.service_generation != generation => {
                     // Made under an earlier choice of services: it will be asked for again.
@@ -2775,9 +2797,13 @@ impl Scene {
                         continue;
                     }
                     self.overlay_retries.remove(&data.key);
-                    match &data.mips {
-                        Some(mips) => r.insert_overlay(data.key, mips),
-                        None => {
+                    match (&data.mips, &data.parts) {
+                        (Some(mips), _) => r.insert_overlay(data.key, mips),
+                        (None, Some(parts)) => {
+                            r.paint_overlay(data.key, parts);
+                            budget = budget.saturating_sub(PAINT_COST - 1);
+                        }
+                        (None, None) => {
                             self.overlay_empty.insert(data.key);
                         }
                     }
@@ -5057,6 +5083,15 @@ fn format_distance(m: f64) -> String {
     }
 }
 
+/// Whether the graphics card paints the lines of tile overlays. It does in a window, unless the
+/// "card" is the processor working out the graphics, where drawing them directly is quicker.
+/// A picture keeps to the processor, whose result is the same on every machine. The browser
+/// stays with the processor until the other way has been tried there.
+fn paints_overlays(choice: Option<bool>, picture: bool, device: wgpu::DeviceType) -> bool {
+    let by_itself = !cfg!(target_arch = "wasm32") && !picture && device != wgpu::DeviceType::Cpu;
+    choice.unwrap_or(by_itself)
+}
+
 async fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue)> {
     // A browser's limits are its own, often below the native defaults.
     #[cfg(target_arch = "wasm32")]
@@ -5137,6 +5172,11 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
     let view = target.create_view(&Default::default());
     let aspect = width as f64 / height as f64;
     let mut scene = Scene::new(args, DVec2::new(width as f64, height as f64));
+    scene.loader.set_gpu_overlays(paints_overlays(
+        args.gpu_overlays,
+        true,
+        adapter.get_info().device_type,
+    ));
     if let Some(t) = args.eclipse {
         scene.jump_to_eclipse(t);
         // A time or a search given as well decides the picture's moment and view.
@@ -5547,6 +5587,11 @@ impl App {
         };
         let renderer = Renderer::new(device, queue, draw_format, samples);
         let mut scene = Scene::new(&self.args, DVec2::new(w as f64, h as f64));
+        scene.loader.set_gpu_overlays(paints_overlays(
+            self.args.gpu_overlays,
+            false,
+            adapter.get_info().device_type,
+        ));
         scene.start_feeds(&self.args);
         // Dark or light as the desktop is; without a word from it, dark suits the imagery.
         scene
@@ -6497,6 +6542,24 @@ mod tests {
 
     fn parse(s: &[&str]) -> Result<Option<Args>> {
         parse_args(s.iter().map(|x| x.to_string()), &Settings::default())
+    }
+
+    #[test]
+    fn the_graphics_card_paints_overlays_in_a_window_unless_told_or_unable() {
+        use wgpu::DeviceType::{Cpu, DiscreteGpu, IntegratedGpu};
+        let native = !cfg!(target_arch = "wasm32");
+        assert_eq!(paints_overlays(None, false, DiscreteGpu), native);
+        assert_eq!(paints_overlays(None, false, IntegratedGpu), native);
+        // Graphics worked out by the processor gain nothing, and pictures stay reproducible.
+        assert!(!paints_overlays(None, false, Cpu));
+        assert!(!paints_overlays(None, true, DiscreteGpu));
+        // A flag decides either way.
+        assert!(paints_overlays(Some(true), true, Cpu));
+        assert!(!paints_overlays(Some(false), false, DiscreteGpu));
+        assert_eq!(parse(&[]).unwrap().unwrap().gpu_overlays, None);
+        let flag = |f| parse(&[f]).unwrap().unwrap().gpu_overlays;
+        assert_eq!(flag("--gpu-overlays"), Some(true));
+        assert_eq!(flag("--cpu-overlays"), Some(false));
     }
 
     #[test]

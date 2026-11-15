@@ -13,6 +13,7 @@ use crate::{blend, service_lib};
 use bytemuck::{Pod, Zeroable};
 use glam::DVec3;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -91,8 +92,11 @@ pub struct OverlayData {
     /// The vector tile the data came from.
     pub source: TileKey,
     pub labels: Arc<Vec<Label>>,
-    /// Premultiplied RGBA8 mip chain, largest first. `None` when there are no lines to draw.
+    /// Premultiplied RGBA8 mip chain, largest first. `None` when there are no lines to draw,
+    /// or when the graphics card is to paint them from `parts`.
     pub mips: Option<Vec<(u32, u32, Vec<u8>)>>,
+    /// What the graphics card paints the overlay from, in place of `mips`.
+    pub parts: Option<crate::overlay_gpu::Parts>,
     /// The state of the imports it was drawn with.
     pub generation: u64,
 }
@@ -460,6 +464,8 @@ struct Shared {
     /// What was imported, with the count of changes that made it.
     imports: Mutex<(Arc<Vec<Arc<Imported>>>, u64)>,
     lines: Mutex<LineKinds>,
+    /// Whether the lines of overlays are left for the graphics card to paint.
+    gpu_overlays: AtomicBool,
 }
 
 impl Shared {
@@ -622,13 +628,20 @@ impl Shared {
         // Copied first: a guard left in the argument list would stay locked for the whole render,
         // and the workers would draw their overlays one after the other.
         let kinds = *self.lines.lock().unwrap();
-        let mips = overlay::render(&tile, k, source, &imports, kinds)
-            .map(|rgba| build_mips(OVERLAY_SIZE, OVERLAY_SIZE, rgba));
+        let gpu = self.gpu_overlays.load(Ordering::Relaxed);
+        let (mips, parts) = match overlay::render_for(&tile, k, source, &imports, kinds, gpu) {
+            Some(overlay::Picture::Drawn(rgba)) => {
+                (Some(build_mips(OVERLAY_SIZE, OVERLAY_SIZE, rgba)), None)
+            }
+            Some(overlay::Picture::Parts(parts)) => (None, Some(parts)),
+            None => (None, None),
+        };
         Outcome::Overlay(Box::new(OverlayData {
             key: k,
             source,
             labels: tile.labels.clone(),
             mips,
+            parts,
             generation,
         }))
     }
@@ -873,6 +886,7 @@ impl Loader {
                 trains: true,
                 boundaries: true,
             }),
+            gpu_overlays: AtomicBool::new(false),
         });
         let (tx, results) = sync_channel(RESULT_QUEUE);
         #[cfg(target_arch = "wasm32")]
@@ -921,6 +935,12 @@ impl Loader {
     /// generation they were made with, so that older ones can be told apart.
     pub fn set_imports(&self, docs: Arc<Vec<Arc<Imported>>>, generation: u64) {
         *self.shared.imports.lock().unwrap() = (docs, generation);
+    }
+
+    /// Chooses whether later overlays have their lines painted by the graphics card (see
+    /// `overlay_gpu`) or drawn by the processor, as they are unless this says otherwise.
+    pub fn set_gpu_overlays(&self, on: bool) {
+        self.shared.gpu_overlays.store(on, Ordering::Relaxed);
     }
 
     /// Chooses which kinds of line later overlays are drawn with. Overlays already drawn are

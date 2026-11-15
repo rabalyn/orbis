@@ -126,6 +126,9 @@ once its bar and the figures for noon are there.
 - Roads, railways, ferries, and country and state boundaries, draped over the terrain.
 - Detail follows the zoom level: motorways first, minor roads later, footpaths only when close. Trails appear from tile
   zoom 15, service roads at 15, minor roads at 12, rail at 10 and ferries at 8.
+- In a window the graphics card paints the lines onto the tiles; the processor does where there is no real card, for
+  `--screenshot`, in the browser, and with `--cpu-overlays` (`--gpu-overlays` forces the card). The two look alike but
+  are not the same pixel for pixel.
 - Tunnels and disputed boundaries are dashed.
 
 ### Names

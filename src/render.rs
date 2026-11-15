@@ -180,6 +180,10 @@ pub struct Renderer {
     label_capacity: usize,
     label_count: u32,
     no_overlay: wgpu::BindGroup,
+    /// Made when the first overlay is painted by the graphics card.
+    overlay_painter: Option<crate::overlay_gpu::Painter>,
+    /// The painting of overlays not yet sent to the graphics card.
+    overlay_commands: Vec<wgpu::CommandBuffer>,
     pub roads_visible: bool,
     /// Direction to the Sun in the Earth-fixed frame, and whether it lights the scene.
     pub sun: DVec3,
@@ -1011,6 +1015,8 @@ impl Renderer {
             label_capacity,
             label_count: 0,
             no_overlay,
+            overlay_painter: None,
+            overlay_commands: Vec::new(),
             roads_visible: true,
             sun: DVec3::X,
             sun_on: true,
@@ -1470,6 +1476,24 @@ impl Renderer {
             wgpu::TextureFormat::Rgba8Unorm,
             mips,
         );
+        let bind = self.sampled_bind(&view);
+        if let Some(tile) = self.tiles.get_mut(&k) {
+            tile.overlay = Some(bind);
+        }
+    }
+
+    /// As `insert_overlay`, for an overlay whose lines the graphics card paints.
+    pub fn paint_overlay(&mut self, k: TileKey, parts: &crate::overlay_gpu::Parts) {
+        if !self.tiles.contains_key(&k) {
+            return;
+        }
+        let painter = self
+            .overlay_painter
+            .get_or_insert_with(|| crate::overlay_gpu::Painter::new(&self.device));
+        let (texture, commands) = painter.paint(&self.device, &self.queue, parts);
+        // Sent with the next frame, so that a frame's overlays cost one submission.
+        self.overlay_commands.push(commands);
+        let view = texture.create_view(&Default::default());
         let bind = self.sampled_bind(&view);
         if let Some(tile) = self.tiles.get_mut(&k) {
             tile.overlay = Some(bind);
@@ -2077,7 +2101,9 @@ impl Renderer {
             }
         }
         before_submit(&mut encoder);
-        self.queue.submit([encoder.finish()]);
+        // Overlays painted since the last frame come first: this frame samples them.
+        self.queue
+            .submit(self.overlay_commands.drain(..).chain([encoder.finish()]));
         self.cast = cast;
         self.evict(&in_use);
     }
