@@ -177,6 +177,9 @@ Usage: orbis [options]
   --time ISO8601          set the clock, such as 2026-06-21T12:00:00Z (default now, UTC)
   --time-speed N          clock seconds per real second (default 1)
   --no-shadows            start without shadows cast by terrain and buildings (view options, V)
+  --fullscreen            fill the main display with the window (the largest one where the system names none)
+  --energy-detail LEVEL   hold the energy bars at countries, states, districts, municipalities or plants,
+                          or let them follow the altitude with auto (for this run; the Electricity window saves it)
   --gpu-overlays          have the graphics card paint roads and boundaries onto the tiles; the window
                           does so by itself unless the graphics are worked out by the processor
   --cpu-overlays          draw roads and boundaries with the processor, as --screenshot does unless
@@ -295,6 +298,8 @@ struct Args {
     /// The energy area whose box opens once its bar and figures are there.
     start_area: Option<&'static str>,
     spacemouse: bool,
+    /// `--fullscreen`: the window fills the main display.
+    fullscreen: bool,
     /// `--gpu-overlays` or `--cpu-overlays`, where one was given.
     gpu_overlays: Option<bool>,
     spacemouse_sensitivity: f64,
@@ -413,6 +418,7 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
         start_area: None,
         spacemouse: true,
         gpu_overlays: None,
+        fullscreen: false,
         spacemouse_sensitivity: 1.0,
         benchmark: None,
         record: None,
@@ -537,6 +543,10 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
             }
             "--no-spacemouse" => {
                 a.spacemouse = false;
+                continue;
+            }
+            "--fullscreen" => {
+                a.fullscreen = true;
                 continue;
             }
             "--gpu-overlays" => {
@@ -705,6 +715,11 @@ fn parse_args(mut it: impl Iterator<Item = String>, saved: &Settings) -> Result<
             "--fps" => {
                 a.settings.frame_rate =
                     FrameLimit::parse(&value).ok_or_else(|| anyhow!("--fps expects 120 or 90"))?;
+            }
+            "--energy-detail" => {
+                a.settings.energy_detail = energy::Detail::parse(&value).ok_or_else(|| {
+                    anyhow!("--energy-detail expects auto, countries, states, districts, municipalities or plants")
+                })?;
             }
             "--benchmark" => {
                 let seconds = num()?;
@@ -5518,6 +5533,20 @@ impl App {
         // In a browser, the page decides the canvas's size.
         #[cfg(not(target_arch = "wasm32"))]
         let attributes = attributes.with_inner_size(PhysicalSize::new(width, height));
+        #[cfg(not(target_arch = "wasm32"))]
+        let attributes = if self.args.fullscreen {
+            // Not every system names a main display; the largest one stands in for it.
+            let pixels = |m: &winit::monitor::MonitorHandle| {
+                let s = m.size();
+                s.width as u64 * s.height as u64
+            };
+            let display = event_loop
+                .primary_monitor()
+                .or_else(|| event_loop.available_monitors().max_by_key(pixels));
+            attributes.with_fullscreen(Some(winit::window::Fullscreen::Borderless(display)))
+        } else {
+            attributes
+        };
         #[cfg(target_arch = "wasm32")]
         let attributes = {
             let _ = (width, height);
@@ -6560,6 +6589,19 @@ mod tests {
         let flag = |f| parse(&[f]).unwrap().unwrap().gpu_overlays;
         assert_eq!(flag("--gpu-overlays"), Some(true));
         assert_eq!(flag("--cpu-overlays"), Some(false));
+    }
+
+    #[test]
+    fn the_window_and_the_bars_detail_can_be_set_for_a_run() {
+        assert!(!parse(&[]).unwrap().unwrap().fullscreen);
+        assert!(parse(&["--fullscreen"]).unwrap().unwrap().fullscreen);
+        let detail = |v| parse(&["--energy-detail", v]).map(|a| a.unwrap().settings.energy_detail);
+        assert_eq!(detail("auto").unwrap(), energy::Detail::Auto);
+        assert_eq!(
+            detail("municipalities").unwrap(),
+            energy::Detail::Fixed(energy::Level::Towns)
+        );
+        assert!(detail("streets").is_err());
     }
 
     #[test]
