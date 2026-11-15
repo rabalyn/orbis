@@ -1077,13 +1077,24 @@ type EnergyBuild = (
     (u32, u32),
 );
 
-/// What the bars are made from: the level, month, sources, centre, the quarter hour shown,
-/// the clock's month and whether demand stands beside them.
+/// How far from the view's centre bars are made, in radians, for a camera at `altitude`: six
+/// times as far as it is high, in steps of two in a hundred with the number of the step. The
+/// altitude creeps as terrain arrives under the camera; in steps, the bars follow from their
+/// key alone and come out the same whenever they are made.
+fn bars_reach(altitude: f64) -> (i32, f64) {
+    const STEP: f64 = 1.02;
+    let reach = (altitude * 6.0 / geo::radius()).clamp(0.02, std::f64::consts::PI);
+    let n = (reach.ln() / STEP.ln()).round() as i32;
+    (n, STEP.powi(n).clamp(0.02, std::f64::consts::PI))
+}
+
+/// What the bars are made from: the level, month, sources, centre and reach, the quarter hour
+/// shown, the clock's month and whether demand stands beside them.
 type BarsKey = (
     energy::Level,
     u16,
     [bool; energy::SOURCES],
-    (i64, i64),
+    ((i64, i64), i32),
     Option<i64>,
     (i32, u32),
     bool,
@@ -1371,6 +1382,8 @@ struct EnergyLayer {
     /// The number of the mesh last asked for, and whether it is still being built.
     mesh_asked: u64,
     mesh_pending: bool,
+    /// Terrain has arrived since the mesh was built, which is soon to be built on it again.
+    terrain_owed: bool,
     /// Number of bars sent to the renderer after screen-space grouping.
     drawn_bars: usize,
 }
@@ -1379,7 +1392,11 @@ impl EnergyLayer {
     /// Whether something of the bars is still being worked out, on another thread or in a
     /// coming frame, so that frames must go on (and a picture must wait).
     fn waits(&self) -> bool {
-        self.bars_pending || self.mesh_pending || self.fit_pending || self.fit_owed
+        self.bars_pending
+            || self.mesh_pending
+            || self.terrain_owed
+            || self.fit_pending
+            || self.fit_owed
     }
 }
 
@@ -3266,7 +3283,7 @@ impl Scene {
         let plants = level == energy::Level::Plants;
         let cam = self.nav.cam;
         // The centre in steps of a tenth of the bars' reach, so that panning rebuilds only now and then.
-        let reach = (self.nav.altitude * 6.0 / geo::radius()).clamp(0.02, std::f64::consts::PI);
+        let (reach_step, reach) = bars_reach(self.nav.altitude);
         let step = reach / 10.0;
         let centre = (
             (cam.lat / step).round() as i64,
@@ -3285,7 +3302,7 @@ impl Scene {
             level,
             month,
             shown,
-            centre,
+            (centre, reach_step),
             quarter.filter(|_| !plants),
             self.clock_month(),
             self.view.energy_demand && !plants,
@@ -3301,6 +3318,16 @@ impl Scene {
                 DVec2::new(aspect_height.0 * aspect_height.1, aspect_height.1),
             );
             if !self.take_plant_bars(bars_key, (month, shown), (cam.lat, cam.lon, reach), view) {
+                // The Electricity window tells the scale; it opens with the level's usual one
+                // rather than wait, as windows that open later lie over those already there.
+                self.energy
+                    .scale
+                    .get_or_insert(style.apply(energy::Scale::for_view(
+                        data,
+                        level,
+                        cam.distance,
+                        aspect_height.1,
+                    )));
                 self.take_bar_mesh(r);
                 return true;
             }
@@ -3375,6 +3402,9 @@ impl Scene {
             && !rescaled
             && (self.energy.built_from == Some(key) || (same_but_terrain && !terrain_due))
         {
+            // New terrain has come under the bars, and they are stood on it within half a
+            // second: frames go on until then, and a picture waits.
+            self.energy.terrain_owed = self.energy.built_from != Some(key);
             self.take_bar_mesh(r);
             return easing || self.energy.waits();
         }
@@ -3390,6 +3420,7 @@ impl Scene {
         let e = &mut self.energy;
         e.mesh_asked += 1;
         e.mesh_pending = true;
+        e.terrain_owed = false;
         e.mesher
             .get_or_insert_with(|| worker::Worker::new(true, Duration::ZERO, build_bar_mesh))
             .submit(MeshJob {
@@ -3456,7 +3487,9 @@ impl Scene {
         if let Some(maker) = &e.bar_maker {
             while let Some(done) = maker.poll() {
                 // Bars that the view has moved on from are left out; those asked for follow.
-                latest = Some(done).filter(|d| d.key == key);
+                if done.key == key {
+                    latest = Some(done);
+                }
             }
         }
         let Some(done) = latest else {
@@ -7098,7 +7131,7 @@ mod tests {
             energy::Level::Plants,
             month,
             shown,
-            (3, 4),
+            ((3, 4), 5),
             None,
             (2026, 11),
             false,
@@ -7128,6 +7161,19 @@ mod tests {
     }
 
     #[test]
+    fn the_bars_reach_goes_in_steps_and_stays_within_its_bounds() {
+        let (n, reach) = bars_reach(800_000.0);
+        let exact = 800_000.0 * 6.0 / geo::radius();
+        assert!((reach / exact - 1.0).abs() < 0.011, "{reach} {exact}");
+        // A little more altitude, as when terrain arrives, keeps the step; a lot does not.
+        assert_eq!(bars_reach(800_500.0), (n, reach));
+        assert!(bars_reach(900_000.0).0 > n);
+        assert_eq!(bars_reach(10.0).1, 0.02);
+        assert_eq!(bars_reach(1.0e9).1, std::f64::consts::PI);
+        assert_eq!(bars_reach(10.0), bars_reach(50.0));
+    }
+
+    #[test]
     fn frames_go_on_while_the_bars_are_being_worked_out() {
         let mut e = EnergyLayer::default();
         assert!(!e.waits());
@@ -7141,6 +7187,9 @@ mod tests {
         assert!(e.waits());
         e.fit_pending = false;
         e.fit_owed = true;
+        assert!(e.waits());
+        e.fit_owed = false;
+        e.terrain_owed = true;
         assert!(e.waits());
     }
 
