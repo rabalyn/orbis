@@ -1370,6 +1370,8 @@ fn make_services(args: &Args) -> service_ui::Control {
 
 impl Scene {
     fn new(args: &Args, size: DVec2) -> Self {
+        // The energy data is parsed on a thread of its own from here on, not in the first frame.
+        energy::start_preload();
         let fetcher = make_fetcher(args);
         if args.share_cache {
             // The app is useful without sharing, for example if the port is taken.
@@ -2887,6 +2889,10 @@ impl Scene {
     /// Returns whether the bars are still growing or shrinking to a new scale.
     fn update_energy(&mut self, r: &mut Renderer, aspect_height: (f64, f64)) -> bool {
         self.energy.view = aspect_height;
+        // The display appears once the data is read; `about_to_wait` asks for a frame then.
+        if (self.energy_on() || self.energy_map_on()) && !energy::data_ready() {
+            return false;
+        }
         if self.energy_map_on() {
             self.update_energy_map(r);
             return false;
@@ -5138,6 +5144,8 @@ fn screenshot(args: &Args, path: &PathBuf) -> Result<()> {
         }
     }
     scene.start_feeds(args);
+    // The picture shows the energy display from its first frame on.
+    energy::wait_for_data();
     if args.events_panel {
         scene.toggle_events();
     }
@@ -5905,6 +5913,13 @@ impl ApplicationHandler<UserEvent> for App {
                 if !g.scene.loader.is_idle() {
                     wake = wake.min(now + Duration::from_millis(50));
                 }
+            }
+            // The energy data is read on another thread; the display follows when it is done.
+            if g.scene.view.energy && !energy::data_ready() {
+                wake = wake.min(now + Duration::from_millis(20));
+            }
+            if energy::data_just_loaded() {
+                g.redraw_wanted = true;
             }
             // Whatever the user changed, by key, click or list, is noted and saved here.
             g.scene.persist();

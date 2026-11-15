@@ -245,16 +245,20 @@ struct Series {
 
 impl Series {
     fn from_changes(mut changes: Vec<(u16, f32)>) -> Series {
+        // Stable, so the changes of one month are added in the order they came.
         changes.sort_by_key(|c| c.0);
-        let mut steps: Vec<(u16, f32)> = Vec::new();
+        let mut steps: Vec<(u16, f32)> = Vec::with_capacity(changes.len());
         let mut total = 0.0f64;
-        let mut acc = std::collections::BTreeMap::new();
-        for (m, d) in changes {
-            *acc.entry(m).or_insert(0.0f64) += d as f64;
-        }
-        for (m, d) in acc {
-            total += d;
-            steps.push((m, total.max(0.0) as f32));
+        let mut i = 0;
+        while i < changes.len() {
+            let month = changes[i].0;
+            let mut sum = 0.0f64;
+            while i < changes.len() && changes[i].0 == month {
+                sum += changes[i].1 as f64;
+                i += 1;
+            }
+            total += sum;
+            steps.push((month, total.max(0.0) as f32));
         }
         Series { steps }
     }
@@ -398,6 +402,8 @@ pub struct Energy {
     /// Germany's; empty without the population file.
     people: Vec<u32>,
     people_total: f64,
+    /// The areas of the state level, which `national` adds up.
+    state_areas: Vec<u32>,
 }
 
 pub fn month_of(unix: f64) -> u16 {
@@ -477,6 +483,85 @@ impl<'a> Reader<'a> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+/// A job running on a thread of its own, whose end can be asked after without waiting for it.
+pub struct Background {
+    state: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    unseen: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Background {
+    pub fn spawn(job: impl FnOnce() + Send + 'static) -> Background {
+        let state = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let there = state.clone();
+        std::thread::Builder::new()
+            .name("energy-data".into())
+            .spawn(move || {
+                job();
+                *there.0.lock().unwrap() = true;
+                there.1.notify_all();
+            })
+            .expect("a thread to read the energy data");
+        Background {
+            state,
+            unseen: std::sync::atomic::AtomicBool::new(true),
+        }
+    }
+
+    pub fn done(&self) -> bool {
+        *self.state.0.lock().unwrap()
+    }
+
+    pub fn wait(&self) {
+        let mut done = self.state.0.lock().unwrap();
+        while !*done {
+            done = self.state.1.wait(done).unwrap();
+        }
+    }
+
+    /// Whether the job has ended since this was last asked: true once.
+    pub fn take_done(&self) -> bool {
+        self.done() && self.unseen.swap(false, std::sync::atomic::Ordering::AcqRel)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn preload() -> &'static Background {
+    static JOB: std::sync::OnceLock<Background> = std::sync::OnceLock::new();
+    JOB.get_or_init(|| Background::spawn(Energy::load_all))
+}
+
+/// Starts reading the bundled energy data on a thread of its own, so that the first frame with
+/// the display on does not wait for it. Nothing to do in the browser, which has one thread.
+pub fn start_preload() {
+    #[cfg(not(target_arch = "wasm32"))]
+    preload();
+}
+
+/// Whether the bundled energy data can be had without waiting. Starts reading it if that has not
+/// begun.
+pub fn data_ready() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    return preload().done();
+    #[cfg(target_arch = "wasm32")]
+    true
+}
+
+/// Waits until the bundled energy data is read (pictures made with `--screenshot`).
+pub fn wait_for_data() {
+    #[cfg(not(target_arch = "wasm32"))]
+    preload().wait();
+}
+
+/// Whether the data has become ready since this was last asked: true once, so that a redraw follows.
+pub fn data_just_loaded() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    return preload().take_done();
+    #[cfg(target_arch = "wasm32")]
+    false
+}
+
 const MAGIC: &[u8; 8] = b"ORBE\x01\0\0\0";
 const POPULATION_MAGIC: &[u8; 8] = b"ORBP\x01\0\0\0";
 
@@ -494,6 +579,17 @@ impl Energy {
             Some(e)
         })
         .as_ref()
+    }
+
+    /// Reads everything the energy display needs from the data built into the program, on this
+    /// thread. `start_preload` runs it in the background.
+    fn load_all() {
+        Energy::bundled();
+        crate::owid::Owid::bundled();
+        crate::world_energy::World::bundled();
+        crate::world_states::States::bundled();
+        crate::world_plants::Plants::bundled();
+        crate::world_plants::Plants::bundled_by_state();
     }
 
     /// Takes in the population of the areas from `tools/gen_population.py`. Returns whether it
@@ -709,7 +805,15 @@ impl Energy {
             dense: 1.0,
             people: Vec::new(),
             people_total: 0.0,
+            state_areas: Vec::new(),
         };
+        energy.state_areas = energy
+            .areas
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.level == Level::States)
+            .map(|(i, _)| i as u32)
+            .collect();
         for level in [Level::States, Level::Districts, Level::Towns] {
             let mut sides: Vec<f64> = energy
                 .areas
@@ -856,11 +960,9 @@ impl Energy {
     /// The capacity of each source in Germany at `month`, in kW.
     pub fn national(&self, month: u16) -> [f32; SOURCES] {
         let mut out = [0.0; SOURCES];
-        for (i, a) in self.areas.iter().enumerate() {
-            if a.level == Level::States {
-                for (s, series) in self.totals[i].iter().enumerate() {
-                    out[s] += series.at(month);
-                }
+        for &i in &self.state_areas {
+            for (s, series) in self.totals[i as usize].iter().enumerate() {
+                out[s] += series.at(month);
             }
         }
         out
@@ -2076,6 +2178,58 @@ pub(crate) mod tests {
             }
             out.push(b | 0x80);
         }
+    }
+
+    #[test]
+    fn national_adds_up_the_states_in_order() {
+        let e = Energy::bundled().unwrap();
+        for month in [0, 1200, 1500, 1620, u16::MAX] {
+            let mut want = [0.0f32; SOURCES];
+            for (i, a) in e.areas.iter().enumerate() {
+                if a.level == Level::States {
+                    for (s, series) in e.totals[i].iter().enumerate() {
+                        want[s] += series.at(month);
+                    }
+                }
+            }
+            assert_eq!(e.national(month), want);
+        }
+    }
+
+    #[test]
+    fn series_from_changes_sums_each_month_and_never_goes_below_zero() {
+        let s = Series::from_changes(vec![(5, 2.0), (3, 1.5), (5, -0.5), (9, -10.0), (3, 0.5)]);
+        assert_eq!(s.steps, vec![(3, 2.0), (5, 3.5), (9, 0.0)]);
+        assert_eq!(s.at(2), 0.0);
+        assert_eq!(s.at(4), 2.0);
+        assert_eq!(s.at(100), 0.0);
+        assert!(Series::from_changes(Vec::new()).steps.is_empty());
+    }
+
+    #[test]
+    fn a_background_job_is_not_done_until_it_ends_and_reports_once() {
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let b = Background::spawn(move || {
+            wait.recv().unwrap();
+        });
+        assert!(!b.done());
+        assert!(!b.take_done());
+        go.send(()).unwrap();
+        b.wait();
+        assert!(b.done());
+        assert!(b.take_done());
+        assert!(!b.take_done());
+        assert!(b.done());
+    }
+
+    #[test]
+    fn the_bundled_data_is_there_once_the_preload_is_done() {
+        start_preload();
+        wait_for_data();
+        assert!(data_ready());
+        assert!(Energy::bundled().is_some());
+        assert!(crate::world_energy::World::bundled().is_some());
+        assert!(crate::world_plants::Plants::bundled_by_state().is_some());
     }
 
     /// Writes a file as `gen_energy.py` does, for tests.

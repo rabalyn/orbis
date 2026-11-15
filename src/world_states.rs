@@ -47,7 +47,12 @@ pub struct States {
     list: Vec<State>,
     /// The population of each state's country, summed over its states.
     people: Vec<f64>,
+    /// The last answer of `bars` with what it was worked out for: the states' bars change with
+    /// the month, the sources and the demand only, not with where the view looks.
+    last_bars: std::sync::Mutex<Option<BarsAnswer>>,
 }
+
+type BarsAnswer = (((i32, u32), [bool; SOURCES], bool), Vec<Bar>);
 
 impl States {
     /// The states built into the program.
@@ -111,7 +116,11 @@ impl States {
             *sums.entry(s.country.as_str()).or_default() += s.population as f64;
         }
         let people = list.iter().map(|s| sums[s.country.as_str()]).collect();
-        Some(States { list, people })
+        Some(States {
+            list,
+            people,
+            last_bars: std::sync::Mutex::new(None),
+        })
     }
 
     #[cfg(test)]
@@ -215,6 +224,25 @@ impl States {
     /// The states' bars at the clock's month, with the sources in `shown` and their use beside
     /// them if `demand`; lighter where the country's year stands in for the month.
     pub fn bars(&self, month: (i32, u32), shown: [bool; SOURCES], demand: bool) -> Vec<Bar> {
+        let key = (month, shown, demand);
+        let mut last = self.last_bars.lock().unwrap_or_else(|e| e.into_inner());
+        match &*last {
+            Some((k, bars)) if *k == key => bars.clone(),
+            _ => {
+                let bars = self.bars_uncached(month, shown, demand);
+                *last = Some((key, bars.clone()));
+                bars
+            }
+        }
+    }
+
+    /// `bars`, worked out afresh.
+    pub fn bars_uncached(
+        &self,
+        month: (i32, u32),
+        shown: [bool; SOURCES],
+        demand: bool,
+    ) -> Vec<Bar> {
         let mut bars = Vec::new();
         for (i, s) in self.list.iter().enumerate() {
             let Some((f, kw, used)) = self.estimate(i, month, shown) else {
@@ -542,6 +570,31 @@ mod tests {
 
     fn states() -> &'static States {
         States::bundled().expect("bundled states parse")
+    }
+
+    #[test]
+    fn cached_bars_equal_fresh_ones_and_follow_their_inputs() {
+        let s = states();
+        let all = [true; SOURCES];
+        let mut some = all;
+        some[0] = false;
+        for (month, shown, demand) in [
+            ((2024, 6), all, false),
+            ((2024, 6), all, false),
+            ((2024, 6), all, true),
+            ((2023, 1), all, true),
+            ((2023, 1), some, true),
+            ((2024, 6), all, false),
+        ] {
+            assert_eq!(
+                s.bars(month, shown, demand),
+                s.bars_uncached(month, shown, demand)
+            );
+        }
+        assert_ne!(
+            s.bars((2024, 6), all, false),
+            s.bars((2024, 6), some, false)
+        );
     }
 
     #[test]
