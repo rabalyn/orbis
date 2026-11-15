@@ -1561,15 +1561,10 @@ impl Renderer {
 
     /// The terrain height from the finest loaded tile covering a position.
     pub fn ground(&self, lat: f64, lon: f64) -> Option<f64> {
-        (0..=TILE_MAX_Z).rev().find_map(|z| {
-            let k = TileKey::containing(lat, lon, z);
-            let tile = self.tiles.get(&k)?;
-            let (u, v) = (
-                crate::geo::lon_to_merc_u(lon) * (1u64 << z) as f64 - k.x as f64,
-                crate::geo::lat_to_merc_v(lat) * (1u64 << z) as f64 - k.y as f64,
-            );
-            Some(height_on_grid(&tile.heights, u, v))
-        })
+        if self.tiles.is_empty() {
+            return None;
+        }
+        ground_in(lat, lon, |k| self.tiles.get(&k).map(|t| &t.heights[..]))
     }
 
     /// The height of the surface as drawn at a position: the mesh of the tile in `draw` that
@@ -2015,12 +2010,18 @@ impl Renderer {
                 pass.draw_indexed(0..self.underlay_count, 0, 0..1);
 
                 pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                // Most tiles have no overlay: bind the same group again only when it changes.
+                let mut bound_overlay = &self.no_overlay;
                 for (i, k) in draw.iter().enumerate() {
                     let t = &self.tiles[k];
                     let instance = i as u32 + 1;
                     let overlay = t.overlay.as_ref().filter(|_| self.roads_visible);
                     pass.set_bind_group(1, &t.bind_group, &[]);
-                    pass.set_bind_group(2, overlay.unwrap_or(&self.no_overlay), &[]);
+                    let overlay = overlay.unwrap_or(&self.no_overlay);
+                    if !std::ptr::eq(overlay, bound_overlay) {
+                        pass.set_bind_group(2, overlay, &[]);
+                        bound_overlay = overlay;
+                    }
                     pass.set_vertex_buffer(0, t.vertices.slice(..));
                     pass.draw_indexed(0..self.index_count, 0, instance..instance + 1);
                 }
@@ -2029,6 +2030,7 @@ impl Renderer {
             if !shown.is_empty() {
                 pass.set_pipeline(&self.building_pipeline);
                 pass.set_vertex_buffer(1, self.instances.slice(..));
+                let mut bound_roof: Option<&wgpu::BindGroup> = None;
                 for (i, k) in shown.iter().enumerate() {
                     let b = &self.buildings[k];
                     let instance = first_building + i as u32;
@@ -2037,7 +2039,10 @@ impl Renderer {
                         .as_ref()
                         .filter(|_| self.aerial_roofs)
                         .map_or(&self.no_roof, |r| &r.bind);
-                    pass.set_bind_group(1, roof, &[]);
+                    if !bound_roof.is_some_and(|r| std::ptr::eq(r, roof)) {
+                        pass.set_bind_group(1, roof, &[]);
+                        bound_roof = Some(roof);
+                    }
                     pass.set_vertex_buffer(0, b.vertices.slice(..));
                     pass.set_index_buffer(b.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..b.index_count, 0, instance..instance + 1);
@@ -2137,6 +2142,30 @@ fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffe
     })
 }
 
+/// The terrain height from the finest tile that `heights_of` has, at a position. The position
+/// in tile coordinates is the same at every zoom, so it is converted once.
+fn ground_in<'a>(
+    lat: f64,
+    lon: f64,
+    heights_of: impl Fn(TileKey) -> Option<&'a [f32]>,
+) -> Option<f64> {
+    let grid = crate::body::current().grid;
+    let (mu, mv) = (
+        crate::geo::lon_to_merc_u(lon),
+        crate::geo::lat_to_merc_v(lat),
+    );
+    let gv = crate::geo::grid_v(grid, lat);
+    (0..=TILE_MAX_Z).rev().find_map(|z| {
+        let k = TileKey::containing_at(grid, mu, gv, z);
+        let heights = heights_of(k)?;
+        let (u, v) = (
+            mu * (1u64 << z) as f64 - k.x as f64,
+            mv * (1u64 << z) as f64 - k.y as f64,
+        );
+        Some(height_on_grid(heights, u, v))
+    })
+}
+
 /// Bilinear lookup on a tile's mesh heights, with `u` and `v` in 0..1.
 fn height_on_grid(heights: &[f32], u: f64, v: f64) -> f64 {
     let n = GRID as f64;
@@ -2176,6 +2205,55 @@ mod tests {
         assert_eq!(height_on_grid(&heights, 0.0, 0.5), 0.0);
         assert_eq!(height_on_grid(&heights, 1.0, 0.5), GRID as f64);
         assert!((height_on_grid(&heights, 0.5, 0.5) - GRID as f64 / 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ground_lookup_matches_the_per_zoom_conversion() {
+        // The lookup as it was written before the conversion was hoisted out of the loop.
+        fn reference<'a>(
+            lat: f64,
+            lon: f64,
+            heights_of: impl Fn(TileKey) -> Option<&'a [f32]>,
+        ) -> Option<f64> {
+            (0..=TILE_MAX_Z).rev().find_map(|z| {
+                let k = TileKey::containing(lat, lon, z);
+                let heights = heights_of(k)?;
+                let (u, v) = (
+                    crate::geo::lon_to_merc_u(lon) * (1u64 << z) as f64 - k.x as f64,
+                    crate::geo::lat_to_merc_v(lat) * (1u64 << z) as f64 - k.y as f64,
+                );
+                Some(height_on_grid(heights, u, v))
+            })
+        }
+        let side = GRID + 1;
+        let tile = |seed: usize| -> Vec<f32> {
+            (0..side * side)
+                .map(|i| ((i * 7 + seed * 13) % 101) as f32 * 3.5)
+                .collect()
+        };
+        // Tiles at a few zooms around one place; elsewhere nothing is loaded.
+        let (lat0, lon0) = (0.81f64, 0.2f64);
+        let mut tiles: HashMap<TileKey, Vec<f32>> = HashMap::new();
+        for z in [0u8, 3, 7, 10] {
+            let k = TileKey::containing(lat0, lon0, z);
+            tiles.insert(k, tile(z as usize));
+        }
+        let get = |k: TileKey| tiles.get(&k).map(|t| &t[..]);
+        let mut found = 0;
+        for i in 0..400 {
+            let lat = lat0 + (i as f64 * 0.37).sin() * 0.002 * (i % 7) as f64;
+            let lon = lon0 + (i as f64 * 0.91).cos() * 0.003 * (i % 5) as f64;
+            let (a, b) = (ground_in(lat, lon, get), reference(lat, lon, get));
+            assert_eq!(a.map(f64::to_bits), b.map(f64::to_bits), "{lat} {lon}");
+            found += a.is_some() as usize;
+        }
+        assert!(found > 100);
+        // Far from every tile only the zoom 0 tile answers, and no tile at all gives nothing.
+        assert_eq!(
+            ground_in(-1.2, -2.5, get).map(f64::to_bits),
+            reference(-1.2, -2.5, get).map(f64::to_bits)
+        );
+        assert_eq!(ground_in(lat0, lon0, |_| None), None);
     }
 
     #[test]
