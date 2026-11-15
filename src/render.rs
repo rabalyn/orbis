@@ -1,7 +1,7 @@
 //! GPU drawing with wgpu. Everything is positioned relative to the camera, so 32-bit
 //! floats stay precise at any distance from the Earth's centre.
 
-use crate::atlas::{self, AtlasVertex, AtlasView, Mesh};
+use crate::atlas::{self, AtlasVertex, AtlasView};
 use crate::buildings::{BuildingMesh, BuildingVertex, WALL_COLUMNS};
 use crate::camera::{Camera, FOV_Y};
 use crate::geo::{geodetic_to_ecef, radius, TileKey};
@@ -113,6 +113,8 @@ struct AtlasDraw {
     index_capacity: u64,
     underlay: Range<u32>,
     tiles: Vec<(TileKey, Range<u32>)>,
+    /// What the meshes were made from; they are reused while it stays the same.
+    key: atlas::MeshKey,
 }
 
 struct GpuBuildings {
@@ -1058,16 +1060,16 @@ impl Renderer {
             self.atlas = None;
             return;
         };
-        let mut mesh = Mesh::default();
-        atlas::add_underlay(view, IMAGERY_LIMIT_DEG.to_radians(), &mut mesh);
-        let underlay = 0..mesh.indices.len() as u32;
-        let mut tiles = Vec::with_capacity(draw.len());
-        for k in draw {
-            let Some(t) = self.tiles.get(k) else { continue };
-            let from = mesh.indices.len() as u32;
-            atlas::add_tile(view, *k, t.uv_rect, &mut mesh);
-            tiles.push((*k, from..mesh.indices.len() as u32));
+        let key = atlas::MeshKey::new(
+            view,
+            draw.iter()
+                .filter_map(|k| self.tiles.get(k).map(|t| (*k, t.uv_rect)))
+                .collect(),
+        );
+        if self.atlas.as_ref().is_some_and(|a| a.key == key) {
+            return;
         }
+        let (mesh, underlay, tiles) = atlas::build(&key, IMAGERY_LIMIT_DEG.to_radians());
         let (vbytes, ibytes) = (
             bytemuck::cast_slice::<_, u8>(&mesh.vertices),
             bytemuck::cast_slice::<_, u8>(&mesh.indices),
@@ -1118,6 +1120,7 @@ impl Renderer {
             index_capacity,
             underlay,
             tiles,
+            key,
         });
     }
 
