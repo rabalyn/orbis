@@ -36,12 +36,16 @@ fn item_touches(item: &Item, tile: TileKey) -> bool {
     let [west, east, north, south] = tile_box(tile);
     let [s, w, n, e] = item.extent;
     let (u0, u1) = (lon_to_merc_u(w), lon_to_merc_u(e));
+    // An item that spans most of the world may wrap round the back.
+    if !((u1 - u0 > 0.5) || (u1 >= west && u0 <= east)) {
+        return false;
+    }
+    // The logarithms come last: most items are already out by their longitude.
     let (v0, v1) = (
         lat_to_merc_v(n.min(MAX_LAT)),
         lat_to_merc_v(s.max(-MAX_LAT)),
     );
-    // An item that spans most of the world may wrap round the back.
-    ((u1 - u0 > 0.5) || (u1 >= west && u0 <= east)) && v1 >= north && v0 <= south
+    v1 >= north && v0 <= south
 }
 
 /// The tile's west, east, north and south edges in map units (0 to 1), widened a little.
@@ -415,11 +419,13 @@ fn draw_dot(pixmap: &mut Pixmap, (x, y): (f64, f64), mark: Option<Mark>) {
 /// Draws what is imported onto `pixmap`, which covers `tile`. Areas first, then lines, then
 /// points, so that points stay on top.
 pub fn draw(pixmap: &mut Pixmap, docs: &[Arc<Imported>], tile: TileKey) {
-    let items = || {
-        docs.iter()
-            .flat_map(|d| d.items.iter())
-            .filter(|i| item_touches(i, tile))
-    };
+    // Looked for once: the box test is not free, and the items are gone through three times.
+    let hits: Vec<&Item> = docs
+        .iter()
+        .flat_map(|d| d.items.iter())
+        .filter(|i| item_touches(i, tile))
+        .collect();
+    let items = || hits.iter().copied();
     for item in items() {
         if let Shape::Polygon(rings) = &item.shape {
             draw_projected(pixmap, tile, rings.iter().map(Vec::as_slice), |p, r| {
@@ -617,5 +623,69 @@ mod tests {
             Shape::Line(vec![pos(0.0, -170.0), pos(0.0, 170.0)]),
         )]);
         assert!(touches(&d, TileKey::new(1, 0, 0)) || touches(&d, TileKey::new(1, 0, 1)));
+    }
+
+    /// The test as it was written before the longitude check went first.
+    fn touches_by_the_whole_box(item: &Item, tile: TileKey) -> bool {
+        let [west, east, north, south] = tile_box(tile);
+        let [s, w, n, e] = item.extent;
+        let (u0, u1) = (lon_to_merc_u(w), lon_to_merc_u(e));
+        let (v0, v1) = (
+            lat_to_merc_v(n.min(MAX_LAT)),
+            lat_to_merc_v(s.max(-MAX_LAT)),
+        );
+        ((u1 - u0 > 0.5) || (u1 >= west && u0 <= east)) && v1 >= north && v0 <= south
+    }
+
+    #[test]
+    fn the_cheaper_box_test_agrees_with_the_plain_one() {
+        let extents = [
+            [0.0, 0.0, 0.0, 0.0],
+            [-0.3, 10.0, 0.3, 12.0],
+            [40.0, -10.0, 60.0, 30.0],
+            [-80.0, -179.0, 80.0, 179.0],
+            [-89.0, 100.0, -70.0, 170.0],
+            [70.0, -170.0, 89.9, -100.0],
+        ];
+        for extent in extents {
+            let mut item = Item::new("x", Shape::Point(pos(0.0, 0.0)));
+            item.extent = extent.map(f64::to_radians);
+            for z in 0..=4u8 {
+                for x in 0..(1u32 << z) {
+                    for y in 0..(1u32 << z) {
+                        let tile = TileKey::new(z, x, y);
+                        assert_eq!(
+                            item_touches(&item, tile),
+                            touches_by_the_whole_box(&item, tile),
+                            "{extent:?} {tile:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn items_are_drawn_in_their_order_with_points_on_top() {
+        let tile = TileKey::new(3, 4, 3);
+        let d = docs(vec![
+            ("p", Shape::Point(pos(22.5, 22.5))),
+            (
+                "a",
+                Shape::Polygon(vec![vec![
+                    pos(10.0, 10.0),
+                    pos(10.0, 40.0),
+                    pos(40.0, 40.0),
+                    pos(40.0, 10.0),
+                    pos(10.0, 10.0),
+                ]]),
+            ),
+            ("far", Shape::Point(pos(-60.0, -120.0))),
+        ]);
+        let mut pm = Pixmap::new(OVERLAY_SIZE, OVERLAY_SIZE).unwrap();
+        draw(&mut pm, &d, tile);
+        // The dot is white in the middle, though the area was added after it.
+        let centre = pm.pixel(256, 256).unwrap();
+        assert!(centre.red() > 200 && centre.alpha() == 255, "{centre:?}");
     }
 }

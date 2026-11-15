@@ -23,7 +23,26 @@ pub const TILE_MAX_Z: u8 = sources::ABSOLUTE_MAX_Z;
 const BLANK_RANGE: u8 = 3;
 /// OpenMapTiles data ends here; closer tiles use a part of a tile at this zoom.
 pub const VECTOR_MAX_Z: u8 = 14;
-const WORKERS: usize = 8;
+/// Tile threads on a small machine. Much of a job is waiting for a download, so there are
+/// never fewer than this.
+#[cfg(not(target_arch = "wasm32"))]
+const MIN_WORKERS: usize = 8;
+/// More threads than this gain little: the servers' request limits and the main thread's
+/// uploads set the pace, and every job in progress holds a decoded tile.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_WORKERS: usize = 16;
+
+/// How many tile threads to run on a machine with `cores` hardware threads: all but two,
+/// which stay free for the main thread and the graphics driver.
+#[cfg(not(target_arch = "wasm32"))]
+fn workers_for(cores: usize) -> usize {
+    cores.saturating_sub(2).clamp(MIN_WORKERS, MAX_WORKERS)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn worker_count() -> usize {
+    workers_for(std::thread::available_parallelism().map_or(MIN_WORKERS, |n| n.get()))
+}
 /// How often idle workers look whether a blocked job can go on.
 const BLOCKED_CHECK: Duration = Duration::from_millis(20);
 /// Finished results waiting to be collected. Workers pause beyond this, which limits how
@@ -600,7 +619,10 @@ impl Shared {
             Err(e) => return after_failure(e, k, Outcome::OverlayRetry),
         };
         let (imports, generation) = self.imports.lock().unwrap().clone();
-        let mips = overlay::render(&tile, k, source, &imports, *self.lines.lock().unwrap())
+        // Copied first: a guard left in the argument list would stay locked for the whole render,
+        // and the workers would draw their overlays one after the other.
+        let kinds = *self.lines.lock().unwrap();
+        let mips = overlay::render(&tile, k, source, &imports, kinds)
             .map(|rgba| build_mips(OVERLAY_SIZE, OVERLAY_SIZE, rgba));
         Outcome::Overlay(Box::new(OverlayData {
             key: k,
@@ -861,7 +883,7 @@ impl Loader {
         };
         #[cfg(not(target_arch = "wasm32"))]
         {
-            for n in 0..WORKERS {
+            for n in 0..worker_count() {
                 let (shared, tx) = (shared.clone(), tx.clone());
                 std::thread::Builder::new()
                     .name(format!("tiles-{n}"))
@@ -1530,7 +1552,7 @@ mod tests {
         let left = q.waiting.len();
         drop(q);
         assert!(
-            started <= RESULT_QUEUE + WORKERS,
+            started <= RESULT_QUEUE + worker_count(),
             "{started} jobs ran with nothing collected"
         );
         assert_eq!(started + left, keys.len());
@@ -1613,7 +1635,7 @@ mod tests {
         let fetcher = Arc::new(Fetcher::new(cache, Peers::default(), false));
         let gate = fetcher.gate(&crate::fetcher::host_of(sources::TERRAIN.url), 1);
         std::mem::forget(gate.enter());
-        let blocked: Vec<TileKey> = (0..(WORKERS as u32 * 2))
+        let blocked: Vec<TileKey> = (0..(worker_count() as u32 * 2))
             .map(|i| TileKey::new(5, 16 + i, 16))
             .collect();
         let mut wanted = vec![ready];
@@ -1746,5 +1768,15 @@ mod tests {
         assert_eq!(&tile.mips[0].2[..4], &[10, 20, 60, 255]);
         assert!(service_lib::problem_text(src).is_some());
         service_lib::select_overlay(None);
+    }
+
+    #[test]
+    fn the_pool_follows_the_machine_within_bounds() {
+        assert_eq!(workers_for(1), MIN_WORKERS);
+        assert_eq!(workers_for(4), MIN_WORKERS);
+        assert_eq!(workers_for(MIN_WORKERS + 2), MIN_WORKERS);
+        assert_eq!(workers_for(MIN_WORKERS + 6), MIN_WORKERS + 4);
+        assert_eq!(workers_for(1000), MAX_WORKERS);
+        assert!((MIN_WORKERS..=MAX_WORKERS).contains(&worker_count()));
     }
 }
