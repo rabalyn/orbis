@@ -4,8 +4,10 @@ use crate::body;
 use crate::camera::{Basis, FOV_Y};
 use crate::geo::{geodetic_to_ecef, radius, Grid, TileKey};
 use glam::DVec3;
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::f64::consts::TAU;
+use std::rc::Rc;
 
 /// Highest mountains plus a margin, so tilted views do not lose peaks at the edges.
 const TERRAIN_MARGIN: f64 = 9_000.0;
@@ -50,24 +52,100 @@ struct Taken {
 
 struct Samples {
     points: [DVec3; 25],
+    /// The points scaled to unit length.
+    units: [DVec3; 25],
     lats: [f64; 25],
 }
 
-fn samples(k: TileKey) -> Samples {
+fn compute_samples(k: TileKey) -> Samples {
     let mut points = [DVec3::ZERO; 25];
+    let mut units = [DVec3::ZERO; 25];
     let mut lats = [0.0; 25];
     for j in 0..5 {
         for i in 0..5 {
             let (lat, lon) = k.lat_lon(i as f64 / 4.0, j as f64 / 4.0);
-            points[j * 5 + i] = geodetic_to_ecef(lat, lon, 0.0);
+            let p = geodetic_to_ecef(lat, lon, 0.0);
+            points[j * 5 + i] = p;
+            units[j * 5 + i] = p.normalize();
             lats[j * 5 + i] = lat;
         }
     }
-    Samples { points, lats }
+    Samples {
+        points,
+        units,
+        lats,
+    }
 }
 
+/// Samples kept per generation; two generations are held, so memory stays bounded while a
+/// flight moves over new ground.
+const CACHE_TILES: usize = 4096;
+
+/// The samples of tiles seen lately. They depend only on the tile and the body, so the cache
+/// is dropped when the body changes.
+#[derive(Default)]
+struct Cache {
+    body: &'static str,
+    now: HashMap<TileKey, Rc<Samples>>,
+    before: HashMap<TileKey, Rc<Samples>>,
+}
+
+impl Cache {
+    fn get(&mut self, k: TileKey) -> Rc<Samples> {
+        self.get_with(body::current().id, k, compute_samples)
+    }
+
+    fn get_with(
+        &mut self,
+        body: &'static str,
+        k: TileKey,
+        make: impl FnOnce(TileKey) -> Samples,
+    ) -> Rc<Samples> {
+        if self.body != body {
+            self.body = body;
+            self.now.clear();
+            self.before.clear();
+        }
+        if let Some(s) = self.now.get(&k) {
+            return s.clone();
+        }
+        let s = match self.before.remove(&k) {
+            Some(s) => s,
+            None => Rc::new(make(k)),
+        };
+        if self.now.len() >= CACHE_TILES {
+            self.before = std::mem::take(&mut self.now);
+        }
+        self.now.insert(k, s.clone());
+        s
+    }
+}
+
+thread_local! {
+    static CACHE: RefCell<Cache> = RefCell::new(Cache::default());
+}
+
+fn samples(k: TileKey) -> Rc<Samples> {
+    CACHE.with(|c| c.borrow_mut().get(k))
+}
+
+/// The unit normals of the sides of a view, which depend on the view only.
+struct Sides([DVec3; 5]);
+
 impl View {
-    fn visible(&self, k: TileKey, s: &Samples) -> bool {
+    fn sides(&self) -> Sides {
+        let b = &self.basis;
+        let t = (FOV_Y / 2.0).tan();
+        Sides([
+            (b.right - b.look * (t * self.aspect)).normalize(),
+            (-b.right - b.look * (t * self.aspect)).normalize(),
+            (b.up - b.look * t).normalize(),
+            (-b.up - b.look * t).normalize(),
+            -b.look,
+        ])
+    }
+
+    fn visible(&self, k: TileKey, s: &Samples, sides: &Sides) -> bool {
         if k.z < 2 {
             return true;
         }
@@ -81,20 +159,14 @@ impl View {
         let above = s
             .points
             .iter()
-            .any(|p| (b.pos - *p).dot(p.normalize()) > -pad);
+            .zip(&s.units)
+            .any(|(p, u)| (b.pos - *p).dot(*u) > -pad);
         if !above {
             return false;
         }
         // Not entirely beyond one side of the view.
-        let t = (FOV_Y / 2.0).tan();
-        let sides = [
-            (b.right - b.look * (t * self.aspect)).normalize(),
-            (-b.right - b.look * (t * self.aspect)).normalize(),
-            (b.up - b.look * t).normalize(),
-            (-b.up - b.look * t).normalize(),
-            -b.look,
-        ];
         sides
+            .0
             .iter()
             .all(|n| s.points.iter().any(|p| (*p - b.pos).dot(*n) < pad))
     }
@@ -104,12 +176,14 @@ impl View {
         let mut nearest = f64::MAX;
         let mut lat = 0.0;
         let mut point = DVec3::X;
-        for (p, l) in s.points.iter().zip(s.lats) {
+        let mut unit = DVec3::X;
+        for ((p, l), u) in s.points.iter().zip(s.lats).zip(&s.units) {
             let d = (*p - self.basis.pos).length();
             if d < nearest {
                 nearest = d;
                 lat = l;
                 point = *p;
+                unit = *u;
             }
         }
         // Mercator rows stretch east-west by 1/cos(lat); equirectangular ones do not, and
@@ -123,15 +197,16 @@ impl View {
         let per_metre = self.height_px / (2.0 * (FOV_Y / 2.0).tan() * nearest.max(1.0));
         // Seen at a slant, a texel covers fewer pixels along the view direction. Averaging
         // both axes keeps grazing views from demanding full detail up to the horizon.
-        let facing = (self.basis.pos - point).normalize().dot(point.normalize());
+        let facing = (self.basis.pos - point).normalize().dot(unit);
         (nearest, texel * per_metre * facing.max(0.04).sqrt())
     }
 
     pub fn select(&self, loaded: &impl Fn(TileKey) -> bool) -> Selection {
         let mut out = Selection::default();
         let mut wanted = Vec::new();
+        let sides = self.sides();
         for root in crate::geo::root_tiles() {
-            self.visit(root, loaded, &mut out.draw, &mut wanted);
+            self.visit(root, loaded, &sides, &mut out.draw, &mut wanted);
         }
         wanted.sort_by(|a: &(u8, f64, TileKey), b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
         out.wanted = wanted.into_iter().map(|w| w.2).collect();
@@ -222,11 +297,12 @@ impl View {
         &self,
         k: TileKey,
         loaded: &impl Fn(TileKey) -> bool,
+        sides: &Sides,
         draw: &mut Vec<TileKey>,
         wanted: &mut Vec<(u8, f64, TileKey)>,
     ) -> Cover {
         let s = samples(k);
-        if !self.visible(k, &s) {
+        if !self.visible(k, &s, sides) {
             return Cover::Full;
         }
         let (dist, pixels) = self.measure(k, &s);
@@ -234,7 +310,7 @@ impl View {
         if k.z < (self.max_z)(k) && (k.z < 2 || pixels > REFINE_ABOVE) {
             let mut covered = true;
             for c in k.children() {
-                covered &= self.visit(c, loaded, draw, wanted) == Cover::Full;
+                covered &= self.visit(c, loaded, sides, draw, wanted) == Cover::Full;
             }
             if covered {
                 return Cover::Full;
@@ -298,6 +374,62 @@ mod tests {
             have.extend(s.wanted);
         }
         panic!("selection never settled");
+    }
+
+    fn same(a: &Samples, b: &Samples) -> bool {
+        a.points == b.points && a.units == b.units && a.lats == b.lats
+    }
+
+    fn tiles() -> Vec<TileKey> {
+        let mut v = vec![TileKey::new(0, 0, 0)];
+        for z in 1..6u8 {
+            let n = 1u32 << z;
+            v.extend([TileKey::new(z, 0, 0), TileKey::new(z, n / 2, n / 3)]);
+        }
+        v
+    }
+
+    #[test]
+    fn cached_samples_equal_fresh_ones_and_selection_is_unchanged() {
+        for k in tiles() {
+            assert!(same(&samples(k), &compute_samples(k)));
+            assert!(same(&samples(k), &compute_samples(k)), "second hit");
+        }
+        for (d, t) in [(2.2e7, 0.0), (500_000.0, 0.5), (3_000.0, 1.3)] {
+            let v = view(d, t);
+            let warm = settle(&v);
+            CACHE.with(|c| *c.borrow_mut() = Cache::default());
+            let cold = settle(&v);
+            assert_eq!(warm.draw, cold.draw);
+            assert_eq!(warm.wanted, cold.wanted);
+            let again = v.select(&|_| false);
+            CACHE.with(|c| *c.borrow_mut() = Cache::default());
+            let fresh = v.select(&|_| false);
+            assert_eq!(again.wanted, fresh.wanted);
+        }
+    }
+
+    #[test]
+    fn samples_cache_follows_the_body_and_stays_bounded() {
+        let mut c = Cache::default();
+        let k = TileKey::new(3, 1, 1);
+        let made = std::cell::Cell::new(0);
+        let get = |c: &mut Cache, body, k| {
+            c.get_with(body, k, |k| {
+                made.set(made.get() + 1);
+                compute_samples(k)
+            })
+        };
+        let a = get(&mut c, "earth", k);
+        let b = get(&mut c, "earth", k);
+        assert!(Rc::ptr_eq(&a, &b));
+        get(&mut c, "moon", k);
+        get(&mut c, "earth", k);
+        assert_eq!(made.get(), 3, "a body change recomputes");
+        for i in 0..(3 * CACHE_TILES as u32) {
+            get(&mut c, "earth", TileKey::new(14, i, 0));
+        }
+        assert!(c.now.len() + c.before.len() <= 2 * CACHE_TILES);
     }
 
     fn overlaps(a: TileKey, b: TileKey) -> bool {
