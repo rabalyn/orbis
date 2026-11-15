@@ -4109,6 +4109,7 @@ impl Scene {
         let globe = labels::GlobeView {
             screen: &screen,
             ground: &ground,
+            anchor: Default::default(),
         };
         let view: &dyn labels::View = match &flat {
             Some(f) => f,

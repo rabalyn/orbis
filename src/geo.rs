@@ -163,6 +163,14 @@ pub fn lat_to_merc_v(lat: f64) -> f64 {
     (1.0 - lat.tan().asinh() / PI) / 2.0
 }
 
+/// The row coordinate of a latitude in 0..1 down the tile grid of a body.
+pub fn grid_v(grid: Grid, lat: f64) -> f64 {
+    match grid {
+        Grid::Mercator => lat_to_merc_v(lat),
+        Grid::Equirect => (PI / 2.0 - planetocentric(lat, body::current().e2)) / PI,
+    }
+}
+
 pub fn lon_to_merc_u(lon: f64) -> f64 {
     (lon + PI) / (2.0 * PI)
 }
@@ -231,12 +239,14 @@ impl TileKey {
     }
 
     pub fn containing_on(grid: Grid, lat: f64, lon: f64, z: u8) -> TileKey {
+        Self::containing_at(grid, lon_to_merc_u(lon), grid_v(grid, lat), z)
+    }
+
+    /// The tile at zoom `z` containing a position given as `lon_to_merc_u` and `grid_v`, so
+    /// that a caller asking for several zooms converts the position once.
+    pub fn containing_at(grid: Grid, u: f64, v: f64, z: u8) -> TileKey {
         let (cols, rows) = (grid.columns(z) as f64, grid.rows(z) as f64);
-        let v = match grid {
-            Grid::Mercator => lat_to_merc_v(lat),
-            Grid::Equirect => (PI / 2.0 - planetocentric(lat, body::current().e2)) / PI,
-        };
-        let x = ((lon_to_merc_u(lon) * cols).floor() as i64).clamp(0, cols as i64 - 1);
+        let x = ((u * cols).floor() as i64).clamp(0, cols as i64 - 1);
         let y = ((v * rows).floor() as i64).clamp(0, rows as i64 - 1);
         Self::new(z, x as u32, y as u32)
     }
@@ -360,6 +370,21 @@ mod tests {
         assert_eq!((k.x, k.y), (15, 7));
     }
 
+    #[test]
+    fn containing_at_matches_containing_on() {
+        for grid in [Grid::Mercator, Grid::Equirect] {
+            for i in 0..200 {
+                let lat = ((i as f64 * 0.731).sin()) * 1.55;
+                let lon = ((i as f64 * 1.37).cos()) * PI;
+                for z in [0u8, 1, 5, 12, 19] {
+                    assert_eq!(
+                        TileKey::containing_at(grid, lon_to_merc_u(lon), grid_v(grid, lat), z),
+                        TileKey::containing_on(grid, lat, lon, z)
+                    );
+                }
+            }
+        }
+    }
     #[test]
     fn containing_clamps_at_the_edges() {
         let k = TileKey::containing(89.9f64.to_radians(), PI, 3);
