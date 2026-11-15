@@ -40,7 +40,12 @@ impl<J: Clone + Send + 'static, R: Send + 'static> Worker<J, R> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let (jobs, job_rx) = channel::<J>();
-            std::thread::spawn(move || {
+            // Named after the kind of job, so the thread can be told apart in a profile.
+            let name = std::any::type_name::<J>();
+            let name = name.split('<').next().unwrap_or(name);
+            let name = name.rsplit("::").next().unwrap_or(name);
+            let spawn = std::thread::Builder::new().name(format!("job-{name}"));
+            let _thread = spawn.spawn(move || {
                 // The thread ends when the worker is dropped and the channel closes.
                 while let Ok(mut job) = job_rx.recv() {
                     if latest_only {
@@ -52,7 +57,8 @@ impl<J: Clone + Send + 'static, R: Send + 'static> Worker<J, R> {
                         break;
                     }
                 }
-            });
+            })
+            .expect("start a work thread");
             Self {
                 jobs,
                 replies: Mutex::new(replies),

@@ -861,9 +861,12 @@ impl Loader {
         };
         #[cfg(not(target_arch = "wasm32"))]
         {
-            for _ in 0..WORKERS {
+            for n in 0..WORKERS {
                 let (shared, tx) = (shared.clone(), tx.clone());
-                std::thread::spawn(move || worker(&shared, &tx));
+                std::thread::Builder::new()
+                    .name(format!("tiles-{n}"))
+                    .spawn(move || worker(&shared, &tx))
+                    .expect("start a tile thread");
             }
             Self { shared, results }
         }

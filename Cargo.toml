@@ -26,6 +26,7 @@ dirs = "6"
 pollster = "0.4"
 socket2 = { version = "0.6", features = ["all"] }
 ureq = "3"
+pprof = { version = "0.15", features = ["flamegraph"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wgpu = { version = "30", features = ["webgl"] }
@@ -35,6 +36,14 @@ wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 console_error_panic_hook = "0.1"
 web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement", "Location", "Storage", "XmlHttpRequest", "XmlHttpRequestResponseType", "Request", "RequestInit", "RequestMode", "Response", "Headers", "Performance", "console", "AbortSignal", "HtmlElement", "CssStyleDeclaration", "UrlSearchParams", "Navigator", "HtmlCanvasElement"] }
+
+[features]
+# Sampling profiler: `ORBIS_FLAMEGRAPH=out.svg cargo run --profile profiling --features profile -- ...`
+profile = ["dep:pprof"]
+
+[profile.profiling]
+inherits = "release"
+debug = true
 
 [profile.dev]
 opt-level = 1

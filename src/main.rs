@@ -5414,6 +5414,11 @@ struct Benchmark {
     end: Instant,
     last: Option<Instant>,
     intervals: Vec<f64>,
+    /// How long each frame took to make, in seconds, as opposed to the time between frames,
+    /// which the frame limit sets.
+    work: Vec<f64>,
+    /// The parts of that time, summed over all frames: update, panels, labels, drawing.
+    phases: [f64; 4],
 }
 
 /// Events sent to the window from other threads.
@@ -5543,6 +5548,8 @@ impl App {
             end: now + Duration::from_secs_f64(seconds),
             last: None,
             intervals: Vec::new(),
+            work: Vec::new(),
+            phases: [0.0; 4],
         });
         Ok(Gfx {
             draw_format,
@@ -5606,6 +5613,7 @@ impl App {
         let (w, h) = (gfx.config.width, gfx.config.height);
         let aspect = w as f64 / h as f64;
         gfx.scene.update(&mut gfx.renderer, dt, (aspect, h as f64));
+        let updated = Instant::now();
         let scale = gfx.window.scale_factor().round().max(1.0) as usize;
         if gfx
             .scene
@@ -5613,8 +5621,10 @@ impl App {
         {
             gfx.redraw_wanted = true;
         }
+        let panelled = Instant::now();
         gfx.scene
             .place_labels(&mut gfx.renderer, (w, h), scale as u32, dt);
+        let labelled = Instant::now();
 
         let frame = match gfx.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
@@ -5658,6 +5668,14 @@ impl App {
             });
         gfx.window.pre_present_notify();
         gfx.renderer.queue.present(frame);
+        if let Some(b) = &mut gfx.benchmark {
+            let done = Instant::now();
+            b.work.push((done - now).as_secs_f64());
+            let marks = [now, updated, panelled, labelled, done];
+            for (sum, pair) in b.phases.iter_mut().zip(marks.windows(2)) {
+                *sum += (pair[1] - pair[0]).as_secs_f64();
+            }
+        }
         if let Some(rec) = &mut gfx.recorder {
             let has_image = slot.is_some();
             if let Some(slot) = slot {
@@ -5746,6 +5764,20 @@ impl App {
                 s.frames, s.average_fps, s.median_ms, s.p99_ms, s.worst_ms,
             ),
             None => println!("no frames were drawn; the window may have been hidden"),
+        }
+        if let Some(s) = pacing::summarize(&b.work) {
+            let per_frame = |sum: f64| sum * 1000.0 / s.frames as f64;
+            println!(
+                "work per frame: median {:.2} ms, 99th percentile {:.2} ms, worst {:.2} ms",
+                s.median_ms, s.p99_ms, s.worst_ms,
+            );
+            println!(
+                "average parts: update {:.2} ms, panels {:.2} ms, labels {:.2} ms, drawing {:.2} ms",
+                per_frame(b.phases[0]),
+                per_frame(b.phases[1]),
+                per_frame(b.phases[2]),
+                per_frame(b.phases[3]),
+            );
         }
     }
 }
@@ -6322,8 +6354,44 @@ fn main() {
     event_loop.spawn_app(app);
 }
 
+/// With the `profile` feature and `ORBIS_FLAMEGRAPH=FILE.svg` set, samples every thread's
+/// processor time for the whole run and writes a flamegraph on exit.
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> Result<()> {
+    #[cfg(feature = "profile")]
+    let profiler = std::env::var_os("ORBIS_FLAMEGRAPH").map(|path| {
+        let guard = pprof::ProfilerGuardBuilder::default()
+            .frequency(997)
+            .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+            .build()
+            .expect("start the profiler");
+        (guard, path)
+    });
+    let result = run();
+    #[cfg(feature = "profile")]
+    if let Some((guard, path)) = profiler {
+        let report = guard.report().build().expect("build the profile");
+        let file = std::fs::File::create(&path).expect("create the flamegraph file");
+        report.flamegraph(file).expect("write the flamegraph");
+        // Folded stacks beside the picture, for tools: `thread;frame;frame count` per line.
+        let mut folded = String::new();
+        for (frames, count) in &report.data {
+            let mut line = frames.thread_name.clone();
+            for frame in frames.frames.iter().rev() {
+                for symbol in frame.iter().rev() {
+                    line.push(';');
+                    line.push_str(&symbol.name());
+                }
+            }
+            folded.push_str(&format!("{line} {count}\n"));
+        }
+        let _ = std::fs::write(std::path::Path::new(&path).with_extension("folded"), folded);
+    }
+    result
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn run() -> Result<()> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let (dir, flag) = settings_dir(&argv);
     let store = dir
